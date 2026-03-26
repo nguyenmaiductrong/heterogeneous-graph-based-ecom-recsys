@@ -1,0 +1,78 @@
+# --- Paths ---
+paths:
+  raw_data_dir: "/mnt/data/rees46/raw"
+  raw_csv_pattern: "/mnt/data/rees46/raw/*.csv"
+  output_dir: "/mnt/data/rees46/processed"
+  node_mappings_dir: "/mnt/data/rees46/processed/node_mappings"
+  edge_lists_dir: "/mnt/data/rees46/processed/edge_lists"
+  splits_dir: "/mnt/data/rees46/processed/splits"
+  stats_dir: "/mnt/data/rees46/processed/statistics"
+  graph_dir: "/mnt/data/rees46/processed/graph"
+  small_dir: "/mnt/data/rees46/processed/small"
+
+# --- Spark ---
+spark:
+  app_name: "REES46_HetGraph_Pipeline"
+  master: "local[*]"
+  driver_memory: "30g"
+  executor_memory: "30g"
+  local_dir: "/mnt/data/spark-temp"
+  checkpoint_dir: "/mnt/data/spark-checkpoints"
+  shuffle_partitions: 200
+  default_parallelism: 64
+  aqe_enabled: true
+  broadcast_threshold: "256m"
+  parquet_compression: "snappy"
+  max_partition_bytes: "256m"
+  memory_fraction: 0.6
+  storage_fraction: 0.2
+  driver_max_result_size: "4g"
+  arrow_enabled: true
+  heartbeat_interval: "120s"
+  network_timeout: "600s"
+
+# --- Filtering ---
+filter:
+  min_user_interactions: 5
+  min_item_interactions: 5
+  require_purchase: true
+  fill_missing_brand: true
+  unknown_brand: "__UNKNOWN_BRAND__"
+  unknown_category: "__UNKNOWN_CATEGORY__"
+  # "top" = trước dấu '.', "second" = 2 cấp, "full" = toàn bộ
+  category_level: "top"
+  # Số vòng lặp lọc cold-start (2-3 là đủ hội tụ)
+  iterative_filter_rounds: 3
+
+# --- Temporal Split ---
+split:
+  # REES46: Dec 2019 - Mar 2020
+  # Train: Dec 2019 - Jan 2020 (5 tháng)
+  # Val: Feb 2020 (1 tháng)
+  # Test: Mar 2020 (1 tháng)
+  train_end: "2020-01-31"
+  val_end: "2020-02-29"
+
+# --- Graph Schema ---
+graph:
+  node_types:
+    - user
+    - product
+    - category
+    - brand
+  behavior_edge_types:
+    - view
+    - cart
+    - purchase
+  structural_edge_types:
+    - belongsTo
+    - producedBy
+  target_behavior: "purchase"
+  behavior_weights:
+    view: 1.0
+    cart: 3.0
+    purchase: 5.0
+
+sampling:
+  create_small_version: true
+  small_num_users: 100000

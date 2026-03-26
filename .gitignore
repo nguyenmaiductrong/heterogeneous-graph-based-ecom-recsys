@@ -1,0 +1,98 @@
+# ========================
+# Python
+# ========================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+dist/
+build/
+*.egg
+.eggs/
+
+# ========================
+# Virtual Environment
+# ========================
+venv/
+env/
+.venv/
+.env
+
+# ========================
+# Jupyter Notebook
+# ========================
+.ipynb_checkpoints/
+*.ipynb_metadata/
+
+# ========================
+# IDE
+# ========================
+.vscode/
+.idea/
+*.swp
+*.swo
+.cursor/
+
+# ========================
+# Data — KHÔNG PUSH DATA LÊN GITHUB
+# ========================
+data/raw/
+data/processed/
+data/sample/
+*.csv
+*.parquet
+*.json
+!configs/**/*.json
+!configs/**/*.yaml
+!data/schema/*.yaml
+
+# ========================
+# Model Weights — quá lớn cho GitHub
+# ========================
+models/
+*.pt
+*.pth
+*.bin
+*.onnx
+checkpoints/
+
+# ========================
+# GCP / Credentials — BẢO MẬT
+# ========================
+*.json
+!configs/**/*.json
+!.github/**/*.json
+service-account*.json
+credentials*.json
+gcp-key*.json
+
+# ========================
+# PySpark
+# ========================
+spark-warehouse/
+metastore_db/
+derby.log
+
+# ========================
+# OS
+# ========================
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ========================
+# Logs & Cache
+# ========================
+logs/
+.cache/
+wandb/
+mlruns/
+
+# ========================
+# Reports / Outputs tự sinh
+# ========================
+*.html
+!paper/**/*.html
+anomaly_report.json
+validation_report.json
