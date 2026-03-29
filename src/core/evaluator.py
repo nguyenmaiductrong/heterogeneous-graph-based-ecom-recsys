@@ -8,7 +8,7 @@ from .contracts import EvalInput
 class FullRankingEvaluator:
     def __init__(self, ks: List[int] = [10, 20], device: str = 'cuda'):
         self.ks = ks
-        self.max_k = max(ks)git
+        self.max_k = max(ks)
         self.device = device if torch.cuda.is_available() else 'cpu'
 
     @torch.no_grad()
