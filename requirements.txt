@@ -6,3 +6,4 @@ PyYAML==6.0.1
 pandas==1.5.3
 pyarrow
 torch>=2.0.0
+wandb>=0.16.0,<0.18.0
