@@ -11,8 +11,9 @@ from .spark_utils import log_step, get_dir_size_gb
 
 # PARQUET
 @log_step("LOAD: Save cleaned Parquet")
-def save_cleaned_parquet(df: DataFrame, output_dir: str,
-                         num_partitions: int = 64) -> str:
+def save_cleaned_parquet(
+    df: DataFrame, output_dir: str, num_partitions: int = 64
+) -> str:
     path = os.path.join(output_dir, "cleaned.parquet")
     df.repartition(num_partitions).write.mode("overwrite").parquet(path)
     size_gb = get_dir_size_gb(path)
@@ -20,8 +21,10 @@ def save_cleaned_parquet(df: DataFrame, output_dir: str,
     print(f"Size: {size_gb:.2f} GB")
     return path
 
-def save_node_mapping(mapping_df: DataFrame, mappings_dir: str,
-                      name: str, save_csv: bool = True):
+
+def save_node_mapping(
+    mapping_df: DataFrame, mappings_dir: str, name: str, save_csv: bool = True
+) -> None:
     parquet_path = os.path.join(mappings_dir, f"{name}.parquet")
     mapping_df.write.mode("overwrite").parquet(parquet_path)
 
@@ -33,8 +36,9 @@ def save_node_mapping(mapping_df: DataFrame, mappings_dir: str,
 
     print(f"Saved {name} -> {parquet_path}")
 
+
 @log_step("LOAD: Save node summary")
-def save_node_summary(stats_dir: str, **counts) -> dict:
+def save_node_summary(stats_dir: str, **counts: int) -> dict[str, int]:
     counts["total_nodes"] = (
         counts.get("num_users", 0) + counts.get("num_products", 0) +
         counts.get("num_categories", 0) + counts.get("num_brands", 0)
@@ -49,7 +53,7 @@ def save_node_summary(stats_dir: str, **counts) -> dict:
     return counts
 
 
-def _parquet_to_numpy(parquet_path: str, columns: list) -> dict:
+def _parquet_to_numpy(parquet_path: str, columns: list[str]) -> dict[str, np.ndarray]:
     table = pq.read_table(parquet_path, columns=columns)
     result = {}
     for col in columns:
@@ -59,8 +63,9 @@ def _parquet_to_numpy(parquet_path: str, columns: list) -> dict:
     return result
 
 
-def spark_df_to_numpy_via_parquet(spark_df: DataFrame, tmp_dir: str,
-                                  prefix: str, columns: list) -> dict:
+def spark_df_to_numpy_via_parquet(
+    spark_df: DataFrame, tmp_dir: str, prefix: str, columns: list[str]
+) -> dict[str, np.ndarray]:
     tmp_path = os.path.join(tmp_dir, f"_tmp_{prefix}")
     spark_df.select(*columns).write.mode("overwrite").parquet(tmp_path)
 
@@ -70,34 +75,44 @@ def spark_df_to_numpy_via_parquet(spark_df: DataFrame, tmp_dir: str,
     return arrays
 
 
-def edges_to_numpy_safe(spark_df: DataFrame, tmp_dir: str, prefix: str):
+def edges_to_numpy_safe(
+    spark_df: DataFrame, tmp_dir: str, prefix: str
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     columns = ["user_idx", "product_idx", "unix_ts"]
     arrays = spark_df_to_numpy_via_parquet(spark_df, tmp_dir, prefix, columns)
     return arrays["user_idx"], arrays["product_idx"], arrays["unix_ts"]
 
 
-def save_edge_arrays(src: np.ndarray, dst: np.ndarray,
-                     ts: np.ndarray, edge_dir: str, prefix: str):
+def save_edge_arrays(
+    src: np.ndarray, dst: np.ndarray, ts: np.ndarray, edge_dir: str, prefix: str
+) -> None:
     np.save(os.path.join(edge_dir, f"{prefix}_src.npy"), src)
     np.save(os.path.join(edge_dir, f"{prefix}_dst.npy"), dst)
     np.save(os.path.join(edge_dir, f"{prefix}_ts.npy"), ts)
 
 
-def save_structural_edge_arrays(spark_df: DataFrame, edge_dir: str,
-                                relation: str):
-    pdf = spark_df.toPandas()
-    src_col = pdf.columns[0]
-    dst_col = pdf.columns[1]
+def save_structural_edge_arrays(
+    spark_df: DataFrame, edge_dir: str, relation: str, tmp_dir: str
+) -> None:
+    cols = list(spark_df.columns[:2])
+    arrays = spark_df_to_numpy_via_parquet(
+        spark_df, tmp_dir, f"struct_{relation}", cols
+    )
+    src_col, dst_col = cols[0], cols[1]
+    np.save(
+        os.path.join(edge_dir, f"{relation}_src.npy"),
+        arrays[src_col].astype(np.int64),
+    )
+    np.save(
+        os.path.join(edge_dir, f"{relation}_dst.npy"),
+        arrays[dst_col].astype(np.int64),
+    )
+    print(f"  Saved {relation}: {len(arrays[src_col]):,} edges")
 
-    np.save(os.path.join(edge_dir, f"{relation}_src.npy"),
-            pdf[src_col].values.astype(np.int64))
-    np.save(os.path.join(edge_dir, f"{relation}_dst.npy"),
-            pdf[dst_col].values.astype(np.int64))
-    print(f"  Saved {relation}: {len(pdf):,} edges")
 
-def build_and_save_sparse_adj(src: np.ndarray, dst: np.ndarray,
-                              num_src: int, num_dst: int,
-                              graph_dir: str, name: str) -> sp.csr_matrix:
+def build_and_save_sparse_adj(
+    src: np.ndarray, dst: np.ndarray, num_src: int, num_dst: int, graph_dir: str, name: str
+) -> sp.csr_matrix:
     data = np.ones(len(src), dtype=np.float32)
     adj = sp.csr_matrix((data, (src, dst)), shape=(num_src, num_dst))
     adj.data = np.ones_like(adj.data)
@@ -108,8 +123,9 @@ def build_and_save_sparse_adj(src: np.ndarray, dst: np.ndarray,
     return adj
 
 @log_step("LOAD: Save graph metadata")
-def save_graph_meta(graph_dir: str, node_summary: dict,
-                    edge_counts: dict) -> dict:
+def save_graph_meta(
+    graph_dir: str, node_summary: dict, edge_counts: dict
+) -> dict:
     total_edges = sum(edge_counts.values())
     meta = {
         "node_counts": {
@@ -135,8 +151,7 @@ def save_graph_meta(graph_dir: str, node_summary: dict,
     return meta
 
 @log_step("VALIDATE: Check graph integrity")
-def validate_graph(edge_dir: str, graph_dir: str,
-                   node_summary: dict, cfg: dict):
+def validate_graph(edge_dir: str, graph_dir: str, node_summary: dict, cfg: dict) -> None:
     n_u = node_summary["num_users"]
     n_p = node_summary["num_products"]
     n_c = node_summary["num_categories"]
@@ -167,6 +182,7 @@ def validate_graph(edge_dir: str, graph_dir: str,
                     errors.append(f"{prefix}: dst index >= num_products")
 
             print(f"  {prefix:>20s}: {len(src):>10,} edges — OK")
+            del src, dst
 
     for rel, max_s, max_d in [
         ("belongsTo", n_p, n_c),
@@ -179,6 +195,7 @@ def validate_graph(edge_dir: str, graph_dir: str,
         if dst.max() >= max_d:
             errors.append(f"{rel}: dst exceeds limit")
         print(f"{rel:>20s}: {len(src):>10,} edges - OK")
+        del src, dst
 
     if errors:
         print(f"ERRORS FOUND:")
