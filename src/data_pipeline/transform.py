@@ -1,3 +1,5 @@
+import os
+
 from pyspark.sql import DataFrame, Window
 from pyspark.sql import functions as F
 
@@ -181,8 +183,9 @@ def build_node_mapping(df: DataFrame, col_name: str, mapping_name: str) -> DataF
     return mapping_df
 
 @log_step("TRANSFORM: Build Product -> Category lookup")
-def build_product_category(df: DataFrame, product_map: DataFrame,
-                           category_map: DataFrame) -> DataFrame:
+def build_product_category(
+    df: DataFrame, product_map: DataFrame, category_map: DataFrame
+) -> DataFrame:
     w = Window.partitionBy("product_id").orderBy(F.desc("count"))
     product_cat = (df
         .groupBy("product_id", "category").count()
@@ -204,8 +207,9 @@ def build_product_category(df: DataFrame, product_map: DataFrame,
     return result
 
 @log_step("TRANSFORM: Build Product -> Brand lookup")
-def build_product_brand(df: DataFrame, product_map: DataFrame,
-                        brand_map: DataFrame) -> DataFrame:
+def build_product_brand(
+    df: DataFrame, product_map: DataFrame, brand_map: DataFrame
+) -> DataFrame:
     w = Window.partitionBy("product_id").orderBy(F.desc("count"))
     product_brand = (df
         .groupBy("product_id", "brand_clean").count()
@@ -227,9 +231,9 @@ def build_product_brand(df: DataFrame, product_map: DataFrame,
     return result
 
 # STEP 3: BEHAVIOR EDGE LISTS
-def build_behavior_edges(df: DataFrame, behavior: str,
-                         user_map: DataFrame,
-                         product_map: DataFrame) -> DataFrame:
+def build_behavior_edges(
+    df: DataFrame, behavior: str, user_map: DataFrame, product_map: DataFrame
+) -> DataFrame:
     edges = (df
         .filter(F.col("event_type") == behavior)
         .join(user_map.select(
@@ -245,7 +249,9 @@ def build_behavior_edges(df: DataFrame, behavior: str,
     print(f"  {behavior:>10s}: {n:>12,} edges")
     return edges
 
-def temporal_split(edges_df: DataFrame, behavior: str, cfg: dict) -> tuple:
+def temporal_split(
+    edges_df: DataFrame, behavior: str, cfg: dict
+) -> tuple[DataFrame, DataFrame, DataFrame]:
     sc = cfg["split"]
     
     labeled = edges_df.withColumn(
@@ -274,10 +280,13 @@ def temporal_split(edges_df: DataFrame, behavior: str, cfg: dict) -> tuple:
 # STEP 3b: LEAVE-ONE-OUT SPLIT (Protocol A — chuẩn baselines cho A* paper)
 
 @log_step("TRANSFORM: Leave-one-out split (Protocol A)")
-def leave_one_out_split(df: DataFrame, cfg: dict,
-                        user_map: DataFrame,
-                        product_map: DataFrame,
-                        loo_dir: str) -> dict:
+def leave_one_out_split(
+    df: DataFrame,
+    cfg: dict,
+    user_map: DataFrame,
+    product_map: DataFrame,
+    loo_dir: str,
+) -> dict[str, str | int]:
     target = cfg["graph"]["target_behavior"]
     spark = df.sparkSession
 
@@ -398,9 +407,6 @@ def leave_one_out_split(df: DataFrame, cfg: dict,
     }
 
 
-import os
-
-
 # STEP 4: SMALL VERSION SEED SELECTION
 @log_step("TRANSFORM: Select seed users for REES46-Small")
 def select_seed_users(df: DataFrame, num_users: int) -> DataFrame:
@@ -436,28 +442,32 @@ def expand_subgraph(df: DataFrame, seed_users: DataFrame) -> DataFrame:
 
 # DATA PROFILING
 @log_step("PROFILE: Data statistics")
-def print_data_profile(df: DataFrame):
-    total = df.count()
-    n_users = df.select("user_id").distinct().count()
-    n_items = df.select("product_id").distinct().count()
-    n_cats = df.select("category").distinct().count()
-    n_brands = df.select("brand_clean").distinct().count()
+def print_data_profile(df: DataFrame) -> None:
+    df.cache()
+    try:
+        total = df.count()
+        n_users = df.select("user_id").distinct().count()
+        n_items = df.select("product_id").distinct().count()
+        n_cats = df.select("category").distinct().count()
+        n_brands = df.select("brand_clean").distinct().count()
 
-    print(f"Total interactions: {total:,}")
-    print(f"Unique users: {n_users:,}")
-    print(f"Unique products: {n_items:,}")
-    print(f"Unique categories: {n_cats:,}")
-    print(f"Unique brands: {n_brands:,}")
-    print(f"Density: {total / max(n_users * n_items, 1) * 100:.6f}%")
+        print(f"Total interactions: {total:,}")
+        print(f"Unique users: {n_users:,}")
+        print(f"Unique products: {n_items:,}")
+        print(f"Unique categories: {n_cats:,}")
+        print(f"Unique brands: {n_brands:,}")
+        print(f"Density: {total / max(n_users * n_items, 1) * 100:.6f}%")
 
-    # Behavior distribution
-    print(f"Behavior distribution:")
-    for row in df.groupBy("event_type").count().orderBy(F.desc("count")).collect():
-        pct = row["count"] / total * 100
-        print(f"{row['event_type']:>10s}: {row['count']:>12,} ({pct:.1f}%)")
+        print("Behavior distribution:")
+        for row in df.groupBy("event_type").count().orderBy(
+            F.desc("count")
+        ).collect():
+            pct = row["count"] / total * 100
+            print(f"{row['event_type']:>10s}: {row['count']:>12,} ({pct:.1f}%)")
 
-    # Date range
-    dr = df.agg(
-        F.min("event_date").alias("min"), F.max("event_date").alias("max")
-    ).collect()[0]
-    print(f"Date range: {dr['min']} -> {dr['max']}")
+        dr = df.agg(
+            F.min("event_date").alias("min"), F.max("event_date").alias("max")
+        ).collect()[0]
+        print(f"Date range: {dr['min']} -> {dr['max']}")
+    finally:
+        df.unpersist()

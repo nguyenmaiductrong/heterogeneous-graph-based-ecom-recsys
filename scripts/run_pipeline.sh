@@ -88,12 +88,12 @@ try:
     save_node_mapping(brand_map, paths["node_mappings_dir"], "brand2idx")
 
     pc_df = build_product_category(df, product_map, category_map)
-    save_structural_edge_arrays(pc_df, paths["edge_lists_dir"], "belongsTo")
+    save_structural_edge_arrays(pc_df, paths["edge_lists_dir"], "belongsTo", tmp_dir)
     pc_df.write.mode("overwrite").parquet(
         os.path.join(paths["node_mappings_dir"], "product_category.parquet"))
 
     pb_df = build_product_brand(df, product_map, brand_map)
-    save_structural_edge_arrays(pb_df, paths["edge_lists_dir"], "producedBy")
+    save_structural_edge_arrays(pb_df, paths["edge_lists_dir"], "producedBy", tmp_dir)
     pb_df.write.mode("overwrite").parquet(
         os.path.join(paths["node_mappings_dir"], "product_brand.parquet"))
 

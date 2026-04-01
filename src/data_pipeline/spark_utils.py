@@ -2,7 +2,7 @@ import os
 import yaml
 import time
 from functools import wraps
-from pyspark.sql import SparkSession
+from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql.types import (
     StructType, StructField, StringType, DoubleType, LongType, TimestampType
 )
@@ -15,7 +15,8 @@ _PROJECT_ROOT = os.path.abspath(
 def get_project_root() -> str:
     return _PROJECT_ROOT
 
-def load_config(config_path: str = None) -> dict:
+
+def load_config(config_path: str | None = None) -> dict:
     global _CONFIG_CACHE
     if _CONFIG_CACHE is not None:
         return _CONFIG_CACHE
@@ -28,13 +29,17 @@ def load_config(config_path: str = None) -> dict:
 
     return _CONFIG_CACHE
 
-def ensure_dirs(cfg: dict):
+
+def ensure_dirs(cfg: dict) -> None:
     paths = cfg["paths"]
     for key in ["output_dir", "node_mappings_dir", "edge_lists_dir",
                 "splits_dir", "stats_dir", "graph_dir", "small_dir"]:
         os.makedirs(paths[key], exist_ok=True)
 
-def create_spark_session(cfg: dict = None, app_name_suffix: str = "") -> SparkSession:
+
+def create_spark_session(
+    cfg: dict | None = None, app_name_suffix: str = ""
+) -> SparkSession:
     if cfg is None:
         cfg = load_config()
 
@@ -69,9 +74,10 @@ def create_spark_session(cfg: dict = None, app_name_suffix: str = "") -> SparkSe
         .getOrCreate()
     )
     spark.sparkContext.setLogLevel("WARN")
-    checkpoint_dir = sc.get("checkpoint_dir", sc["checkpoint_dir"])
+    checkpoint_dir = sc.get("checkpoint_dir", "/tmp/spark_checkpoints")
     spark.sparkContext.setCheckpointDir(checkpoint_dir)
     return spark
+
 
 def get_rees46_schema() -> StructType:
     return StructType([
@@ -86,6 +92,7 @@ def get_rees46_schema() -> StructType:
         StructField("user_session", StringType(), True),
     ])
 
+
 def log_step(step_name: str):
     def decorator(func):
         @wraps(func)
@@ -99,10 +106,12 @@ def log_step(step_name: str):
         return wrapper
     return decorator
 
-def count_and_log(df, label: str) -> int:
+
+def count_and_log(df: DataFrame, label: str) -> int:
     n = df.count()
     print(f"{label}: {n:,}")
     return n
+
 
 def get_dir_size_gb(path: str) -> float:
     total = 0
