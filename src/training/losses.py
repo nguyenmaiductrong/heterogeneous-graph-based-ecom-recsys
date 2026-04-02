@@ -31,8 +31,12 @@ class PopularityBiasedNegativeSampler:
             prob = smoothed / smoothed.sum()
             self._distributions[beh_name] = prob.to(device)
 
-        # Global fallback: trung bình của tất cả behavior distributions
-        if self._distributions:
+        # Global fallback: if no behavior-specific distributions were provided,
+        # use a uniform distribution; otherwise, use the mean of all behaviors.
+        if not self._distributions:
+            uniform_prob = torch.full((self.num_items,), 1.0 / self.num_items, device=self.device)
+            self._distributions["global"] = uniform_prob
+        else:
             global_prob = torch.stack(list(self._distributions.values())).mean(dim=0)
             self._distributions["global"] = (global_prob / global_prob.sum()).to(device)
 
