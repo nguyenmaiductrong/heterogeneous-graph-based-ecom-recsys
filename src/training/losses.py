@@ -4,8 +4,6 @@ import torch.nn.functional as F
 from torch.amp import autocast
 import numpy as np
 
-from src.core.contracts import BEHAVIOR_LOSS_WEIGHTS
-
 class PopularityBiasedNegativeSampler:
     """
     Tạo ra các mẫu Negative Samples để dạy model theo độ phổ biến
@@ -30,11 +28,6 @@ class PopularityBiasedNegativeSampler:
             smoothed = (counts.float() + 1.0).pow(alpha)
             prob = smoothed / smoothed.sum()
             self._distributions[beh_name] = prob.to(device)
-
-        # Global fallback: trung bình của tất cả behavior distributions
-        if self._distributions:
-            global_prob = torch.stack(list(self._distributions.values())).mean(dim=0)
-            self._distributions["global"] = (global_prob / global_prob.sum()).to(device)
 
     def sample(
         self,
@@ -79,17 +72,14 @@ class MultiTaskBPRLoss(nn.Module):
     ):
         super().__init__()
         self.l2_lambda = l2_lambda
-        # Kết hợp domain priority (contracts.py) với inverse frequency:
-        # w_b = BEHAVIOR_LOSS_WEIGHTS[b] / sqrt(N_b) — sau đó normalize
+        # Tính toán Inverse Frequency weights
         raw = torch.tensor(
-            [
-                BEHAVIOR_LOSS_WEIGHTS[b] / np.sqrt(behavior_counts[b])
-                for b in self.BEHAVIOR_ORDER
-            ],
+            [1.0 / np.sqrt(behavior_counts[b]) for b in self.BEHAVIOR_ORDER],
             dtype=torch.float32,
         )
         # Chuẩn hóa để tổng weights = số lượng behaviors
         normalized = raw / raw.sum() * len(self.BEHAVIOR_ORDER)
+        # Tạo thành buffer 
         self.register_buffer("task_weights", normalized)
 
     @autocast('cuda', enabled=False)
