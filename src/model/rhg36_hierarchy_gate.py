@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import math
 
-from rhg37_hetero_embedding import (
+from model.hetero_embedding import (
     HeteroEmbedding,
     generate_rees46_mini,
     preprocess,
