@@ -12,7 +12,7 @@ torch.manual_seed(42)
 np.random.seed(42)
 random.seed(42)
 
-# 1. Generate Synthetic REES46-like Dataset (dùng test RHG-36 vì chưa truy cập dc vm)
+# 1. Generate Synthetic REES46-like Dataset (dùng test vì chưa truy cập dc vm)
 
 NUM_USERS    = 5_000
 NUM_PRODUCTS = 2_000
@@ -63,7 +63,7 @@ def get_behavior_pairs(df, event_type):
     sub = df[df["event_type"] == event_type][["user_idx", "product_idx"]].values
     return torch.tensor(sub, dtype=torch.long)
 
-# 3. HeteroEmbedding (RHG-37)
+# 3. HeteroEmbedding 
 
 class HeteroEmbedding(nn.Module):
     def __init__(
@@ -178,5 +178,5 @@ if __name__ == "__main__":
     print(f"   {'total':10s}: {total_mb:.2f} MB")
 
     print("\n" + "="*55)
-    print("RHG-37 PASSED — Per-type embedding init (Xavier uniform)")
+    print("Per-type embedding init (Xavier uniform) em đảm bảo giá trị nằm trong khoảng [-a, a] với a ≈ 0.1531, và mean gần 0.")
     print("="*55)
