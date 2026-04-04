@@ -1,124 +1,25 @@
 nohup: ignoring input
-==================================================
- STARTING LIGHTGCN BASELINE (PURCHASE ONLY)
-==================================================
-[INFO] Using Device: CUDA
-[1/4] Loading Purchase Edges...
-  - Edges: 4,455,936
-  - Users: 1,964,332 | Items: 311,668
-[2/4] Loading Train Mask for Negative Sampling...
-[3/4] Building Graph & Model...
-  - Đang xây dựng Normalized Adjacency Matrix...
-/home/huyenmt/heterogeneous-graph-based-ecom-recsys/src/training/lightgcn_baseline.py:55: RuntimeWarning: divide by zero encountered in power
-  d_inv = np.power(rowsum, -0.5)
-[4/4] Bắt đầu Training Loop...
-Epoch [1/100] | Loss: 0.7170 | Time: 13.05s
-Epoch [2/100] | Loss: 0.6754 | Time: 12.89s
-Epoch [3/100] | Loss: 0.5790 | Time: 12.90s
-Epoch [4/100] | Loss: 0.4709 | Time: 12.96s
-Epoch [5/100] | Loss: 0.3870 | Time: 13.01s
-Epoch [6/100] | Loss: 0.3272 | Time: 13.03s
-Epoch [7/100] | Loss: 0.2835 | Time: 13.07s
-Epoch [8/100] | Loss: 0.2504 | Time: 13.09s
-Epoch [9/100] | Loss: 0.2243 | Time: 13.13s
-Epoch [10/100] | Loss: 0.2034 | Time: 13.16s
-Đã ghi đè Checkpoint mới nhất tại: checkpoints/lightgcn_purchase_latest.pth (Epoch 10)
-Epoch [11/100] | Loss: 0.1866 | Time: 13.19s
-Epoch [12/100] | Loss: 0.1725 | Time: 13.21s
-Epoch [13/100] | Loss: 0.1609 | Time: 13.24s
-Epoch [14/100] | Loss: 0.1509 | Time: 13.27s
-Epoch [15/100] | Loss: 0.1423 | Time: 13.26s
-Epoch [16/100] | Loss: 0.1350 | Time: 13.27s
-Epoch [17/100] | Loss: 0.1287 | Time: 13.32s
-Epoch [18/100] | Loss: 0.1233 | Time: 13.31s
-Epoch [19/100] | Loss: 0.1186 | Time: 13.36s
-Epoch [20/100] | Loss: 0.1143 | Time: 13.38s
-Đã ghi đè Checkpoint mới nhất tại: checkpoints/lightgcn_purchase_latest.pth (Epoch 20)
-Epoch [21/100] | Loss: 0.1103 | Time: 13.37s
-Epoch [22/100] | Loss: 0.1069 | Time: 13.33s
-Epoch [23/100] | Loss: 0.1043 | Time: 13.37s
-Epoch [24/100] | Loss: 0.1015 | Time: 13.39s
-Epoch [25/100] | Loss: 0.0987 | Time: 13.40s
-Epoch [26/100] | Loss: 0.0965 | Time: 13.40s
-Epoch [27/100] | Loss: 0.0949 | Time: 13.41s
-Epoch [28/100] | Loss: 0.0928 | Time: 13.43s
-Epoch [29/100] | Loss: 0.0909 | Time: 13.44s
-Epoch [30/100] | Loss: 0.0895 | Time: 13.42s
-Đã ghi đè Checkpoint mới nhất tại: checkpoints/lightgcn_purchase_latest.pth (Epoch 30)
-Epoch [31/100] | Loss: 0.0877 | Time: 13.48s
-Epoch [32/100] | Loss: 0.0861 | Time: 13.41s
-Epoch [33/100] | Loss: 0.0850 | Time: 13.41s
-Epoch [34/100] | Loss: 0.0839 | Time: 13.41s
-Epoch [35/100] | Loss: 0.0826 | Time: 13.45s
-Epoch [36/100] | Loss: 0.0816 | Time: 13.40s
-Epoch [37/100] | Loss: 0.0803 | Time: 13.43s
-Epoch [38/100] | Loss: 0.0792 | Time: 13.46s
-Epoch [39/100] | Loss: 0.0781 | Time: 13.48s
-Epoch [40/100] | Loss: 0.0772 | Time: 13.48s
-Đã ghi đè Checkpoint mới nhất tại: checkpoints/lightgcn_purchase_latest.pth (Epoch 40)
-Epoch [41/100] | Loss: 0.0764 | Time: 13.52s
-Epoch [42/100] | Loss: 0.0758 | Time: 13.47s
-Epoch [43/100] | Loss: 0.0748 | Time: 13.47s
-Epoch [44/100] | Loss: 0.0741 | Time: 13.51s
-Epoch [45/100] | Loss: 0.0735 | Time: 13.49s
-Epoch [46/100] | Loss: 0.0724 | Time: 13.52s
-Epoch [47/100] | Loss: 0.0722 | Time: 13.50s
-Epoch [48/100] | Loss: 0.0715 | Time: 13.51s
-Epoch [49/100] | Loss: 0.0703 | Time: 13.51s
-Epoch [50/100] | Loss: 0.0700 | Time: 13.50s
-Đã ghi đè Checkpoint mới nhất tại: checkpoints/lightgcn_purchase_latest.pth (Epoch 50)
-Epoch [51/100] | Loss: 0.0690 | Time: 13.50s
-Epoch [52/100] | Loss: 0.0682 | Time: 13.51s
-Epoch [53/100] | Loss: 0.0679 | Time: 13.52s
-Epoch [54/100] | Loss: 0.0673 | Time: 13.50s
-Epoch [55/100] | Loss: 0.0668 | Time: 13.52s
-Epoch [56/100] | Loss: 0.0662 | Time: 13.53s
-Epoch [57/100] | Loss: 0.0657 | Time: 13.52s
-Epoch [58/100] | Loss: 0.0650 | Time: 13.53s
-Epoch [59/100] | Loss: 0.0644 | Time: 13.48s
-Epoch [60/100] | Loss: 0.0640 | Time: 13.51s
-Đã ghi đè Checkpoint mới nhất tại: checkpoints/lightgcn_purchase_latest.pth (Epoch 60)
-Epoch [61/100] | Loss: 0.0633 | Time: 13.54s
-Epoch [62/100] | Loss: 0.0627 | Time: 13.49s
-Epoch [63/100] | Loss: 0.0623 | Time: 13.51s
-Epoch [64/100] | Loss: 0.0616 | Time: 13.51s
-Epoch [65/100] | Loss: 0.0611 | Time: 13.53s
-Epoch [66/100] | Loss: 0.0605 | Time: 13.51s
-Epoch [67/100] | Loss: 0.0603 | Time: 13.52s
-Epoch [68/100] | Loss: 0.0598 | Time: 13.49s
-Epoch [69/100] | Loss: 0.0593 | Time: 13.52s
-Epoch [70/100] | Loss: 0.0588 | Time: 13.52s
-Đã ghi đè Checkpoint mới nhất tại: checkpoints/lightgcn_purchase_latest.pth (Epoch 70)
-Epoch [71/100] | Loss: 0.0586 | Time: 13.49s
-Epoch [72/100] | Loss: 0.0583 | Time: 13.52s
-Epoch [73/100] | Loss: 0.0575 | Time: 13.52s
-Epoch [74/100] | Loss: 0.0572 | Time: 13.50s
-Epoch [75/100] | Loss: 0.0568 | Time: 13.52s
-Epoch [76/100] | Loss: 0.0563 | Time: 13.50s
-Epoch [77/100] | Loss: 0.0555 | Time: 13.50s
-Epoch [78/100] | Loss: 0.0554 | Time: 13.53s
-Epoch [79/100] | Loss: 0.0551 | Time: 13.53s
-Epoch [80/100] | Loss: 0.0545 | Time: 13.53s
-Đã ghi đè Checkpoint mới nhất tại: checkpoints/lightgcn_purchase_latest.pth (Epoch 80)
-Epoch [81/100] | Loss: 0.0545 | Time: 13.52s
-Epoch [82/100] | Loss: 0.0537 | Time: 13.48s
-Epoch [83/100] | Loss: 0.0533 | Time: 13.53s
-Epoch [84/100] | Loss: 0.0529 | Time: 13.52s
-Epoch [85/100] | Loss: 0.0523 | Time: 13.55s
-Epoch [86/100] | Loss: 0.0521 | Time: 13.53s
-Epoch [87/100] | Loss: 0.0516 | Time: 13.53s
-Epoch [88/100] | Loss: 0.0513 | Time: 13.52s
-Epoch [89/100] | Loss: 0.0513 | Time: 13.54s
-Epoch [90/100] | Loss: 0.0507 | Time: 13.53s
-Đã ghi đè Checkpoint mới nhất tại: checkpoints/lightgcn_purchase_latest.pth (Epoch 90)
-Epoch [91/100] | Loss: 0.0505 | Time: 13.49s
-Epoch [92/100] | Loss: 0.0499 | Time: 13.46s
-Epoch [93/100] | Loss: 0.0496 | Time: 13.49s
-Epoch [94/100] | Loss: 0.0495 | Time: 13.49s
-Epoch [95/100] | Loss: 0.0489 | Time: 13.50s
-Epoch [96/100] | Loss: 0.0489 | Time: 13.51s
-Epoch [97/100] | Loss: 0.0482 | Time: 13.52s
-Epoch [98/100] | Loss: 0.0481 | Time: 13.49s
-Epoch [99/100] | Loss: 0.0477 | Time: 13.51s
-Epoch [100/100] | Loss: 0.0472 | Time: 13.52s
-Đã ghi đè Checkpoint mới nhất tại: checkpoints/lightgcn_purchase_latest.pth (Epoch 100)
+2026-04-04 09:08:27,540 INFO Device: CUDA
+2026-04-04 09:08:27,546 INFO Edges: 4,455,936 | Users: 1,964,332 | Items: 311,668
+2026-04-04 09:09:40,286 INFO Epoch [1/20] Loss: 0.6819 Time: 67.2s
+2026-04-04 09:10:47,782 INFO Epoch [2/20] Loss: 0.5569 Time: 67.4s
+2026-04-04 09:11:55,581 INFO Epoch [3/20] Loss: 0.2411 Time: 67.7s
+2026-04-04 09:13:03,493 INFO Epoch [4/20] Loss: 0.1590 Time: 67.8s
+2026-04-04 09:14:11,475 INFO Epoch [5/20] Loss: 0.1236 Time: 67.8s
+2026-04-04 09:15:19,533 INFO Epoch [6/20] Loss: 0.1036 Time: 67.9s
+2026-04-04 09:16:27,473 INFO Epoch [7/20] Loss: 0.0896 Time: 67.8s
+2026-04-04 09:17:35,463 INFO Epoch [8/20] Loss: 0.0797 Time: 67.9s
+2026-04-04 09:18:43,498 INFO Epoch [9/20] Loss: 0.0719 Time: 67.8s
+2026-04-04 09:19:51,483 INFO Epoch [10/20] Loss: 0.0667 Time: 67.8s
+2026-04-04 09:19:53,940 INFO Checkpoint saved: checkpoints/lightgcn/lightgcn_epoch_0010.pth (epoch 10, loss 0.0667)
+2026-04-04 09:21:01,945 INFO Epoch [11/20] Loss: 0.0625 Time: 67.9s
+2026-04-04 09:22:09,951 INFO Epoch [12/20] Loss: 0.0590 Time: 67.9s
+2026-04-04 09:23:17,962 INFO Epoch [13/20] Loss: 0.0562 Time: 67.9s
+2026-04-04 09:24:25,963 INFO Epoch [14/20] Loss: 0.0534 Time: 67.9s
+2026-04-04 09:25:33,965 INFO Epoch [15/20] Loss: 0.0509 Time: 67.8s
+2026-04-04 09:26:41,978 INFO Epoch [16/20] Loss: 0.0489 Time: 67.9s
+2026-04-04 09:27:49,987 INFO Epoch [17/20] Loss: 0.0469 Time: 67.9s
+2026-04-04 09:28:58,002 INFO Epoch [18/20] Loss: 0.0453 Time: 67.9s
+2026-04-04 09:30:06,014 INFO Epoch [19/20] Loss: 0.0435 Time: 67.8s
+2026-04-04 09:31:13,992 INFO Epoch [20/20] Loss: 0.0419 Time: 67.8s
+2026-04-04 09:31:16,433 INFO Checkpoint saved: checkpoints/lightgcn/lightgcn_epoch_0020.pth (epoch 20, loss 0.0419)
