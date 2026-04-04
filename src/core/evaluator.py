@@ -1,115 +1,242 @@
-import torch
+import gc
+import logging
 import time
-import argparse
-from typing import Dict, List
+import numpy as np
+import torch
+from .contracts import EvalInput, EMBED_DIM
 
-from .contracts import EvalInput
+logger = logging.getLogger(__name__)
 
-class FullRankingEvaluator:
-    def __init__(self, ks: List[int] = [10, 20], device: str = 'cuda'):
-        self.ks = ks
-        self.max_k = max(ks)
-        self.device = device if torch.cuda.is_available() else 'cpu'
+class LeaveOneOutEvaluator:
+
+    def __init__(
+        self,
+        ks: list[int] | None = None,
+        num_neg_samples: int = 999,
+        device: str = "cpu",
+    ):
+        self.ks = sorted(ks or [10, 20, 50])
+        self.max_k = max(self.ks)
+        self.num_neg_samples = num_neg_samples
+        if device == "cuda" and not torch.cuda.is_available():
+            device = "cpu"
+        self.device = torch.device(device)
+
 
     @torch.no_grad()
-    def evaluate(self, eval_input: EvalInput, batch_size: int = 4096) -> Dict[str, float]:
-        # 1. Chạy hàm kiểm tra chuẩn hóa từ file contracts.py
+    def evaluate_sampled(
+        self,
+        eval_input: EvalInput,
+        batch_size: int = 2048,
+        seed: int = 42,
+    ) -> dict[str, float]:
         eval_input.validate()
 
-        # 2. Đưa dữ liệu lên thiết bị (GPU/CPU)
-        user_embs = eval_input.user_embeddings.to(self.device)
-        item_embs = eval_input.item_embeddings.to(self.device)
-        
-        n_users_eval = eval_input.eval_user_ids.size(0)
-        eval_user_ids_cpu = eval_input.eval_user_ids.cpu().numpy() 
-        
-        # Chuyển ground_truth (Dict) thành Tensor cùng thứ tự với eval_user_ids
-        targets = [eval_input.ground_truth[u.item()] for u in eval_input.eval_user_ids]
-        test_targets = torch.tensor(targets, device=self.device).view(-1, 1)
+        rng = np.random.RandomState(seed)
+        n_eval = eval_input.eval_user_ids.size(0)
+        n_items = eval_input.item_embeddings.size(0)
+        n_cand = 1 + self.num_neg_samples
 
-        # 3. Khởi tạo Metrics trên GPU
-        metrics_gpu = {f'Recall@{k}': torch.tensor(0.0, device=self.device) for k in self.ks}
-        metrics_gpu.update({f'NDCG@{k}': torch.tensor(0.0, device=self.device) for k in self.ks})
+        use_fp16 = self.device.type == "cuda"
+        dtype = torch.float16 if use_fp16 else torch.float32
+        item_embs = eval_input.item_embeddings.to(
+            device=self.device, dtype=dtype
+        )
 
-        ranks = torch.arange(1, self.max_k + 1, device=self.device).float()
-        ndcg_weights = 1.0 / torch.log2(ranks + 1.0)
+        metrics_sum: dict[str, float] = {
+            f"{m}@{k}": 0.0 for m in ("Recall", "NDCG") for k in self.ks
+        }
 
-        # 4. Batched Processing
-        for i in range(0, n_users_eval, batch_size):
-            u_batch_cpu = eval_user_ids_cpu[i:i+batch_size]
-            target_batch = test_targets[i:i+batch_size]
-            
-            # Theo contract, user_embeddings đã có shape (num_eval_users, d) 
-            # nên ta có thể slice trực tiếp theo index i thay vì tìm theo user_id
-            u_batch_embs = user_embs[i:i+batch_size]
-            
-            # Dot-product Scores
-            scores = torch.matmul(u_batch_embs, item_embs.T)
-            
-            # Train Masking (-inf) sử dụng exclude_items
-            for batch_idx, user_id in enumerate(u_batch_cpu):
-                if user_id in eval_input.exclude_items:
-                    interacted_items = list(eval_input.exclude_items[user_id])
-                    scores[batch_idx, interacted_items] = -1e9
+        for start in range(0, n_eval, batch_size):
+            end = min(start + batch_size, n_eval)
+            bs = end - start
+            batch_uids = eval_input.eval_user_ids[start:end]
 
-            # Top-K & Hits
-            _, topk_indices = torch.topk(scores, k=self.max_k, dim=-1)
-            hits = (topk_indices == target_batch) 
-            
+            # ── candidate matrix:  col 0 = positive, cols 1.. = negatives
+            uid_list = batch_uids.tolist()
+            pos_ids = np.array(
+                [eval_input.ground_truth[uid] for uid in uid_list],
+                dtype=np.int64,
+            )
+            neg_ids = rng.randint(0, n_items, size=(bs, self.num_neg_samples))
+
+            # fix rare collision where a negative == positive
+            collision = neg_ids == pos_ids[:, None]
+            n_collision = int(collision.sum())
+            if n_collision > 0:
+                neg_ids[collision] = rng.randint(0, n_items, size=n_collision)
+
+            candidates = np.empty((bs, n_cand), dtype=np.int64)
+            candidates[:, 0] = pos_ids
+            candidates[:, 1:] = neg_ids
+
+            cand_t = torch.from_numpy(candidates).to(self.device)
+            cand_embs = item_embs[cand_t]          # (bs, n_cand, d)
+            batch_uembs = eval_input.user_embeddings[start:end].to(
+                device=self.device, dtype=dtype
+            )
+
+            scores = torch.sum(
+                batch_uembs.unsqueeze(1) * cand_embs, dim=-1
+            )  
+
+            pos_score = scores[:, 0:1]                    
+            rank = (scores > pos_score).sum(dim=-1) + 1   
+
             for k in self.ks:
-                hits_k = hits[:, :k] 
-                metrics_gpu[f'Recall@{k}'] += hits_k.sum()
-                ndcg_k_scores = hits_k * ndcg_weights[:k]
-                metrics_gpu[f'NDCG@{k}'] += ndcg_k_scores.sum()
+                hit = (rank <= k).float()
+                metrics_sum[f"Recall@{k}"] += hit.sum().item()
+                ndcg = torch.where(
+                    rank <= k,
+                    1.0 / torch.log2(rank.float() + 1.0),
+                    torch.tensor(0.0, device=self.device),
+                )
+                metrics_sum[f"NDCG@{k}"] += ndcg.sum().item()
 
-        # 5. Kéo kết quả về CPU
-        metrics = {k: (v.item() / n_users_eval) for k, v in metrics_gpu.items()}
-            
-        return metrics
+            del batch_uembs, cand_embs, scores, cand_t, candidates, neg_ids
 
-def run_testpass():
-    print("Khởi chạy Testpass với EvalInput Contract...")
-    
-    n_users_eval = 1_050_000 # Gần khớp với 1,052,774 users của bạn
-    n_items_total = 50_000
-    dim = 128 # Đổi thành 128 cho khớp với EMBED_DIM trong contracts.py
-    device = 'cuda' if torch.cuda.is_available() else 'cpu'
-    
-    print(f"Đang tạo EvalInput giả lập ({device.upper()})...")
-    
-    # Tạo dữ liệu giả khớp hoàn toàn với contract EvalInput
-    eval_user_ids = torch.arange(n_users_eval)
-    ground_truth = {i: i % n_items_total for i in range(n_users_eval)}
-    exclude_items = {i: [(i + 1) % n_items_total, (i + 2) % n_items_total] for i in range(n_users_eval)}
-    
+        del item_embs
+        gc.collect()
+        if self.device.type == "cuda":
+            torch.cuda.empty_cache()
+
+        return {k: v / n_eval for k, v in metrics_sum.items()}
+
+    @torch.no_grad()
+    def evaluate_full_ranking(
+        self,
+        eval_input: EvalInput,
+        batch_size: int = 512,
+    ) -> dict[str, float]:
+        eval_input.validate()
+
+        n_eval = eval_input.eval_user_ids.size(0)
+
+        use_fp16 = self.device.type == "cuda"
+        dtype = torch.float16 if use_fp16 else torch.float32
+        item_embs = eval_input.item_embeddings.to(
+            device=self.device, dtype=dtype
+        )
+
+        ranks_range = torch.arange(
+            1, self.max_k + 1, device=self.device
+        ).float()
+        ndcg_weights = 1.0 / torch.log2(ranks_range + 1.0)
+
+        metrics_sum: dict[str, float] = {
+            f"{m}@{k}": 0.0 for m in ("Recall", "NDCG") for k in self.ks
+        }
+
+        for start in range(0, n_eval, batch_size):
+            end = min(start + batch_size, n_eval)
+            batch_uids = eval_input.eval_user_ids[start:end]
+            batch_uembs = eval_input.user_embeddings[start:end].to(
+                device=self.device, dtype=dtype
+            )
+
+            scores = torch.matmul(batch_uembs, item_embs.T)  
+            mask_rows: list[int] = []
+            mask_cols: list[int] = []
+            for idx, uid in enumerate(batch_uids.tolist()):
+                items = eval_input.exclude_items.get(uid)
+                if items:
+                    mask_rows.extend([idx] * len(items))
+                    mask_cols.extend(items)
+            if mask_rows:
+                scores[mask_rows, mask_cols] = -1e9
+
+            targets = torch.tensor(
+                [eval_input.ground_truth[uid] for uid in batch_uids.tolist()],
+                device=self.device,
+            ).view(-1, 1)
+
+            _, topk_idx = torch.topk(scores, k=self.max_k, dim=-1)
+            hits = topk_idx == targets  # (bs, max_k)
+
+            for k in self.ks:
+                hits_k = hits[:, :k].float()
+                metrics_sum[f"Recall@{k}"] += hits_k.sum().item()
+                metrics_sum[f"NDCG@{k}"] += (
+                    hits_k * ndcg_weights[:k]
+                ).sum().item()
+
+            del batch_uembs, scores, topk_idx, hits
+
+        del item_embs
+        gc.collect()
+        if self.device.type == "cuda":
+            torch.cuda.empty_cache()
+
+        return {k: v / n_eval for k, v in metrics_sum.items()}
+
+
+    def evaluate(
+        self,
+        eval_input: EvalInput,
+        batch_size: int = 2048,
+        mode: str = "sampled",
+        seed: int = 42,
+    ) -> dict[str, float]:
+        if mode == "sampled":
+            return self.evaluate_sampled(
+                eval_input, batch_size=batch_size, seed=seed,
+            )
+        if mode == "full":
+            return self.evaluate_full_ranking(
+                eval_input, batch_size=min(batch_size, 512),
+            )
+        raise ValueError(
+            f"Unknown mode {mode!r}; use 'sampled' or 'full'"
+        )
+
+FullRankingEvaluator = LeaveOneOutEvaluator
+
+def run_testpass() -> None:
+    """Lightweight smoke test — safe on CPU with <200 MB."""
+    print("Running evaluator testpass ...")
+
+    n_eval = 1_000
+    n_items = 5_000
+
     eval_input = EvalInput(
-        user_embeddings=torch.randn(n_users_eval, dim),
-        item_embeddings=torch.randn(n_items_total, dim),
-        eval_user_ids=eval_user_ids,
-        ground_truth=ground_truth,
-        exclude_items=exclude_items
+        user_embeddings=torch.randn(n_eval, EMBED_DIM),
+        item_embeddings=torch.randn(n_items, EMBED_DIM),
+        eval_user_ids=torch.arange(n_eval),
+        ground_truth={i: i % n_items for i in range(n_eval)},
+        exclude_items={
+            i: [(i + 1) % n_items, (i + 2) % n_items]
+            for i in range(n_eval)
+        },
     )
 
-    evaluator = FullRankingEvaluator(ks=[10, 20], device=device)
-    
-    print("Bắt đầu đánh giá...")
-    start_time = time.time()
-    
-    metrics = evaluator.evaluate(eval_input, batch_size=4096)
-    
-    duration = time.time() - start_time
-    
-    print("\n" + "="*40)
-    print("KẾT QUẢ ĐÁNH GIÁ (METRICS)")
-    for k, v in metrics.items():
-        print(f"   - {k}: {v:.4f}")
-        
-    print(f"\nXử lý {n_users_eval:,} users mất {duration:.2f} giây.")
-    print("="*40)
+    evaluator = LeaveOneOutEvaluator(ks=[10, 20, 50], device="cpu")
 
-if __name__ == '__main__':
+    t0 = time.time()
+    m_sampled = evaluator.evaluate(eval_input, mode="sampled")
+    t_sampled = time.time() - t0
+
+    print(f"\n{'Sampled (999 neg)':>25s}  ({t_sampled:.2f}s)")
+    for k, v in m_sampled.items():
+        print(f"  {k}: {v:.4f}")
+
+    t0 = time.time()
+    m_full = evaluator.evaluate(eval_input, mode="full", batch_size=512)
+    t_full = time.time() - t0
+
+    print(f"\n{'Full Ranking':>25s}  ({t_full:.2f}s)")
+    for k, v in m_full.items():
+        print(f"  {k}: {v:.4f}")
+
+    del eval_input
+    gc.collect()
+
+    print("\nTestpass PASSED")
+
+if __name__ == "__main__":
+    import argparse
+    logging.basicConfig(level=logging.INFO)
     parser = argparse.ArgumentParser()
-    parser.add_argument('--testpass', action='store_true')
+    parser.add_argument("--testpass", action="store_true")
     args = parser.parse_args()
     if args.testpass:
         run_testpass()
