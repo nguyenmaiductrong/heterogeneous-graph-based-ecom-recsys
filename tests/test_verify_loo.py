@@ -1,30 +1,33 @@
 import os
-import numpy as np
+import pandas as pd
 import pickle
 import pytest
 from scripts.verify_loo_split import verify_and_build_mask
 
 def test_verify_and_build_mask_logic(tmp_path):
-    """
-    Test logic đọc file numpy, gộp các hành vi, và tạo train_mask.pkl.
-    Đặc biệt test việc loại bỏ các user cold-start.
-    """
+
     data_dir = tmp_path / "loo"
     data_dir.mkdir()
 
-    val_users = np.array([1, 2])
-    test_users = np.array([1, 2])
-    np.save(data_dir / "val_user_idx.npy", val_users)
-    np.save(data_dir / "test_user_idx.npy", test_users)
+    val_df = pd.DataFrame({
+        'user_idx': [1, 2], 
+        'product_idx': [10, 20]
+    })
+    val_df.to_parquet(data_dir / "_val_pairs_parquet")
 
-    np.save(data_dir / "loo_view_train_src.npy", np.array([1, 99]))
-    np.save(data_dir / "loo_view_train_dst.npy", np.array([101, 901]))
+    test_df = pd.DataFrame({
+        'user_idx': [1, 2], 
+        'product_idx': [11, 21]
+    })
+    test_df.to_parquet(data_dir / "_test_pairs_parquet")
 
-    np.save(data_dir / "loo_cart_train_src.npy", np.array([1, 2]))
-    np.save(data_dir / "loo_cart_train_dst.npy", np.array([102, 201]))
-
-    np.save(data_dir / "loo_purchase_train_src.npy", np.array([2]))
-    np.save(data_dir / "loo_purchase_train_dst.npy", np.array([202]))
+    train_df = pd.DataFrame({
+        'user_idx': [1, 1, 2, 2, 99],
+        'product_idx': [101, 102, 201, 202, 901],
+        'event_type': ['view', 'purchase', 'cart', 'purchase', 'view'],
+        'unix_ts': [1000, 1001, 1002, 1003, 1004]
+    })
+    train_df.to_parquet(data_dir / "_train_all_parquet")
 
     verify_and_build_mask(str(data_dir))
 
@@ -35,8 +38,11 @@ def test_verify_and_build_mask_logic(tmp_path):
         train_mask = pickle.load(f)
 
     assert len(train_mask) == 2, f"Mask chứa {len(train_mask)} users, mong đợi chỉ có 2 core users."
+
     assert 1 in train_mask
     assert train_mask[1] == {101, 102}, "Gộp hành vi cho User 1 bị sai"
+    
     assert 2 in train_mask
     assert train_mask[2] == {201, 202}, "Gộp hành vi cho User 2 bị sai"
+
     assert 99 not in train_mask, "Lỗi nghiêm trọng: User cold-start chưa bị lọc bỏ khỏi train_mask!"
