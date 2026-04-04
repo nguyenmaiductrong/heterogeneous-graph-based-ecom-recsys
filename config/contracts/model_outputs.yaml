@@ -1,0 +1,99 @@
+version: "1.0"
+name: model_outputs
+owner: team-data
+description: >
+  Contracts for model output artifacts used in training, evaluation, and serving.
+  Covers GNNOutput, SVDFactors, GatedOutput, LossOutput, EvalInput, and ServingArtifacts.
+
+model_config:
+  embed_dim: 128
+  num_heads: 4
+  head_dim: 32        # embed_dim // num_heads
+  num_gnn_layers: 2
+  low_rank: 16        # r for A_phi @ B_beta^T
+  svd_rank: 256       # q for randomized SVD
+
+outputs:
+  - name: GNNOutput
+    description: Embeddings produced after GNN message passing
+    fields:
+      - name: per_behavior_emb
+        type: dict
+        description: >
+          Per-behavior embeddings before hierarchy gating.
+          Keys: [view, cart, purchase]. Each maps to {user: (B, 128), product: (B, 128)}
+      - name: final_user_emb
+        type: float_array
+        shape: [batch_size, 128]
+        description: Final user embedding after multi-order concat + projection
+      - name: final_item_emb
+        type: float_array
+        shape: [batch_size, 128]
+        description: Final item embedding after multi-order concat + projection
+
+  - name: SVDFactors
+    description: Precomputed SVD factors for contrastive learning augmentation
+    fields:
+      - name: US
+        type: dict
+        description: "{behavior: Tensor(num_users, 256)} — U @ S factors"
+      - name: VS
+        type: dict
+        description: "{behavior: Tensor(num_items, 256)} — V @ S factors"
+
+  - name: GatedOutput
+    description: Output after hierarchy gating + contrastive learning
+    fields:
+      - name: gated_user_emb
+        type: float_array
+        shape: [batch_users, 128]
+      - name: gated_item_emb
+        type: float_array
+        shape: [batch_items, 128]
+      - name: cl_loss
+        type: float
+        description: Scalar contrastive learning loss
+
+  - name: LossOutput
+    description: Multi-task loss breakdown
+    fields:
+      - name: total_loss
+        type: float
+        description: Combined loss — call .backward() on this
+      - name: bpr_loss
+        type: float
+        description: Bayesian Personalized Ranking loss
+      - name: cl_loss
+        type: float
+        description: Contrastive learning loss
+      - name: reg_loss
+        type: float
+        description: L2 regularization loss
+
+  - name: ServingArtifacts
+    description: File paths for serving the trained model
+    fields:
+      - name: user_embeddings_path
+        type: string
+        default: user_embeddings.npy
+      - name: item_embeddings_path
+        type: string
+        default: item_embeddings.npy
+      - name: faiss_index_path
+        type: string
+        default: item_index.faiss
+      - name: user_id_map_path
+        type: string
+        default: user_id_map.json
+      - name: item_id_map_path
+        type: string
+        default: item_id_map.json
+      - name: product_meta_path
+        type: string
+        default: products.parquet
+
+quality:
+  - rule: all embedding tensors must have last dim == 128
+  - rule: SVD tensors must have last dim == 256
+  - rule: all loss values must be scalar tensors (dim == 0)
+  - rule: serving artifact files must exist before inference
