@@ -1,4 +1,3 @@
-
 from dataclasses import dataclass
 
 import torch
@@ -30,12 +29,13 @@ def _edge_index_to_csr(
     *,
     dedupe: bool,
 ) -> tuple[Tensor, Tensor]:
+    device = edge_index.device
     if edge_index.numel() == 0:
-        ptr = torch.zeros(num_src + 1, dtype=torch.long, device=edge_index.device)
+        ptr = torch.zeros(num_src + 1, dtype=torch.long, device=device)
         return ptr, edge_index.new_empty((0,), dtype=torch.long)
 
-    row = edge_index[0].long()
-    col = edge_index[1].long()
+    row = edge_index[0].long().cpu()
+    col = edge_index[1].long().cpu()
     if dedupe:
         pairs = torch.stack([row, col], dim=1)
         pairs = torch.unique(pairs, dim=0, sorted=True)
@@ -46,9 +46,9 @@ def _edge_index_to_csr(
         col = col[order]
 
     counts = torch.bincount(row, minlength=num_src)
-    ptr = torch.zeros(num_src + 1, dtype=torch.long, device=edge_index.device)
+    ptr = torch.zeros(num_src + 1, dtype=torch.long)
     ptr[1:] = counts.cumsum(dim=0)
-    return ptr, col
+    return ptr.to(device), col.to(device)
 
 
 def _infer_num_nodes(
