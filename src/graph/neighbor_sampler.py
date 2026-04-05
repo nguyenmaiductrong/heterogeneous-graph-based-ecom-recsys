@@ -13,14 +13,13 @@ _USER_BEHAVIOR_RELS: tuple[tuple[str, str, str], ...] = (
     ("user", "purchase", "product"),
 )
 _PRODUCT_TO_CATEGORY: tuple[str, str, str] = ("product", "belongs_to", "category")
-_PRODUCT_TO_BRAND: tuple[str, str, str] = ("product", "has_brand", "brand")
+_PRODUCT_TO_BRAND: tuple[str, str, str] = ("product", "producedBy", "brand")
 
 _RELATION_ALIASES: dict[str, tuple[str, str, str]] = {
     "belongs_to": _PRODUCT_TO_CATEGORY,
     "belongsTo": _PRODUCT_TO_CATEGORY,
     "category": _PRODUCT_TO_CATEGORY,
-    "has_brand": _PRODUCT_TO_BRAND,
-    "hasBrand": _PRODUCT_TO_BRAND,
+    "producedBy": _PRODUCT_TO_BRAND,
     "brand": _PRODUCT_TO_BRAND,
 }
 
@@ -425,7 +424,7 @@ class BehaviorAwareNeighborSampler:
             ("product", "rev_purchase", "user"): (e_rev_purchase, None),
             ("product", "belongs_to", "category"): (_ei(pc_src, pc_dst), _attr(pc_tag)),
             ("category", "contains", "product"): (_ei(pc_dst, pc_src), _attr(pc_tag)),
-            ("product", "has_brand", "brand"): (_ei(pb_src, pb_dst), _attr(pb_tag)),
+            ("product", "producedBy", "brand"): (_ei(pb_src, pb_dst), _attr(pb_tag)),
             ("brand", "brands", "product"): (_ei(pb_dst, pb_src), _attr(pb_tag)),
         }
 
@@ -496,7 +495,7 @@ class BehaviorAwareNeighborSampler:
             return brand_g2l[k]
 
         beh_edges = {"view": e_view, "cart": e_cart, "purchase": e_purchase}
-        has_brand_csr = self._has_csr(_PRODUCT_TO_BRAND)
+        produced_by_csr = self._has_csr(_PRODUCT_TO_BRAND)
 
         for bi in range(bsz):
             u_global = int(user_seeds[bi].item())
@@ -524,7 +523,7 @@ class BehaviorAwareNeighborSampler:
                         cl = ensure_category(cg, bi)
                         e_pc.append((pl, cl, bid))
 
-                    if has_brand_csr:
+                    if produced_by_csr:
                         b_ptr, b_cols = self._csr[_PRODUCT_TO_BRAND]
                         lo3 = int(b_ptr[pg].item())
                         hi3 = int(b_ptr[pg + 1].item())
@@ -585,7 +584,7 @@ class BehaviorAwareNeighborSampler:
             ("product", "rev_purchase", "user"): (ep.flip(0) if ep.size(1) > 0 else _empty2, None),
             ("product", "belongs_to", "category"): (_ei(pc_s, pc_d), _attr(pc_t)),
             ("category", "contains", "product"): (_ei(pc_d, pc_s), _attr(pc_t)),
-            ("product", "has_brand", "brand"): (_ei(pb_s, pb_d), _attr(pb_t)),
+            ("product", "producedBy", "brand"): (_ei(pb_s, pb_d), _attr(pb_t)),
             ("brand", "brands", "product"): (_ei(pb_d, pb_s), _attr(pb_t)),
         }
 
@@ -640,7 +639,7 @@ class BehaviorAwareNeighborSampler:
             ("product", "rev_purchase", "user"): (_empty2, None),
             ("product", "belongs_to", "category"): (_ei(pc_src, pc_dst), _attr(pc_tag)),
             ("category", "contains", "product"): (_ei(pc_dst, pc_src), _attr(pc_tag)),
-            ("product", "has_brand", "brand"): (_ei(pb_src, pb_dst), _attr(pb_tag)),
+            ("product", "producedBy", "brand"): (_ei(pb_src, pb_dst), _attr(pb_tag)),
             ("brand", "brands", "product"): (_ei(pb_dst, pb_src), _attr(pb_tag)),
         }
 

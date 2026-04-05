@@ -26,7 +26,7 @@ RELATION_TYPES: List[Tuple[str, str, str]] = [
     ("product",  "rev_purchase","user"),
     ("product",  "belongs_to", "category"),
     ("category", "contains",   "product"),
-    ("product",  "has_brand",  "brand"),
+    ("product",  "producedBy",  "brand"),
     ("brand",    "brands",     "product"),
 ]
 
@@ -217,14 +217,14 @@ def _self_test() -> None:
             ("user","cart","product"):        torch.randint(0, Nu, (2, 300)),
             ("user","purchase","product"):    torch.randint(0, Nu, (2, 100)),
             ("product","belongs_to","category"): torch.randint(0, Ni, (2, 500)),
-            ("product","has_brand","brand"):  torch.randint(0, Ni, (2, 500)),
+            ("product","producedBy","brand"):  torch.randint(0, Ni, (2, 500)),
         },
         edge_behavior_origin={
             ("user","view","product"):       torch.zeros(1000, dtype=torch.long),
             ("user","cart","product"):        torch.ones(300, dtype=torch.long),
             ("user","purchase","product"):    torch.full((100,), 2, dtype=torch.long),
             ("product","belongs_to","category"): torch.randint(0, 3, (500,)),
-            ("product","has_brand","brand"):  torch.randint(0, 3, (500,)),
+            ("product","producedBy","brand"):  torch.randint(0, 3, (500,)),
         },
         target_user_indices=torch.randint(0, Nu, (B,)),
         node_id_map={t: torch.arange(n) for t, n in
