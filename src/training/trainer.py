@@ -1,197 +1,502 @@
-import json
+"""
+Usage
+python -m src.training.trainer --config config/training.yaml
+python -m src.training.trainer --config config/training.yaml --device cpu
+"""
+from __future__ import annotations
+
 import logging
-import shutil
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Optional
 
-import numpy as np
 import torch
-import torch.nn.functional as F
-from torch.amp import GradScaler, autocast
+from torch.utils.data import Dataset, DataLoader
 
-from .losses import BPRTrainingStep
+from src.model.bagnn import BAGNNModel
+from src.core.contracts import BEHAVIOR_TYPES
+from src.graph.neighbor_sampler import BehaviorAwareNeighborSampler
+from src.training.losses import bpr_loss, MultiTaskBPRLoss
+from src.core.contracts import EvalInput
+from src.core.evaluator import LeaveOneOutEvaluator
 
 logger = logging.getLogger(__name__)
 
 
-class Trainer:
-    """
-    config keys:
-        epochs          (int)              : max training epochs
-        patience        (int)              : early stopping patience
-        save_dir        (str)              : directory to save checkpoints
-        bpr_step        (BPRTrainingStep)  : training step handler
-        amp             (bool, optional)   : enable AMP, default True
-    """
+# Config
+@dataclass
+class TrainConfig:
+    epochs: int = 30
+    batch_size: int = 512
+    lr: float = 1e-3
+    weight_decay: float = 1e-5
+    l2_lambda: float = 1e-5
+    num_neg: int = 1
+    max_grad_norm: float = 1.0
+    amp: bool = True
+    patience: int = 5
+    eval_every: int = 1
+    eval_batch_size: int = 512
+    num_workers: int = 4
+    save_dir: str = "checkpoints/rees46"
 
-    def __init__(self, model, optimizer, train_loader, val_loader, device, config):
-        self.model = model
-        self.optimizer = optimizer
-        self.train_loader = train_loader
-        self.val_loader = val_loader
-        self.device = device
-        self.config = config
+    @classmethod
+    def from_yaml(cls, cfg: dict) -> "TrainConfig":
+        t = cfg.get("training", {})
+        return cls(
+            epochs=t.get("epochs", cls.epochs),
+            batch_size=t.get("batch_size", cls.batch_size),
+            lr=t.get("lr", cls.lr),
+            weight_decay=t.get("weight_decay", cls.weight_decay),
+            l2_lambda=t.get("l2_lambda", cls.l2_lambda),
+            num_neg=t.get("num_neg", cls.num_neg),
+            max_grad_norm=t.get("max_grad_norm", cls.max_grad_norm),
+            amp=t.get("amp", cls.amp),
+            patience=t.get("patience", cls.patience),
+            eval_every=t.get("eval_every", cls.eval_every),
+            eval_batch_size=t.get("eval_batch_size", cls.eval_batch_size),
+            num_workers=t.get("num_workers", cls.num_workers),
+            save_dir=t.get("save_dir", cls.save_dir),
+        )
 
-        self.amp_enabled: bool = config.get("amp", True)
-        self.bpr_step: BPRTrainingStep = config["bpr_step"]
 
-        if self.amp_enabled and hasattr(self.bpr_step, "scaler"):
-            self.scaler: GradScaler = self.bpr_step.scaler
-        else:
-            self.scaler = GradScaler("cuda", enabled=self.amp_enabled)
+def load_yaml_config(path: str) -> dict:
+    import yaml
+    with open(path) as f:
+        return yaml.safe_load(f)
 
-        # Early stopping 
-        self.best_recall: float = -float("inf")
-        self.best_epoch: int = 0
-        self.patience_counter: int = 0
 
-        # Checkpoint directory
-        self.save_dir = Path(config["save_dir"])
-        self.save_dir.mkdir(parents=True, exist_ok=True)
+# Checkpoint helpers
+def _find_latest_checkpoint(save_dir: Path) -> Optional[Path]:
+    ckpts = sorted(save_dir.glob("epoch_*.pt"))
+    return ckpts[-1] if ckpts else None
 
-    def save_checkpoint(self, epoch: int, is_best: bool = False) -> None:
-        state = {
+
+def _save_checkpoint(
+    save_dir: Path,
+    epoch: int,
+    model: BAGNNModel,
+    optimizer: torch.optim.Optimizer,
+    scaler: torch.amp.GradScaler,
+    loss: float,
+    metrics: dict,
+) -> None:
+    torch.save(
+        {
             "epoch": epoch,
-            "model_state_dict": self.model.state_dict(),
-            "optimizer_state_dict": self.optimizer.state_dict(),
-            "scaler_state_dict": self.scaler.state_dict(),
-            "best_recall": self.best_recall,
-        }
-        latest_path = self.save_dir / "checkpoint_latest.pt"
-        torch.save(state, latest_path)
-        logger.info(f"[Epoch {epoch}] Latest checkpoint -> {latest_path}")
+            "model_state_dict": model.state_dict(),
+            "optimizer_state_dict": optimizer.state_dict(),
+            "scaler_state_dict": scaler.state_dict(),
+            "loss": loss,
+            "metrics": metrics,
+        },
+        save_dir / f"epoch_{epoch:03d}.pt",
+    )
 
-        if is_best:
-            best_path = self.save_dir / "checkpoint_best.pt"
-            torch.save(state, best_path)
-            logger.info(f"[Epoch {epoch}] Best checkpoint -> {best_path}")
 
-    def load_checkpoint(self, checkpoint_path: str) -> int:
-        ckpt = torch.load(checkpoint_path, map_location=self.device, weights_only=False)
-        self.model.load_state_dict(ckpt["model_state_dict"])
-        self.optimizer.load_state_dict(ckpt["optimizer_state_dict"])
-        self.scaler.load_state_dict(ckpt["scaler_state_dict"])
-        self.best_recall = ckpt.get("best_recall", -float("inf"))
-        epoch = int(ckpt["epoch"])
-        logger.info(f"Resumed from '{checkpoint_path}' at epoch {epoch}")
-        return epoch
+def _load_checkpoint(
+    ckpt_path: Path,
+    model: BAGNNModel,
+    optimizer: torch.optim.Optimizer,
+    scaler: torch.amp.GradScaler,
+    device: torch.device,
+) -> int:
+    ckpt = torch.load(ckpt_path, map_location=device)
+    model.load_state_dict(ckpt["model_state_dict"])
+    optimizer.load_state_dict(ckpt["optimizer_state_dict"])
+    scaler.load_state_dict(ckpt["scaler_state_dict"])
+    resumed_epoch = int(ckpt["epoch"])
+    logger.info("Resumed from %s (epoch %d, loss=%.4f)", ckpt_path, resumed_epoch, ckpt.get("loss", float("nan")))
+    return resumed_epoch + 1
 
-    def train_epoch(self) -> float:
-        self.model.train()
-        total_loss = 0.0
-        num_batches = 0
 
-        for batch in self.train_loader:
-            graph_data = batch["graph"].to(self.device)
-            interactions = {
-                beh: {k: v.to(self.device) for k, v in beh_data.items()}
-                for beh, beh_data in batch["interactions"].items()
-            }
+# Dataset
+class InteractionDataset(Dataset):
+    def __init__(self, triplets: torch.Tensor) -> None:
+        assert triplets.ndim == 2 and triplets.size(1) == 3
+        self.triplets = triplets
 
-            with autocast("cuda", enabled=self.amp_enabled):
-                user_emb, item_emb_all = self.model(graph_data)  # [N_u,d], [N_i,d]
+    def __len__(self) -> int:
+        return len(self.triplets)
 
-            log_dict = self.bpr_step.step(
-                model=self.model,
-                optimizer=self.optimizer,
-                batch=interactions,
-                user_emb=user_emb,
-                item_emb_all=item_emb_all,
-            )
+    def __getitem__(self, idx: int) -> torch.Tensor:
+        return self.triplets[idx]
 
-            total_loss += log_dict.get("loss/total", 0.0)
-            num_batches += 1
 
-        return total_loss / max(num_batches, 1)
+# train_epoch
+def train_epoch(
+    model: BAGNNModel,
+    sampler: BehaviorAwareNeighborSampler,
+    dataloader: DataLoader,
+    optimizer: torch.optim.Optimizer,
+    loss_fn: MultiTaskBPRLoss,
+    scaler: torch.amp.GradScaler,
+    device: torch.device,
+    num_neg: int = 1,
+    max_grad_norm: float = 1.0,
+    amp: bool = True,
+) -> dict[str, float]:
+    """One full pass over the training set."""
+    model.train()
+    total_loss = 0.0
+    n_steps = 0
 
-    @torch.no_grad()
-    def validate(self) -> tuple[float, float, float]:
-        self.model.eval()
-        total_loss = 0.0
-        hits_at_10 = 0
-        hits_at_20 = 0
-        num_users = 0
+    for raw_batch in dataloader:
+        raw_batch = raw_batch.to(device)
+        users_g = raw_batch[:, 0]
+        items_g = raw_batch[:, 1]
+        beh_ids = raw_batch[:, 2]
 
-        for batch in self.val_loader:
-            graph_data = batch["graph"].to(self.device)
-            interactions = {
-                beh: {k: v.to(self.device) for k, v in beh_data.items()}
-                for beh, beh_data in batch["interactions"].items()
-            }
+        unique_users = users_g.unique()
+        subgraph = sampler.sample(unique_users, seed_type="user").to(device)
 
-            with autocast("cuda", enabled=self.amp_enabled):
-                user_emb, item_emb_all = self.model(graph_data)  # [N_u,d], [N_i,d]
+        optimizer.zero_grad(set_to_none=True)
 
-            if "purchase" not in interactions:
+        with torch.amp.autocast("cuda", enabled=amp):
+            user_emb, item_emb = model(subgraph)
+
+            user_x = subgraph["user"].x.contiguous()
+            u_loc = torch.searchsorted(user_x, users_g)
+
+            prod_x = subgraph["product"].x
+            sorted_px, sort_ord = prod_x.sort()
+            pos_p = torch.searchsorted(sorted_px, items_g).clamp(max=sorted_px.size(0) - 1)
+            found_p = sorted_px[pos_p] == items_g
+            pp_loc = sort_ord[pos_p]
+
+            if not found_p.any():
                 continue
 
-            users = interactions["purchase"]["user"]       # [B]
-            pos_items = interactions["purchase"]["pos_item"]  # [B]
+            u_loc = u_loc[found_p]
+            pp_loc = pp_loc[found_p]
+            bev = beh_ids[found_p]
 
-            u_emb = user_emb[users]          # [B, d]
-            pos_emb = item_emb_all[pos_items]  # [B, d]
+            N_items = item_emb.size(0)
+            behavior_losses: dict[str, torch.Tensor] = {}
 
-            neg_idx = torch.randint(
-                0, item_emb_all.shape[0], (users.shape[0],), device=self.device
-            )
-            neg_emb = item_emb_all[neg_idx]   # [B, d]
-            pos_scores = (u_emb * pos_emb).sum(dim=-1, keepdim=True)  # [B,1]
-            neg_scores = (u_emb * neg_emb).sum(dim=-1, keepdim=True)  # [B,1]
-            val_loss_batch = -F.logsigmoid(pos_scores - neg_scores).mean()
-            total_loss += val_loss_batch.item()
+            for beh_id, beh_name in enumerate(BEHAVIOR_TYPES):
+                mask = bev == beh_id
+                if not mask.any():
+                    continue
 
-            # Recall@K via full-catalogue ranking
-            scores = u_emb @ item_emb_all.T                       # [B, N_i]
-            pos_score_vals = scores.gather(1, pos_items.unsqueeze(1))  # [B, 1]
-            # rank = number of items scored >= positive item score
-            ranks = (scores >= pos_score_vals).sum(dim=-1)         # [B]
+                u_b = u_loc[mask]
+                pp_b = pp_loc[mask]
+                B_b = u_b.size(0)
 
-            hits_at_10 += (ranks <= 10).sum().item()
-            hits_at_20 += (ranks <= 20).sum().item()
-            num_users += users.shape[0]
+                neg_loc = torch.randint(0, N_items, (B_b, num_neg), device=device)
 
-        recall_at_10 = hits_at_10 / max(num_users, 1)
-        recall_at_20 = hits_at_20 / max(num_users, 1)
-        avg_loss = total_loss / max(len(self.val_loader), 1)
-        return avg_loss, recall_at_10, recall_at_20
+                u_emb_b = user_emb[u_b]
+                pos_emb_b = item_emb[pp_b]
+                neg_emb_b = item_emb[neg_loc]
 
-    def train(self, resume_from: str | None = None) -> None:
-        start_epoch = 0
-        if resume_from:
-            start_epoch = self.load_checkpoint(resume_from)
+                pos_s = (u_emb_b * pos_emb_b).sum(-1, keepdim=True)
+                neg_s = torch.bmm(neg_emb_b, u_emb_b.unsqueeze(-1)).squeeze(-1)
 
-        for epoch in range(start_epoch, self.config["epochs"]):
-            train_loss = self.train_epoch()
+                behavior_losses[beh_name] = bpr_loss(pos_s, neg_s)
 
-            val_loss, recall_at_10, recall_at_20 = self.validate()
+        if not behavior_losses:
+            continue
 
-            logger.info(
-                f"Epoch {epoch:04d} | train_loss={train_loss:.4f} | "
-                f"val_loss={val_loss:.4f} | "
-                f"recall@10={recall_at_10:.4f} | recall@20={recall_at_20:.4f}"
-            )
+        l2 = model.embedding_l2_norm()
+        loss, log = loss_fn(behavior_losses, l2)
 
-            monitor_metric = recall_at_10
-            is_best = monitor_metric > self.best_recall
+        if amp:
+            scaler.scale(loss).backward()
+            scaler.unscale_(optimizer)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
+            scaler.step(optimizer)
+            scaler.update()
+        else:
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
+            optimizer.step()
 
-            if is_best:
-                self.best_recall = monitor_metric
-                self.best_epoch = epoch
-                self.patience_counter = 0
-            else:
-                self.patience_counter += 1
+        total_loss += log["loss/total"]
+        n_steps += 1
 
-            self.save_checkpoint(epoch, is_best=is_best)
+    return {"train/loss": total_loss / max(n_steps, 1)}
 
-            if self.patience_counter >= self.config["patience"]:
-                logger.info(
-                    f"Early stopping triggered at epoch {epoch}. "
-                    f"Best epoch: {self.best_epoch} | "
-                    f"best val_recall@10 = {self.best_recall:.4f}"
-                )
-                break
-            
-        logger.info(
-            f"Training complete. "
-            f"Best val_recall@10 = {self.best_recall:.4f} at epoch {self.best_epoch}."
+
+# Embedding export
+@torch.no_grad()
+def export_embeddings(
+    model: BAGNNModel,
+    sampler: BehaviorAwareNeighborSampler,
+    user_ids: torch.Tensor,
+    n_items: int,
+    device: torch.device,
+    batch_size: int = 512,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """
+    Returns
+    -------
+    user_emb : (N_u, d) CPU tensor — ordered by user_ids
+    item_emb : (n_items, d) CPU tensor
+    """
+    model.eval()
+    d = model.embed_dim
+
+    item_emb = torch.zeros(n_items, d)
+    for start in range(0, n_items, batch_size):
+        end = min(start + batch_size, n_items)
+        seeds = torch.arange(start, end, device=device)
+        sub = sampler.sample(seeds, seed_type="product").to(device)
+        with torch.amp.autocast("cuda", enabled=torch.cuda.is_available()):
+            _, item_local = model(sub)
+        item_emb[start:end] = item_local.float().cpu()
+
+    user_emb = torch.zeros(len(user_ids), d)
+    for start in range(0, len(user_ids), batch_size):
+        end = min(start + batch_size, len(user_ids))
+        seeds = user_ids[start:end].to(device)
+        sub = sampler.sample(seeds, seed_type="user").to(device)
+        with torch.amp.autocast("cuda", enabled=torch.cuda.is_available()):
+            u_local, _ = model(sub)
+        user_x = sub["user"].x
+        pos = torch.searchsorted(user_x, seeds)
+        user_emb[start:end] = u_local[pos].float().cpu()
+
+    return user_emb, item_emb
+
+
+# eval_epoch
+@torch.no_grad()
+def eval_epoch(
+    model: BAGNNModel,
+    sampler: BehaviorAwareNeighborSampler,
+    eval_user_ids: torch.Tensor,
+    ground_truth: dict[int, int],
+    exclude_items: dict[int, list[int]],
+    n_items: int,
+    evaluator: LeaveOneOutEvaluator,
+    device: torch.device,
+    batch_size: int = 512,
+) -> dict[str, float]:
+    user_emb, item_emb = export_embeddings(
+        model, sampler, eval_user_ids, n_items, device, batch_size
+    )
+    eval_input = EvalInput(
+        user_embeddings=user_emb,
+        item_embeddings=item_emb,
+        eval_user_ids=eval_user_ids,
+        ground_truth=ground_truth,
+        exclude_items=exclude_items,
+    )
+    return evaluator.evaluate(eval_input, batch_size=2048, mode="sampled")
+
+# Main training loop
+def train(
+    model: BAGNNModel,
+    sampler: BehaviorAwareNeighborSampler,
+    train_triplets: torch.Tensor,
+    eval_user_ids: torch.Tensor,
+    ground_truth: dict[int, int],
+    exclude_items: dict[int, list[int]],
+    n_items: int,
+    behavior_counts: dict[str, int],
+    cfg: TrainConfig,
+    device: torch.device,
+) -> None:
+    """Full training run with auto-resume and early stopping on NDCG@20."""
+    model.to(device)
+
+    dataset = InteractionDataset(train_triplets)
+    loader = DataLoader(
+        dataset,
+        batch_size=cfg.batch_size,
+        shuffle=True,
+        num_workers=cfg.num_workers,
+        pin_memory=device.type == "cuda",
+        drop_last=True,
+        persistent_workers=cfg.num_workers > 0,
+    )
+
+    loss_fn = MultiTaskBPRLoss(behavior_counts, l2_lambda=cfg.l2_lambda).to(device)
+    optimizer = torch.optim.Adam(model.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
+    scaler = torch.amp.GradScaler("cuda", enabled=cfg.amp)
+    evaluator = LeaveOneOutEvaluator(ks=[10, 20, 50], device=str(device))
+
+    save_dir = Path(cfg.save_dir)
+    save_dir.mkdir(parents=True, exist_ok=True)
+
+    start_epoch = 0
+    latest_ckpt = _find_latest_checkpoint(save_dir)
+    if latest_ckpt is not None:
+        start_epoch = _load_checkpoint(latest_ckpt, model, optimizer, scaler, device)
+
+    best_ndcg = -1.0
+    no_improve = 0
+    metrics = {}
+
+    for epoch in range(start_epoch, cfg.epochs):
+        train_log = train_epoch(
+            model, sampler, loader, optimizer, loss_fn, scaler, device,
+            num_neg=cfg.num_neg, max_grad_norm=cfg.max_grad_norm, amp=cfg.amp,
         )
+
+        row = f"Epoch {epoch:03d} | " + " | ".join(f"{k}={v:.4f}" for k, v in train_log.items())
+
+        if (epoch + 1) % cfg.eval_every == 0:
+            metrics = eval_epoch(
+                model, sampler,
+                eval_user_ids, ground_truth, exclude_items, n_items,
+                evaluator, device, cfg.eval_batch_size,
+            )
+            row += " | " + " | ".join(f"{k}={v:.4f}" for k, v in metrics.items())
+
+            ndcg20 = metrics.get("NDCG@20", 0.0)
+            if ndcg20 > best_ndcg:
+                best_ndcg = ndcg20
+                no_improve = 0
+                torch.save(
+                    {"epoch": epoch, "model_state_dict": model.state_dict(),
+                     "optimizer_state_dict": optimizer.state_dict(),
+                     "scaler_state_dict": scaler.state_dict(),
+                     "metrics": metrics},
+                    save_dir / "best.pt",
+                )
+                row += "  <- best"
+            else:
+                no_improve += 1
+
+        _save_checkpoint(save_dir, epoch, model, optimizer, scaler,
+                         train_log["train/loss"], metrics)
+        logger.info(row)
+
+        if no_improve >= cfg.patience:
+            logger.info("Early stopping at epoch %d. Best NDCG@20=%.4f", epoch, best_ndcg)
+            break
+
+    logger.info("Training complete. Best NDCG@20=%.4f", best_ndcg)
+
+
+# Entry point
+
+if __name__ == "__main__":
+    import argparse
+    import pickle
+    import numpy as np
+    import pandas as pd
+    from torch_geometric.data import HeteroData
+    from src.graph.neighbor_sampler import BehaviorAwareNeighborSampler, NeighborSamplerConfig
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s  %(levelname)-7s  %(message)s",
+        datefmt="%H:%M:%S",
+    )
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--config", default="config/training.yaml")
+    parser.add_argument("--device", default=None, help="Override device from config")
+    args = parser.parse_args()
+
+    cfg_dict = load_yaml_config(args.config)
+    train_cfg = TrainConfig.from_yaml(cfg_dict)
+
+    _device_str = args.device or cfg_dict.get("training", {}).get("device", "cuda")
+    device = torch.device(_device_str if torch.cuda.is_available() or _device_str == "cpu" else "cpu")
+    logger.info("Device: %s", device)
+
+    _DATA = cfg_dict["data"]["data_dir"]
+    _STRUCT = cfg_dict["data"]["struct_dir"]
+    NODE_COUNTS: dict[str, int] = cfg_dict["data"]["node_counts"]
+
+    def load_data():
+        def npy_ei(src_f, dst_f):
+            src = np.load(f"{_DATA}/{src_f}")
+            dst = np.load(f"{_DATA}/{dst_f}")
+            return torch.from_numpy(np.stack([src, dst])).long()
+
+        view_ei = npy_ei("loo_view_train_src.npy", "loo_view_train_dst.npy")
+        cart_ei = npy_ei("loo_cart_train_src.npy", "loo_cart_train_dst.npy")
+        purchase_ei = npy_ei("loo_purchase_train_src.npy", "loo_purchase_train_dst.npy")
+
+        pb = pd.read_parquet(f"{_STRUCT}/product_brand.parquet")
+        pc = pd.read_parquet(f"{_STRUCT}/product_category.parquet")
+        brand_ei = torch.from_numpy(pb[["product_idx", "brand_idx"]].values.T.copy()).long()
+        category_ei = torch.from_numpy(pc[["product_idx", "category_idx"]].values.T.copy()).long()
+
+        hetero = HeteroData()
+        for ntype, n in NODE_COUNTS.items():
+            hetero[ntype].x = torch.arange(n)
+            hetero[ntype].num_nodes = n
+
+        hetero[("user", "view", "product")].edge_index = view_ei
+        hetero[("user", "cart", "product")].edge_index = cart_ei
+        hetero[("user", "purchase", "product")].edge_index = purchase_ei
+        hetero[("product", "rev_view", "user")].edge_index = view_ei.flip(0)
+        hetero[("product", "rev_cart", "user")].edge_index = cart_ei.flip(0)
+        hetero[("product", "rev_purchase", "user")].edge_index = purchase_ei.flip(0)
+        hetero[("product", "belongs_to", "category")].edge_index = category_ei
+        hetero[("category", "contains", "product")].edge_index = category_ei.flip(0)
+        hetero[("product", "producedBy", "brand")].edge_index = brand_ei
+        hetero[("brand", "brands", "product")].edge_index = brand_ei.flip(0)
+
+        n_p = purchase_ei.size(1)
+        train_triplets = torch.stack([
+            purchase_ei[0],
+            purchase_ei[1],
+            torch.full((n_p,), 2, dtype=torch.long),
+        ], dim=1)
+
+        test_users = torch.from_numpy(np.load(f"{_DATA}/test_user_idx.npy")).long()
+        test_items = np.load(f"{_DATA}/test_product_idx.npy")
+        ground_truth = {int(u): int(i) for u, i in zip(test_users.tolist(), test_items.tolist())}
+
+        with open(f"{_DATA}/train_mask.pkl", "rb") as f:
+            raw_mask = pickle.load(f)
+        exclude_items = {int(k): list(int(x) for x in v) for k, v in raw_mask.items()}
+
+        behavior_counts = {
+            "view": int(view_ei.size(1)),
+            "cart": int(cart_ei.size(1)),
+            "purchase": n_p,
+        }
+
+        return hetero, train_triplets, test_users, ground_truth, exclude_items, behavior_counts
+
+    logger.info("Loading REES46 LOO data ...")
+    hetero, train_triplets, eval_user_ids, ground_truth, exclude_items, behavior_counts = load_data()
+    logger.info(
+        "users=%d  products=%d  train_purchase=%d  eval_users=%d",
+        NODE_COUNTS["user"], NODE_COUNTS["product"],
+        len(train_triplets), len(eval_user_ids),
+    )
+
+    m_cfg = cfg_dict.get("model", {})
+    s_cfg = cfg_dict.get("sampler", {})
+
+    sampler = BehaviorAwareNeighborSampler(
+        data=hetero,
+        num_nodes_dict=NODE_COUNTS,
+        config=NeighborSamplerConfig(
+            hop1_budget=s_cfg.get("hop1_budget", 10),
+            hop2_budget=s_cfg.get("hop2_budget", 5),
+        ),
+        device=device,
+    )
+
+    model = BAGNNModel(
+        n_nodes=NODE_COUNTS,
+        embed_dim=m_cfg.get("embed_dim", 128),
+        n_layers=m_cfg.get("n_layers", 2),
+        rank=m_cfg.get("rank", 16),
+        dropout=m_cfg.get("dropout", 0.1),
+    ).to(device)
+
+    n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    logger.info("Model params: %d (%.1fM)", n_params, n_params / 1e6)
+
+    train(
+        model=model,
+        sampler=sampler,
+        train_triplets=train_triplets,
+        eval_user_ids=eval_user_ids,
+        ground_truth=ground_truth,
+        exclude_items=exclude_items,
+        n_items=NODE_COUNTS["product"],
+        behavior_counts=behavior_counts,
+        cfg=train_cfg,
+        device=device,
+    )
