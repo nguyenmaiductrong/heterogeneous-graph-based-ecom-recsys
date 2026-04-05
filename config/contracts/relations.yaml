@@ -51,14 +51,14 @@ relation_types:
 
   # --- Product-Brand structural edges ---
   - src: product
-    edge: has_brand
+    edge: producedBy
     dst: brand
     description: Product is manufactured by a brand
 
   - src: brand
     edge: brands
     dst: product
-    description: Brand produces a product (reverse of has_brand)
+    description: Brand produces a product (reverse of producedBy)
 
 schema:
   - name: src_id
