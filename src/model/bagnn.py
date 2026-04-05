@@ -2,7 +2,7 @@
 BAGNN — Behavior-Aware Graph Neural Network
 ============================================
 Node types  : user, product, category, brand
-Edge types  : view, cart, purchase (+ reverses), belongs_to, contains, has_brand, brands
+Edge types  : view, cart, purchase (+ reverses), belongs_to, contains, producedBy, brands
 Embed dim   : 128  (EMBED_DIM)
 
 Tasks covered
@@ -44,7 +44,7 @@ BEHAVIOR_EDGES = [
 STRUCTURAL_EDGES = [
     ("product",  "belongs_to", "category"),
     ("category", "contains",   "product"),
-    ("product",  "has_brand",  "brand"),
+    ("product",  "producedBy",  "brand"),
     ("brand",    "brands",     "product"),
 ]
 
