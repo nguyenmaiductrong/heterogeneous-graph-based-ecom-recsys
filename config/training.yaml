@@ -1,0 +1,34 @@
+data:
+  data_dir: "data/mnt/data/rees46/processed/loo"
+  struct_dir: "data/mnt/data/rees46/processed/node_mappings"
+  node_counts:
+    user: 1964332
+    product: 311682
+    category: 14
+    brand: 6041
+
+model:
+  embed_dim: 128
+  n_layers: 2
+  rank: 16
+  dropout: 0.1
+
+sampler:
+  hop1_budget: 10
+  hop2_budget: 5
+
+training:
+  epochs: 30
+  batch_size: 512
+  lr: 1.0e-3
+  weight_decay: 1.0e-5
+  l2_lambda: 1.0e-5
+  num_neg: 1
+  max_grad_norm: 1.0
+  amp: true
+  patience: 5
+  eval_every: 1
+  eval_batch_size: 512
+  num_workers: 4
+  save_dir: "checkpoints/rees46"
+  device: "cuda"
