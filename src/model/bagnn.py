@@ -3,13 +3,10 @@ BAGNN — Behavior-Aware Graph Neural Network
 ============================================
 Node types  : user, product, category, brand
 Edge types  : view, cart, purchase (+ reverses), belongs_to, contains, producedBy, brands
-Embed dim   : 128  (EMBED_DIM)
 
-Tasks covered
--------------
-N1.1  W(φ,β) = W_base + A_φ @ B_β.T   — low-rank behavior-aware weight decomposition
-N1.2  BAGNNConv.forward()              — einsum-vectorized, 4-tuple attention
-N1.3  BAGNNLayer stack + BAGNNModel.forward() skeleton
+Core novelty: W(φ, β) = W_base + A_φ @ B_β.T
+  - Structural edges (belongs_to, producedBy) inherit β from upstream user behavior
+  - Per-edge beta computed via einsum to avoid O(E·d·d) materialization
 """
 
 from __future__ import annotations
@@ -18,19 +15,19 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch import Tensor
+from torch.utils.checkpoint import checkpoint as grad_checkpoint
 from torch_geometric.data import HeteroData
 from torch_geometric.utils import softmax
 from typing import Dict, Optional, Tuple
 
 # ---------------------------------------------------------------------------
-# Constants (mirror nodes.yaml / relations.yaml)
+# Constants
 # ---------------------------------------------------------------------------
 
 EMBED_DIM: int = 128
 
 NODE_TYPES = ["user", "product", "category", "brand"]
 
-# Behavior edges only (have behavior_origin ∈ {0,1,2})
 BEHAVIOR_EDGES = [
     ("user",    "view",         "product"),
     ("user",    "cart",         "product"),
@@ -40,18 +37,26 @@ BEHAVIOR_EDGES = [
     ("product", "rev_purchase", "user"),
 ]
 
-# Structural edges (no behavior_origin)
 STRUCTURAL_EDGES = [
     ("product",  "belongs_to", "category"),
     ("category", "contains",   "product"),
-    ("product",  "producedBy",  "brand"),
+    ("product",  "producedBy", "brand"),
     ("brand",    "brands",     "product"),
 ]
 
 ALL_EDGE_TYPES = BEHAVIOR_EDGES + STRUCTURAL_EDGES
 
-# behavior_origin values (view=0, cart=1, purchase=2)
 BEHAVIOR_ORIGIN: Dict[str, int] = {"view": 0, "cart": 1, "purchase": 2}
+
+# Precomputed for O(1) lookup in forward pass
+_REL_IDX: Dict[Tuple[str, str, str], int] = {et: i for i, et in enumerate(ALL_EDGE_TYPES)}
+
+# β index for each edge name: behavior edges → 0/1/2; structural/reverse → 3
+_BEH_IDX: Dict[str, int] = {
+    "view": 0, "cart": 1, "purchase": 2,
+    "rev_view": 0, "rev_cart": 1, "rev_purchase": 2,
+    "belongs_to": 3, "contains": 3, "producedBy": 3, "brands": 3,
+}
 
 
 # ---------------------------------------------------------------------------
@@ -61,66 +66,32 @@ BEHAVIOR_ORIGIN: Dict[str, int] = {"view": 0, "cart": 1, "purchase": 2}
 
 class BehaviorAwareWeight(nn.Module):
     """
-    Decomposes the message-passing weight matrix into a shared base plus a
-    low-rank behavior-specific correction:
+    W(φ, β) = W_base  +  A_φ  @  B_β.T
 
-        W(φ, β) = W_base  +  A_φ  @  B_β.T
-
-    Parameters
-    ----------
-    in_dim   : input feature dimension
-    out_dim  : output feature dimension
-    rank     : low-rank bottleneck dimension r  (r << in_dim)
-    n_phi    : number of node-type   specialisations  (|φ|)
-    n_beta   : number of behavior    specialisations  (|β|)
+    β ∈ {0=view, 1=cart, 2=purchase, 3=structural}
+    φ ∈ {0=user, 1=product, 2=category, 3=brand}
     """
 
     def __init__(
         self,
-        in_dim: int,
+        in_dim:  int,
         out_dim: int,
-        rank: int = 16,
-        n_phi: int = len(NODE_TYPES),
-        n_beta: int = 3,           # view / cart / purchase
+        rank:    int = 16,
+        n_phi:   int = len(NODE_TYPES),
+        n_beta:  int = 4,              # 0-2 behavior + 3 structural
     ) -> None:
         super().__init__()
-        self.in_dim  = in_dim
-        self.out_dim = out_dim
-        self.rank    = rank
-
-        # Shared base weight  (out_dim × in_dim)
         self.W_base = nn.Parameter(torch.empty(out_dim, in_dim))
-
-        # Node-type factors   A_φ  : n_phi  × out_dim × rank
         self.A = nn.Parameter(torch.empty(n_phi, out_dim, rank))
-
-        # Behavior factors    B_β  : n_beta × in_dim  × rank
         self.B = nn.Parameter(torch.empty(n_beta, in_dim, rank))
-
-        self._init_weights()
-
-    def _init_weights(self) -> None:
         nn.init.kaiming_uniform_(self.W_base)
         nn.init.kaiming_uniform_(self.A)
         nn.init.kaiming_uniform_(self.B)
 
     def forward(self, phi: int, beta: int) -> Tensor:
-        """
-        Returns W(φ, β) of shape (out_dim, in_dim).
-
-        Parameters
-        ----------
-        phi  : node-type   index  (0 = user, 1 = product, …)
-        beta : behavior    index  (0 = view, 1 = cart, 2 = purchase)
-               pass -1 for structural edges → returns W_base only
-        """
-        if beta < 0:
-            return self.W_base                          # structural edge
-
-        A_phi  = self.A[phi]                            # (out_dim, rank)
-        B_beta = self.B[beta]                           # (in_dim,  rank)
-        delta  = A_phi @ B_beta.T                       # (out_dim, in_dim)
-        return self.W_base + delta
+        """Returns W(φ, β) of shape (out_dim, in_dim). beta=-1 maps to β=3 (structural)."""
+        b_idx = beta if beta >= 0 else 3
+        return self.W_base + self.A[phi] @ self.B[b_idx].T
 
 
 # ---------------------------------------------------------------------------
@@ -131,154 +102,125 @@ class BAGNNConv(nn.Module):
     """
     Single BAGNN convolution layer.
 
-    For each target node t and each incoming edge relation r = (s, e, t):
-      1. Compute behavior-aware messages:   m_i = W(φ_s, β_e) @ h_i
-      2. Compute 4-tuple attention score:   α = att(h_src, h_dst, r_emb, β_emb)
-      3. Aggregate with softmax attention over neighbors.
-
-    The 4-tuple attention vector is:
-        [h_src || h_dst || r_emb || β_emb]
-    projected to a scalar via a learned vector a_att.
+    For behavior edges: uniform β per edge type.
+    For structural edges: per-edge β from edge_attr (behavior_origin inherited
+      from hop-1 sampling), enabling W(φ=product, β=view) vs W(φ=product, β=purchase).
     """
 
     def __init__(
         self,
-        in_dim:  int = EMBED_DIM,
-        out_dim: int = EMBED_DIM,
-        rank:    int = 16,
+        in_dim:      int = EMBED_DIM,
+        out_dim:     int = EMBED_DIM,
+        rank:        int = 16,
         n_relations: int = len(ALL_EDGE_TYPES),
     ) -> None:
         super().__init__()
         self.in_dim  = in_dim
         self.out_dim = out_dim
 
-        # N1.1 weight decomposition
-        self.baw = BehaviorAwareWeight(in_dim, out_dim, rank)
-
-        # Relation embeddings  r_emb  (one per edge type)
+        self.baw     = BehaviorAwareWeight(in_dim, out_dim, rank)
         self.rel_emb = nn.Embedding(n_relations, out_dim)
-
-        # Behavior embeddings  β_emb  (view / cart / purchase + structural=-1→idx 3)
-        self.beh_emb = nn.Embedding(4, out_dim)         # 0-2 behavior + 3 structural
-
-        # 4-tuple attention projection: [h_src || h_dst || r_emb || β_emb] → scalar
-        self.a_att = nn.Parameter(torch.empty(4 * out_dim))
+        self.beh_emb = nn.Embedding(4, out_dim)      # 0-2 behavior + 3 structural
+        self.a_att   = nn.Parameter(torch.empty(4 * out_dim))
+        self.norm    = nn.LayerNorm(out_dim)
         nn.init.xavier_uniform_(self.a_att.unsqueeze(0))
 
-        # Output normalisation
-        self.norm = nn.LayerNorm(out_dim)
-
-    # ------------------------------------------------------------------
-    def _relation_index(self, edge_type: Tuple[str, str, str]) -> int:
-        return ALL_EDGE_TYPES.index(edge_type)
-
-    def _beta_index(self, edge_name: str) -> int:
-        """Return behavior index (0-2) or 3 for structural."""
-        return BEHAVIOR_ORIGIN.get(edge_name.lstrip("rev_").rstrip("_").split("_")[0]
-                                   if edge_name.startswith("rev_")
-                                   else edge_name, 3)
-
-    # ------------------------------------------------------------------
     def forward(
         self,
-        x_dict:       Dict[str, Tensor],          # node embeddings per type
-        edge_index_dict: Dict[Tuple, Tensor],      # edge indices per relation
+        x_dict:          Dict[str, Tensor],
+        edge_index_dict: Dict[Tuple, Tensor],
+        edge_attr_dict:  Optional[Dict[Tuple, Tensor]] = None,
     ) -> Dict[str, Tensor]:
-        """
-        Returns updated node embeddings for every node type.
+        all_r_emb = self.rel_emb.weight   # (n_relations, out_dim)
+        all_b_emb = self.beh_emb.weight   # (4, out_dim)
 
-        Parameters
-        ----------
-        x_dict          : { node_type: Tensor (N_t, in_dim) }
-        edge_index_dict : { (src_type, edge, dst_type): Tensor (2, E) }
-
-        Returns
-        -------
-        out_dict : { node_type: Tensor (N_t, out_dim) }
-        """
-        # Accumulate messages per destination node type
         agg: Dict[str, Optional[Tensor]] = {t: None for t in NODE_TYPES}
-        cnt: Dict[str, int]              = {t: 0     for t in NODE_TYPES}
 
         for edge_type, edge_index in edge_index_dict.items():
             src_type, edge_name, dst_type = edge_type
 
             if src_type not in x_dict or dst_type not in x_dict:
                 continue
+            if edge_index.numel() == 0:
+                continue
 
-            src_idx, dst_idx = edge_index                          # (E,)
-            h_src = x_dict[src_type][src_idx]                     # (E, in_dim)
-            h_dst = x_dict[dst_type][dst_idx]                     # (E, in_dim)
+            src_idx, dst_idx = edge_index
+            h_src = x_dict[src_type][src_idx]
+            h_dst = x_dict[dst_type][dst_idx]
 
-            # ---- N1.1: behavior-aware weight ----
-            phi  = NODE_TYPES.index(src_type)
-            beta_raw = BEHAVIOR_ORIGIN.get(edge_name, -1)
-            W = self.baw(phi, beta_raw)                            # (out_dim, in_dim)
+            phi      = NODE_TYPES.index(src_type)
+            beta_raw = BEHAVIOR_ORIGIN.get(edge_name.removeprefix("rev_"), -1)
+            attr     = (edge_attr_dict or {}).get(edge_type)
 
-            # Messages via einsum: m_i = W @ h_src_i
-            # h_src : (E, in_dim)  →  msg : (E, out_dim)
-            msg = torch.einsum("oi,ei->eo", W, h_src)             # (E, out_dim)
+            if beta_raw < 0 and attr is not None and attr.numel() > 0:
+                # Structural edge with per-edge behavior_origin tags
+                origin = attr.view(-1).long().clamp(0, 2)
 
-            # ---- N1.2: 4-tuple attention ----
-            r_idx   = self._relation_index(edge_type)
-            b_idx   = self._beta_index(edge_name)
+                base_msg   = torch.einsum("oi,ei->eo", self.baw.W_base, h_src)
+                A_phi      = self.baw.A[phi]                              # (out_dim, rank)
+                # Avoid materializing (E, in_dim, rank) — compute mid per-group
+                mid = torch.zeros(origin.size(0), self.baw.B.size(-1),
+                                  device=h_src.device, dtype=h_src.dtype)
+                for b_idx in origin.unique():
+                    mask = origin == b_idx
+                    mid[mask] = (h_src[mask] @ self.baw.B[b_idx]).to(mid.dtype)  # (E_b, rank)
+                msg        = base_msg + mid @ A_phi.T
 
-            r_emb   = self.rel_emb(
-                torch.tensor(r_idx, device=h_src.device)
-            ).expand(h_src.size(0), -1)                           # (E, out_dim)
+                b_emb      = all_b_emb[origin]                        # (E, d) — per-edge
+                h_dst_proj = torch.einsum("oi,ei->eo", self.baw.W_base, h_dst)
+            else:
+                # Behavior edge or structural edge without attr: uniform β
+                beta_idx   = beta_raw if beta_raw >= 0 else 3
+                W          = self.baw(phi, beta_raw)
+                msg        = torch.einsum("oi,ei->eo", W, h_src)
+                b_emb      = None                                      # uniform; handled via scalar below
+                h_dst_proj = F.linear(h_dst, W)
 
-            b_emb   = self.beh_emb(
-                torch.tensor(b_idx, device=h_src.device)
-            ).expand(h_src.size(0), -1)                           # (E, out_dim)
+            # Fused attention: avoid materializing (E, 4*d) concat
+            # r_emb and possibly b_emb are uniform per edge-type → reduce to scalars
+            d = self.out_dim
+            a0, a1, a2, a3 = (self.a_att[:d], self.a_att[d:2*d],
+                               self.a_att[2*d:3*d], self.a_att[3*d:])
 
-            # Project W @ h_src to out_dim for attention tuple
-            h_src_proj = msg                                       # (E, out_dim)
-            h_dst_proj = F.linear(h_dst, W)                       # (E, out_dim)  reuse W
+            r_scalar = (all_r_emb[_REL_IDX[edge_type]] * a2).sum()   # scalar
 
-            att_input = torch.cat(
-                [h_src_proj, h_dst_proj, r_emb, b_emb], dim=-1
-            )                                                      # (E, 4*out_dim)
+            if beta_raw < 0 and attr is not None and attr.numel() > 0:
+                # per-edge b_emb
+                b_term = (b_emb * a3).sum(-1)                         # (E,)
+            else:
+                b_term = (all_b_emb[beta_idx] * a3).sum()             # scalar
 
-            # Scalar attention logit per edge
-            e = (att_input * self.a_att).sum(dim=-1)               # (E,)
-            alpha = softmax(e, dst_idx)                            # (E,)  PyG softmax
+            e = ((msg * a0).sum(-1)
+                 + (h_dst_proj * a1).sum(-1)
+                 + r_scalar
+                 + b_term)
+            alpha = softmax(e, dst_idx)
 
-            # Weighted messages
-            weighted_msg = alpha.unsqueeze(-1) * msg               # (E, out_dim)
-
-            # Scatter-add into destination
+            weighted = alpha.unsqueeze(-1) * msg
             N_dst = x_dict[dst_type].size(0)
             if agg[dst_type] is None:
-                agg[dst_type] = weighted_msg.new_zeros(N_dst, self.out_dim)
-            agg[dst_type].scatter_add_(
-                0,
-                dst_idx.unsqueeze(-1).expand_as(weighted_msg),
-                weighted_msg,
-            )
-            cnt[dst_type] += 1
+                agg[dst_type] = weighted.new_zeros(N_dst, self.out_dim)
+            agg[dst_type].scatter_add_(0, dst_idx.unsqueeze(-1).expand_as(weighted), weighted)
 
-        # Post-aggregate norm + residual (if dims match)
         out_dict: Dict[str, Tensor] = {}
         for t in NODE_TYPES:
             if agg[t] is not None:
                 h = self.norm(agg[t])
                 if t in x_dict and x_dict[t].shape == h.shape:
-                    h = h + x_dict[t]                              # residual
+                    h = h + x_dict[t]
                 out_dict[t] = F.elu(h)
             elif t in x_dict:
-                out_dict[t] = x_dict[t]                            # no edges → pass-through
+                out_dict[t] = x_dict[t]
 
         return out_dict
 
 
 # ---------------------------------------------------------------------------
-# N1.3 — BAGNNLayer stack + BAGNNModel skeleton
+# N1.3 — BAGNNLayer stack + BAGNNModel
 # ---------------------------------------------------------------------------
 
 class BAGNNLayer(nn.Module):
-    """
-    Stacks `n_layers` BAGNNConv layers with optional dropout between layers.
-    """
+    """Stacks `n_layers` BAGNNConv layers with dropout between layers."""
 
     def __init__(
         self,
@@ -291,13 +233,8 @@ class BAGNNLayer(nn.Module):
     ) -> None:
         super().__init__()
         assert n_layers >= 1
-
-        dims = (
-            [in_dim]
-            + [hid_dim] * (n_layers - 1)
-            + [out_dim]
-        )
-        self.convs = nn.ModuleList([
+        dims = [in_dim] + [hid_dim] * (n_layers - 1) + [out_dim]
+        self.convs   = nn.ModuleList([
             BAGNNConv(in_dim=dims[i], out_dim=dims[i + 1], rank=rank)
             for i in range(n_layers)
         ])
@@ -307,12 +244,28 @@ class BAGNNLayer(nn.Module):
         self,
         x_dict:          Dict[str, Tensor],
         edge_index_dict: Dict[Tuple, Tensor],
+        edge_attr_dict:  Optional[Dict[Tuple, Tensor]] = None,
     ) -> Dict[str, Tensor]:
         h = x_dict
         for i, conv in enumerate(self.convs):
-            h = conv(h, edge_index_dict)
+            # Gradient checkpointing: recompute activations during backward
+            # instead of storing them, halving peak activation memory.
+            if self.training:
+                # checkpoint requires tensor inputs; pass node tensors explicitly
+                node_types = list(h.keys())
+                node_vals  = [h[t] for t in node_types]
+
+                def _conv(*vals, _conv=conv, _nt=node_types,
+                          _eid=edge_index_dict, _ead=edge_attr_dict):
+                    x = dict(zip(_nt, vals))
+                    return list(_conv(x, _eid, _ead).values())
+
+                out_vals = grad_checkpoint(_conv, *node_vals, use_reentrant=False)
+                h = dict(zip(node_types, out_vals))
+            else:
+                h = conv(h, edge_index_dict, edge_attr_dict)
             if i < len(self.convs) - 1:
-                h = {t: self.dropout(x) for t, x in h.items()}
+                h = {t: self.dropout(v) for t, v in h.items()}
         return h
 
 
@@ -322,35 +275,23 @@ class BAGNNModel(nn.Module):
 
     Architecture
     ------------
-    1. Node-type input projections  (raw feat → EMBED_DIM)
-    2. BAGNNLayer stack             (message passing)
-    3. Purchase-score decoder       dot(h_user, h_product)
-
-    Parameters
-    ----------
-    feat_dims   : raw feature dimension per node type  { node_type: int }
-                  Pass None to use learned embeddings (mock / no raw features).
-    n_nodes     : number of nodes per type             { node_type: int }
-                  Required only when feat_dims[t] is None.
-    embed_dim   : EMBED_DIM (default 128)
-    n_layers    : number of BAGNNConv layers
-    rank        : low-rank bottleneck r
-    dropout     : dropout probability
+    1. Node-type input projections  (raw feat → embed_dim)
+    2. BAGNNLayer stack             (behavior-aware message passing)
+    3. Dot-product decoder          score(u, i) = h_u · h_i
     """
 
     def __init__(
         self,
-        feat_dims:  Optional[Dict[str, int]] = None,
-        n_nodes:    Optional[Dict[str, int]] = None,
-        embed_dim:  int   = EMBED_DIM,
-        n_layers:   int   = 2,
-        rank:       int   = 16,
-        dropout:    float = 0.1,
+        feat_dims: Optional[Dict[str, int]] = None,
+        n_nodes:   Optional[Dict[str, int]] = None,
+        embed_dim: int   = EMBED_DIM,
+        n_layers:  int   = 2,
+        rank:      int   = 16,
+        dropout:   float = 0.1,
     ) -> None:
         super().__init__()
         self.embed_dim = embed_dim
 
-        # Input layer: either linear projection or learned embedding table
         self.input_proj: nn.ModuleDict = nn.ModuleDict()
         for t in NODE_TYPES:
             if feat_dims and t in feat_dims and feat_dims[t] is not None:
@@ -359,72 +300,51 @@ class BAGNNModel(nn.Module):
                 n = n_nodes[t] if n_nodes and t in n_nodes else 1000
                 self.input_proj[t] = nn.Embedding(n, embed_dim)
 
-        # BAGNN stack
         self.bagnn = BAGNNLayer(
-            in_dim=embed_dim,
-            hid_dim=embed_dim,
-            out_dim=embed_dim,
-            n_layers=n_layers,
-            rank=rank,
-            dropout=dropout,
+            in_dim=embed_dim, hid_dim=embed_dim, out_dim=embed_dim,
+            n_layers=n_layers, rank=rank, dropout=dropout,
         )
 
-    # ------------------------------------------------------------------
-    def encode(
-        self,
-        data: HeteroData,
-    ) -> Dict[str, Tensor]:
-        """
-        Encode all node types → embeddings dict.
-
-        Supports both:
-        - Mock HeteroData  (random tensors, integer node IDs)
-        - Real  HeteroData (data[node_type].x available)
-        """
+    def encode(self, data: HeteroData) -> Dict[str, Tensor]:
+        device = next(self.parameters()).device
         x_dict: Dict[str, Tensor] = {}
         for t in NODE_TYPES:
             if t not in data.node_types:
                 continue
-            proj = self.input_proj[t]
+            proj   = self.input_proj[t]
+            node_x = data[t].x
             if isinstance(proj, nn.Embedding):
-                # Mock mode: use arange as node IDs
-                n = data[t].num_nodes
-                ids = torch.arange(n, device=next(self.parameters()).device)
+                ids = node_x.to(device) if (node_x is not None and node_x.dtype == torch.long) \
+                      else torch.arange(data[t].num_nodes, device=device)
                 x_dict[t] = proj(ids)
             else:
-                x_dict[t] = proj(data[t].x)
+                x_dict[t] = proj(node_x.to(device=device, dtype=torch.float))
 
-        edge_index_dict = {
-            et: data[et].edge_index
+        valid = set(ALL_EDGE_TYPES)
+        edge_index_dict = {et: data[et].edge_index for et in data.edge_types if et in valid}
+
+        edge_attr_dict: Dict[Tuple, Tensor] = {
+            et: data[et].edge_attr
             for et in data.edge_types
-            if et in {tuple(e) for e in ALL_EDGE_TYPES}
+            if et in valid
+            and getattr(data[et], "edge_attr", None) is not None
+            and data[et].edge_attr.numel() > 0
         }
 
-        return self.bagnn(x_dict, edge_index_dict)
+        return self.bagnn(x_dict, edge_index_dict, edge_attr_dict or None)
 
-    def forward(
-        self,
-        data:      HeteroData,
-        user_idx:  Tensor,
-        item_idx:  Tensor,
-    ) -> Tensor:
-        """
-        Compute purchase scores for (user, item) pairs.
-
-        Parameters
-        ----------
-        data      : HeteroData graph
-        user_idx  : Tensor (B,)  — user node indices in the batch
-        item_idx  : Tensor (B,)  — product node indices in the batch
-
-        Returns
-        -------
-        scores : Tensor (B,)  — dot-product purchase score
-        """
+    def forward(self, data: HeteroData) -> Tuple[Tensor, Tensor]:
+        """Returns (user_emb, item_emb): (N_u, d), (N_i, d)."""
         h = self.encode(data)
+        user_emb = h.get("user",    torch.empty(0, self.embed_dim, device=next(self.parameters()).device))
+        item_emb = h.get("product", torch.empty(0, self.embed_dim, device=next(self.parameters()).device))
+        return user_emb, item_emb
 
-        h_user    = h["user"][user_idx]        # (B, embed_dim)
-        h_product = h["product"][item_idx]     # (B, embed_dim)
+    def score(self, data: HeteroData, user_idx: Tensor, item_idx: Tensor) -> Tensor:
+        """Dot-product scores for (user, item) pairs. Returns (B,)."""
+        user_emb, item_emb = self.forward(data)
+        return (user_emb[user_idx] * item_emb[item_idx]).sum(dim=-1)
 
-        scores = (h_user * h_product).sum(dim=-1)   # (B,)
-        return scores
+    def embedding_l2_norm(self) -> Tensor:
+        """L2 norm of input projection weights only (not GNN weights)."""
+        return sum(p.pow(2).sum() for p in self.input_proj.parameters())
