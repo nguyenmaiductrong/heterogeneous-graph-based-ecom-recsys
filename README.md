@@ -16,8 +16,7 @@
 5. [Cấu trúc dự án](#5-cấu-trúc-dự-án)
 6. [Cài đặt](#6-cài-đặt)
 7. [Hướng dẫn sử dụng](#7-hướng-dẫn-sử-dụng)
-8. [Thực nghiệm và Đánh giá](#8-thực-nghiệm-và-đánh-giá)
-9. [Liên hệ và Trích dẫn](#9-liên-hệ-và-trích-dẫn)
+8. [Trích dẫn](#8-trích-dẫn)
 
 ---
 
@@ -202,14 +201,14 @@ heterogeneous-graph-based-ecom-recsys/
 │   │   ├── neighbor_sampler.py     # BehaviorAwareNeighborSampler (2-hop, vector hóa CSR)
 │   │   └── contrastive.py          # Hàm mất mát đối chiếu với biểu diễn tăng cường SVD
 │   │
-│   └── model/
-│       ├── bagnn.py                # BehaviorAwareWeight, BAGNNConv, BAGNNLayer, BAGNNModel
-│       ├── hetero_embedding.py     # Bảng embedding nút không đồng nhất
-│       ├── hierarchy_gate.py       # HierarchyGate: tổng hợp mềm theo ưu tiên hành vi
-│       └── training/
-│           ├── trainer.py          # Trainer: AMP, early stopping, lưu/nạp checkpoint
-│           ├── losses.py           # BPR loss, PopularityBiasedNegativeSampler
-│           └── lightgcn_baseline.py  # Cài đặt mô hình nền LightGCN
+│   ├── model/
+│   │   ├── bagnn.py                # BehaviorAwareWeight, BAGNNConv, BAGNNLayer, BAGNNModel
+│   │   ├── hetero_embedding.py     # Bảng embedding nút không đồng nhất
+│   │   ├── hierarchy_gate.py       # HierarchyGate: tổng hợp mềm theo ưu tiên hành vi
+│   └── training/
+│       ├── trainer.py              # Trainer: AMP, early stopping, lưu/nạp checkpoint
+│       ├── losses.py               # BPR loss, PopularityBiasedNegativeSampler
+│       └── lightgcn_baseline.py    # Cài đặt mô hình nền LightGCN
 │
 ├── notebooks/
 │   └── 01_graph_eda.ipynb          # EDA đầy đủ: thống kê, phân phối bậc, biểu đồ thời gian
@@ -307,6 +306,3 @@ Các biểu đồ được lưu vào `notebooks/figures/` dưới cả hai đị
 }
 ```
 
----
-
-*Dự án được phát triển trong khuôn khổ nghiên cứu khoa học về hệ thống gợi ý dựa trên đồ thị không đồng nhất.*

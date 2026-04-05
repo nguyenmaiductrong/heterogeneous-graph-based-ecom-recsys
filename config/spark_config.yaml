@@ -41,13 +41,13 @@ filter:
   unknown_category: "__UNKNOWN_CATEGORY__"
   # "top" = trước dấu '.', "second" = 2 cấp, "full" = toàn bộ
   category_level: "top"
-  # Số vòng lặp lọc cold-start (2-3 là đủ hội tụ)
+  # Số vòng lặp lọc cold-start
   iterative_filter_rounds: 3
 
 # --- Temporal Split ---
 split:
-  # REES46: Dec 2019 - Mar 2020
-  # Train: Dec 2019 - Jan 2020 (5 tháng)
+  # REES46: Oct 2019 - Mar 2020
+  # Train: Oct 2019 - Jan 2020 (4 tháng)
   # Val: Feb 2020 (1 tháng)
   # Test: Mar 2020 (1 tháng)
   train_end: "2020-01-31"
