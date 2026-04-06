@@ -19,8 +19,8 @@ sampler:
 
 training:
   epochs: 30
-  batch_size: 512
-  lr: 1.0e-3
+  batch_size: 2048
+  lr: 3.0e-3
   weight_decay: 1.0e-5
   l2_lambda: 1.0e-5
   num_neg: 1
@@ -28,8 +28,8 @@ training:
   amp: true
   patience: 5
   eval_every: 1
-  eval_batch_size: 512
-  num_workers: 4
+  eval_batch_size: 2048
+  num_workers: 8
   save_dir: "/content/checkpoints" 
   device: "cuda"
 
