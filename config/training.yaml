@@ -30,5 +30,13 @@ training:
   eval_every: 1
   eval_batch_size: 512
   num_workers: 4
-  save_dir: "checkpoints/rees46"
+  save_dir: "/content/checkpoints" 
   device: "cuda"
+
+wandb:
+  enabled: true
+  project: "bagnn-recsys"
+  entity: "nguyenmaiductrong37"
+  run_name: "bagnn-a100"
+  artifact_name: "bagnn-checkpoint"
+  save_every: 5
