@@ -6,7 +6,7 @@ python -m src.training.trainer --config config/training.yaml --device cpu
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
@@ -39,10 +39,17 @@ class TrainConfig:
     eval_batch_size: int = 512
     num_workers: int = 4
     save_dir: str = "checkpoints/rees46"
+    use_wandb: bool = False
+    wandb_project: str = "bagnn-recsys"
+    wandb_entity: str = "nguyenmaiductrong37"
+    wandb_run_name: str = "bagnn-training"
+    wandb_artifact_name: str = "bagnn-checkpoint"
+    wandb_save_every: int = 5 
 
     @classmethod
     def from_yaml(cls, cfg: dict) -> "TrainConfig":
         t = cfg.get("training", {})
+        w = cfg.get("wandb", {})
         return cls(
             epochs=t.get("epochs", cls.epochs),
             batch_size=t.get("batch_size", cls.batch_size),
@@ -57,6 +64,12 @@ class TrainConfig:
             eval_batch_size=t.get("eval_batch_size", cls.eval_batch_size),
             num_workers=t.get("num_workers", cls.num_workers),
             save_dir=t.get("save_dir", cls.save_dir),
+            use_wandb=w.get("enabled", cls.use_wandb),
+            wandb_project=w.get("project", cls.wandb_project),
+            wandb_entity=w.get("entity", cls.wandb_entity),
+            wandb_run_name=w.get("run_name", cls.wandb_run_name),
+            wandb_artifact_name=w.get("artifact_name", cls.wandb_artifact_name),
+            wandb_save_every=w.get("save_every", cls.wandb_save_every),
         )
 
 
@@ -297,7 +310,12 @@ def train(
     cfg: TrainConfig,
     device: torch.device,
 ) -> None:
-    """Full training run with auto-resume and early stopping on NDCG@20."""
+    """Full training run with auto-resume and early stopping on NDCG@20.
+
+    Resume priority:
+      1. Nếu use_wandb=True: thử tải checkpoint từ W&B Artifact (latest).
+      2. Fallback: tìm checkpoint local trong save_dir (epoch_*.pt).
+    """
     model.to(device)
 
     dataset = InteractionDataset(train_triplets)
@@ -319,10 +337,41 @@ def train(
     save_dir = Path(cfg.save_dir)
     save_dir.mkdir(parents=True, exist_ok=True)
 
+    # --- Khởi tạo W&B (nếu được bật) ---
+    wandb_manager = None
+    wandb_run = None
+    if cfg.use_wandb:
+        from src.training.checkpoint_manager import CheckpointManager
+        import wandb
+
+        wandb_manager = CheckpointManager(
+            project=cfg.wandb_project,
+            entity=cfg.wandb_entity,
+            run_name=cfg.wandb_run_name,
+            artifact_name=cfg.wandb_artifact_name,
+            save_every_n_epochs=cfg.wandb_save_every,
+            local_dir=str(save_dir),
+        )
+        wandb_run = wandb_manager.init_wandb(config={
+            "epochs": cfg.epochs,
+            "batch_size": cfg.batch_size,
+            "lr": cfg.lr,
+            "weight_decay": cfg.weight_decay,
+            "l2_lambda": cfg.l2_lambda,
+            "num_neg": cfg.num_neg,
+            "amp": cfg.amp,
+        })
+        logger.info("W&B enabled — project=%s run=%s", cfg.wandb_project, wandb_run.id)
+
+    # Resume: W&B trước, local fallback
     start_epoch = 0
-    latest_ckpt = _find_latest_checkpoint(save_dir)
-    if latest_ckpt is not None:
-        start_epoch = _load_checkpoint(latest_ckpt, model, optimizer, scaler, device)
+    if wandb_manager is not None:
+        start_epoch = wandb_manager.load_checkpoint(model, optimizer, scaler, device)
+
+    if start_epoch == 0:
+        latest_ckpt = _find_latest_checkpoint(save_dir)
+        if latest_ckpt is not None:
+            start_epoch = _load_checkpoint(latest_ckpt, model, optimizer, scaler, device)
 
     best_ndcg = -1.0
     no_improve = 0
@@ -333,6 +382,7 @@ def train(
             model, sampler, loader, optimizer, loss_fn, scaler, device,
             num_neg=cfg.num_neg, max_grad_norm=cfg.max_grad_norm, amp=cfg.amp,
         )
+        train_loss = train_log["train/loss"]
 
         row = f"Epoch {epoch:03d} | " + " | ".join(f"{k}={v:.4f}" for k, v in train_log.items())
 
@@ -359,19 +409,37 @@ def train(
             else:
                 no_improve += 1
 
-        _save_checkpoint(save_dir, epoch, model, optimizer, scaler,
-                         train_log["train/loss"], metrics)
+        _save_checkpoint(save_dir, epoch, model, optimizer, scaler, train_loss, metrics)
+
+        # Log metrics + upload artifact lên W&B 
+        if wandb_manager is not None:
+            wandb_run.log({**train_log, **metrics, "epoch": epoch})
+            cloud_ok = wandb_manager.save_checkpoint(
+                model, optimizer, epoch,
+                scaler=scaler,
+                loss=train_loss,
+                metrics=metrics,
+            )
+            if not cloud_ok:
+                logger.error(
+                    "Epoch %d: W&B checkpoint NOT verified. "
+                    "Local file preserved. DO NOT close Colab yet.",
+                    epoch,
+                )
+
         logger.info(row)
 
         if no_improve >= cfg.patience:
             logger.info("Early stopping at epoch %d. Best NDCG@20=%.4f", epoch, best_ndcg)
             break
 
+    if wandb_run is not None:
+        wandb_run.finish()
+
     logger.info("Training complete. Best NDCG@20=%.4f", best_ndcg)
 
 
 # Entry point
-
 if __name__ == "__main__":
     import argparse
     import pickle
