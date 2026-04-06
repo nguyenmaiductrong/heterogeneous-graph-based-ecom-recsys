@@ -36,7 +36,7 @@ training:
 wandb:
   enabled: true
   project: "bagnn-recsys"
-  entity: "nguyenmaiductrong37"
+  entity: "nguyenmaiductrong37-h-c-vi-n-c-ng-ngh-b-u-ch-nh-vi-n-th-ng"
   run_name: "bagnn-a100"
   artifact_name: "bagnn-checkpoint"
   save_every: 5
