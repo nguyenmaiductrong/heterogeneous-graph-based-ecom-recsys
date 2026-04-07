@@ -2,10 +2,10 @@ data:
   data_dir: "data/processed/temporal"
   struct_dir: "data/processed/temporal/node_mappings"
   node_counts:
-    user: 1964332
-    product: 311682
+    user: 267973
+    product: 60798
     category: 14
-    brand: 6041
+    brand: 2734
 
 model:
   embed_dim: 128
@@ -25,7 +25,7 @@ training:
   l2_lambda: 1.0e-5
   num_neg: 1
   max_grad_norm: 1.0
-  amp: true         
+  amp: true          
   patience: 5
   eval_every: 1
   eval_batch_size: 16384 
@@ -37,6 +37,6 @@ wandb:
   enabled: true
   project: "bagnn-recsys"
   entity: "nguyenmaiductrong37-h-c-vi-n-c-ng-ngh-b-u-ch-nh-vi-n-th-ng"
-  run_name: "bagnn-rtx6000" # Cập nhật tên run để dễ so sánh hiệu năng với T4
+  run_name: "bagnn-g4"
   artifact_name: "bagnn-checkpoint"
   save_every: 5
