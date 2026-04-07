@@ -1,6 +1,6 @@
 data:
-  data_dir: "data/mnt/data/rees46/processed/loo"
-  struct_dir: "data/mnt/data/rees46/processed/node_mappings"
+  data_dir: "data/processed/temporal"
+  struct_dir: "data/processed/temporal/node_mappings"
   node_counts:
     user: 1964332
     product: 311682
@@ -14,21 +14,21 @@ model:
   dropout: 0.1
 
 sampler:
-  hop1_budget: 10
-  hop2_budget: 5
+  hop1_budget: 15  
+  hop2_budget: 10  
 
 training:
   epochs: 30
-  batch_size: 2048
-  lr: 3.0e-3
+  batch_size: 8192      
+  lr: 3.0e-3            
   weight_decay: 1.0e-5
   l2_lambda: 1.0e-5
   num_neg: 1
   max_grad_norm: 1.0
-  amp: true
+  amp: true         
   patience: 5
   eval_every: 1
-  eval_batch_size: 2048
+  eval_batch_size: 16384 
   num_workers: 8
   save_dir: "/content/checkpoints" 
   device: "cuda"
@@ -37,6 +37,6 @@ wandb:
   enabled: true
   project: "bagnn-recsys"
   entity: "nguyenmaiductrong37-h-c-vi-n-c-ng-ngh-b-u-ch-nh-vi-n-th-ng"
-  run_name: "bagnn-a100"
+  run_name: "bagnn-rtx6000" # Cập nhật tên run để dễ so sánh hiệu năng với T4
   artifact_name: "bagnn-checkpoint"
   save_every: 5
