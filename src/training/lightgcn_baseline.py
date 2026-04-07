@@ -178,11 +178,11 @@ def train(cfg: LightGCNConfig) -> None:
 
     # memory-mapped load — avoids doubling RAM usage for huge .npy files
     train_u = np.load(
-        os.path.join(cfg.data_dir, "loo_purchase_train_src.npy"),
+        os.path.join(cfg.data_dir, "purchase_train_src.npy"),
         mmap_mode="r",
     )
     train_i = np.load(
-        os.path.join(cfg.data_dir, "loo_purchase_train_dst.npy"),
+        os.path.join(cfg.data_dir, "purchase_train_dst.npy"),
         mmap_mode="r",
     )
 

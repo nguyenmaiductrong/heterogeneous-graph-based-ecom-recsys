@@ -675,10 +675,15 @@ def _pack_hetero_subgraph(
         if ei is None or ei.numel() == 0:
             data[rel].edge_index = _e2.clone()
         else:
-            data[rel].edge_index = ei.to(device=device, dtype=torch.long)
+            # .contiguous() is mandatory: tensors produced by .flip(0) share
+            # storage with the original but have a negative stride. PyG's
+            # scatter_add_ kernel requires C-contiguous layout; without this
+            # call PyTorch makes an implicit copy mid-forward, causing a VRAM
+            # spike proportional to edge count on every training step.
+            data[rel].edge_index = ei.to(device=device, dtype=torch.long).contiguous()
 
         if attr is not None and attr.numel() > 0:
-            data[rel].edge_attr = attr.to(device=device)
+            data[rel].edge_attr = attr.to(device=device).contiguous()
 
     return data
 

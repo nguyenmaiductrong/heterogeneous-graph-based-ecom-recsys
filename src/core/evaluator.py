@@ -7,7 +7,7 @@ from .contracts import EvalInput, EMBED_DIM
 
 logger = logging.getLogger(__name__)
 
-class LeaveOneOutEvaluator:
+class TemporalSplitEvaluator:
 
     def __init__(
         self,
@@ -189,7 +189,7 @@ class LeaveOneOutEvaluator:
             f"Unknown mode {mode!r}; use 'sampled' or 'full'"
         )
 
-FullRankingEvaluator = LeaveOneOutEvaluator
+FullRankingEvaluator = TemporalSplitEvaluator  # backward-compat alias
 
 def run_testpass() -> None:
     """Lightweight smoke test — safe on CPU with <200 MB."""
@@ -209,7 +209,7 @@ def run_testpass() -> None:
         },
     )
 
-    evaluator = LeaveOneOutEvaluator(ks=[10, 20, 50], device="cpu")
+    evaluator = TemporalSplitEvaluator(ks=[10, 20, 50], device="cpu")
 
     t0 = time.time()
     m_sampled = evaluator.evaluate(eval_input, mode="sampled")

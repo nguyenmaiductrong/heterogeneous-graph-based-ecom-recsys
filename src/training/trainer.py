@@ -5,10 +5,11 @@ python -m src.training.trainer --config config/training.yaml --device cpu
 """
 from __future__ import annotations
 
+import json
 import logging
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
 
 import torch
 from torch.utils.data import Dataset, DataLoader
@@ -18,7 +19,7 @@ from src.core.contracts import BEHAVIOR_TYPES
 from src.graph.neighbor_sampler import BehaviorAwareNeighborSampler
 from src.training.losses import bpr_loss, MultiTaskBPRLoss
 from src.core.contracts import EvalInput
-from src.core.evaluator import LeaveOneOutEvaluator
+from src.core.evaluator import TemporalSplitEvaluator
 
 logger = logging.getLogger(__name__)
 
@@ -80,7 +81,7 @@ def load_yaml_config(path: str) -> dict:
 
 
 # Checkpoint helpers
-def _find_latest_checkpoint(save_dir: Path) -> Optional[Path]:
+def _find_latest_checkpoint(save_dir: Path) -> Path | None:
     ckpts = sorted(save_dir.glob("epoch_*.pt"))
     return ckpts[-1] if ckpts else None
 
@@ -281,7 +282,7 @@ def eval_epoch(
     ground_truth: dict[int, int],
     exclude_items: dict[int, list[int]],
     n_items: int,
-    evaluator: LeaveOneOutEvaluator,
+    evaluator: TemporalSplitEvaluator,
     device: torch.device,
     batch_size: int = 512,
 ) -> dict[str, float]:
@@ -332,7 +333,7 @@ def train(
     loss_fn = MultiTaskBPRLoss(behavior_counts, l2_lambda=cfg.l2_lambda).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
     scaler = torch.amp.GradScaler("cuda", enabled=cfg.amp)
-    evaluator = LeaveOneOutEvaluator(ks=[10, 20, 50], device=str(device))
+    evaluator = TemporalSplitEvaluator(ks=[10, 20, 50], device=str(device))
 
     save_dir = Path(cfg.save_dir)
     save_dir.mkdir(parents=True, exist_ok=True)
@@ -468,7 +469,21 @@ if __name__ == "__main__":
 
     _DATA = cfg_dict["data"]["data_dir"]
     _STRUCT = cfg_dict["data"]["struct_dir"]
-    NODE_COUNTS: dict[str, int] = cfg_dict["data"]["node_counts"]
+
+    # node_counts.json written by prepare_data.py takes precedence over the
+    # YAML values, which may be stale (full-dataset counts on a small split).
+    _nc_path = os.path.join(_DATA, "node_counts.json")
+    if os.path.exists(_nc_path):
+        with open(_nc_path) as _f:
+            NODE_COUNTS: dict[str, int] = json.load(_f)
+        logger.info("Node counts loaded from %s: %s", _nc_path, NODE_COUNTS)
+    else:
+        NODE_COUNTS = cfg_dict["data"]["node_counts"]
+        logger.warning(
+            "node_counts.json not found in %s; using YAML values %s. "
+            "Run prepare_data.py to generate authoritative counts.",
+            _DATA, NODE_COUNTS,
+        )
 
     def load_data():
         def npy_ei(src_f, dst_f):
@@ -476,9 +491,9 @@ if __name__ == "__main__":
             dst = np.load(f"{_DATA}/{dst_f}")
             return torch.from_numpy(np.stack([src, dst])).long()
 
-        view_ei = npy_ei("loo_view_train_src.npy", "loo_view_train_dst.npy")
-        cart_ei = npy_ei("loo_cart_train_src.npy", "loo_cart_train_dst.npy")
-        purchase_ei = npy_ei("loo_purchase_train_src.npy", "loo_purchase_train_dst.npy")
+        view_ei = npy_ei("view_train_src.npy", "view_train_dst.npy")
+        cart_ei = npy_ei("cart_train_src.npy", "cart_train_dst.npy")
+        purchase_ei = npy_ei("purchase_train_src.npy", "purchase_train_dst.npy")
 
         pb = pd.read_parquet(f"{_STRUCT}/product_brand.parquet")
         pc = pd.read_parquet(f"{_STRUCT}/product_category.parquet")
@@ -490,16 +505,19 @@ if __name__ == "__main__":
             hetero[ntype].x = torch.arange(n)
             hetero[ntype].num_nodes = n
 
-        hetero[("user", "view", "product")].edge_index = view_ei
-        hetero[("user", "cart", "product")].edge_index = cart_ei
-        hetero[("user", "purchase", "product")].edge_index = purchase_ei
-        hetero[("product", "rev_view", "user")].edge_index = view_ei.flip(0)
-        hetero[("product", "rev_cart", "user")].edge_index = cart_ei.flip(0)
-        hetero[("product", "rev_purchase", "user")].edge_index = purchase_ei.flip(0)
-        hetero[("product", "belongs_to", "category")].edge_index = category_ei
-        hetero[("category", "contains", "product")].edge_index = category_ei.flip(0)
-        hetero[("product", "producedBy", "brand")].edge_index = brand_ei
-        hetero[("brand", "brands", "product")].edge_index = brand_ei.flip(0)
+        # .contiguous() after .flip(0): flip returns a view with negative stride.
+        # PyG's scatter_add_ requires C-contiguous layout; without an explicit
+        # .contiguous() call PyTorch allocates a hidden copy per forward pass.
+        hetero[("user", "view", "product")].edge_index     = view_ei.contiguous()
+        hetero[("user", "cart", "product")].edge_index     = cart_ei.contiguous()
+        hetero[("user", "purchase", "product")].edge_index = purchase_ei.contiguous()
+        hetero[("product", "rev_view", "user")].edge_index     = view_ei.flip(0).contiguous()
+        hetero[("product", "rev_cart", "user")].edge_index     = cart_ei.flip(0).contiguous()
+        hetero[("product", "rev_purchase", "user")].edge_index = purchase_ei.flip(0).contiguous()
+        hetero[("product", "belongs_to", "category")].edge_index = category_ei.contiguous()
+        hetero[("category", "contains", "product")].edge_index   = category_ei.flip(0).contiguous()
+        hetero[("product", "producedBy", "brand")].edge_index    = brand_ei.contiguous()
+        hetero[("brand", "brands", "product")].edge_index        = brand_ei.flip(0).contiguous()
 
         n_p = purchase_ei.size(1)
         train_triplets = torch.stack([
@@ -508,9 +526,10 @@ if __name__ == "__main__":
             torch.full((n_p,), 2, dtype=torch.long),
         ], dim=1)
 
-        test_users = torch.from_numpy(np.load(f"{_DATA}/test_user_idx.npy")).long()
-        test_items = np.load(f"{_DATA}/test_product_idx.npy")
-        ground_truth = {int(u): int(i) for u, i in zip(test_users.tolist(), test_items.tolist())}
+        # Use validation split for early stopping — test split is held out for final evaluation only.
+        val_users = torch.from_numpy(np.load(f"{_DATA}/val_user_idx.npy")).long()
+        val_items = np.load(f"{_DATA}/val_product_idx.npy")
+        ground_truth = {int(u): int(i) for u, i in zip(val_users.tolist(), val_items.tolist())}
 
         with open(f"{_DATA}/train_mask.pkl", "rb") as f:
             raw_mask = pickle.load(f)
@@ -522,9 +541,9 @@ if __name__ == "__main__":
             "purchase": n_p,
         }
 
-        return hetero, train_triplets, test_users, ground_truth, exclude_items, behavior_counts
+        return hetero, train_triplets, val_users, ground_truth, exclude_items, behavior_counts
 
-    logger.info("Loading REES46 LOO data ...")
+    logger.info("Loading REES46 data (Global Temporal Split) ...")
     hetero, train_triplets, eval_user_ids, ground_truth, exclude_items, behavior_counts = load_data()
     logger.info(
         "users=%d  products=%d  train_purchase=%d  eval_users=%d",
