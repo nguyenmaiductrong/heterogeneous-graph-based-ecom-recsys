@@ -12,8 +12,8 @@ def test_checkpoint_rolling_mechanism(tmp_path, monkeypatch):
     
     train_u = np.array([0, 1, 2, 3], dtype=np.int64)
     train_i = np.array([0, 1, 2, 3], dtype=np.int64) # Lưu ý: num_items sẽ là max+1
-    np.save(data_dir / "loo_purchase_train_src.npy", train_u)
-    np.save(data_dir / "loo_purchase_train_dst.npy", train_i)
+    np.save(data_dir / "purchase_train_src.npy", train_u)
+    np.save(data_dir / "purchase_train_dst.npy", train_i)
 
     checkpoint_root = tmp_path / "checkpoints"
     from src.training.lightgcn_baseline import LightGCNConfig, train

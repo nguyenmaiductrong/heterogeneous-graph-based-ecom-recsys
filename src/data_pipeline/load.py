@@ -1,206 +1,212 @@
-import os
-import gc
+from __future__ import annotations
+
 import json
+import logging
+import os
+import pickle
 import shutil
+
 import numpy as np
-import scipy.sparse as sp
+import pandas as pd
 import pyarrow.parquet as pq
+import torch
 from pyspark.sql import DataFrame
+from pyspark.sql import functions as F
+from torch_geometric.data import HeteroData
 
-from .spark_utils import log_step, get_dir_size_gb
+from .sanity import sanity_check_heterodata
+from .splitter import SplitResult
 
-# PARQUET
-@log_step("LOAD: Save cleaned Parquet")
-def save_cleaned_parquet(
-    df: DataFrame, output_dir: str, num_partitions: int = 64
-) -> str:
-    path = os.path.join(output_dir, "cleaned.parquet")
-    df.repartition(num_partitions).write.mode("overwrite").parquet(path)
-    size_gb = get_dir_size_gb(path)
-    print(f"Path: {path}")
-    print(f"Size: {size_gb:.2f} GB")
-    return path
+logger = logging.getLogger(__name__)
 
 
-def save_node_mapping(
-    mapping_df: DataFrame, mappings_dir: str, name: str, save_csv: bool = True
+def _save_ei_npy(src: np.ndarray, dst: np.ndarray, data_dir: str, prefix: str) -> None:
+    np.save(os.path.join(data_dir, f"{prefix}_src.npy"), np.ascontiguousarray(src, dtype=np.int64))
+    np.save(os.path.join(data_dir, f"{prefix}_dst.npy"), np.ascontiguousarray(dst, dtype=np.int64))
+    logger.info("  saved %-40s %10d edges", prefix, len(src))
+
+
+def _spark_ei_to_npy(
+    spark_df: DataFrame,
+    src_col: str,
+    dst_col: str,
+    data_dir: str,
+    prefix: str,
 ) -> None:
-    parquet_path = os.path.join(mappings_dir, f"{name}.parquet")
-    mapping_df.write.mode("overwrite").parquet(parquet_path)
+    """Write a large Spark edge DataFrame to NumPy without .collect().
 
-    if save_csv:
-        n = mapping_df.count()
-        if n < 1000000:
-            csv_path = os.path.join(mappings_dir, f"{name}_csv")
-            mapping_df.coalesce(1).write.mode("overwrite").option("header", "true").csv(csv_path)
+    Workers write Parquet in parallel; PyArrow reads columnar on the driver.
+    Avoids serialising 100M+ rows through the Python heap (OOM with toPandas).
+    """
+    tmp_path = os.path.join(data_dir, f"_tmp_{prefix}")
+    try:
+        (
+            spark_df
+            .select(
+                F.col(src_col).cast("long").alias("src"),
+                F.col(dst_col).cast("long").alias("dst"),
+            )
+            .write.mode("overwrite").parquet(tmp_path)
+        )
 
-    print(f"Saved {name} -> {parquet_path}")
+        table = pq.read_table(tmp_path, columns=["src", "dst"])
+        src_arr = np.ascontiguousarray(
+            table.column("src").to_numpy(zero_copy_only=False),
+            dtype=np.int64,
+        )
+        dst_arr = np.ascontiguousarray(
+            table.column("dst").to_numpy(zero_copy_only=False),
+            dtype=np.int64,
+        )
+        del table
+
+        np.save(os.path.join(data_dir, f"{prefix}_src.npy"), src_arr)
+        np.save(os.path.join(data_dir, f"{prefix}_dst.npy"), dst_arr)
+        logger.info("  saved %-40s %10d edges", prefix, len(src_arr))
+
+    finally:
+        shutil.rmtree(tmp_path, ignore_errors=True)
 
 
-@log_step("LOAD: Save node summary")
-def save_node_summary(stats_dir: str, **counts: int) -> dict[str, int]:
-    counts["total_nodes"] = (
-        counts.get("num_users", 0) + counts.get("num_products", 0) +
-        counts.get("num_categories", 0) + counts.get("num_brands", 0)
+def save_artifacts(
+    split: SplitResult,
+    aux_spark: DataFrame,
+    train_mask: dict,
+    prod_cat_df: pd.DataFrame,
+    prod_brand_df: pd.DataFrame,
+    category2idx: dict,
+    brand2idx: dict,
+    data_dir: str,
+    struct_dir: str,
+) -> None:
+    os.makedirs(data_dir,   exist_ok=True)
+    os.makedirs(struct_dir, exist_ok=True)
+
+    logger.info("Saving edge arrays to %s ...", data_dir)
+
+    _save_ei_npy(
+        split.train["user_idx"].to_numpy(),
+        split.train["item_idx"].to_numpy(),
+        data_dir, "purchase_train",
     )
-    path = os.path.join(stats_dir, "node_summary.json")
-    with open(path, "w") as f:
-        json.dump(counts, f, indent=2)
 
-    print(f"Node summary:")
-    for k, v in counts.items():
-        print(f"{k:>35s}: {v:>12,}")
-    return counts
+    for beh in ("view", "cart"):
+        _spark_ei_to_npy(
+            aux_spark.filter(F.col("event_type") == beh),
+            src_col="user_idx",
+            dst_col="item_idx",
+            data_dir=data_dir,
+            prefix=f"{beh}_train",
+        )
 
-
-def _parquet_to_numpy(parquet_path: str, columns: list[str]) -> dict[str, np.ndarray]:
-    table = pq.read_table(parquet_path, columns=columns)
-    result = {}
-    for col in columns:
-        result[col] = table.column(col).to_numpy().astype(np.int64)
-    del table
-    gc.collect()
-    return result
-
-
-def spark_df_to_numpy_via_parquet(
-    spark_df: DataFrame, tmp_dir: str, prefix: str, columns: list[str]
-) -> dict[str, np.ndarray]:
-    tmp_path = os.path.join(tmp_dir, f"_tmp_{prefix}")
-    spark_df.select(*columns).write.mode("overwrite").parquet(tmp_path)
-
-    arrays = _parquet_to_numpy(tmp_path, columns)
-
-    shutil.rmtree(tmp_path, ignore_errors=True)
-    return arrays
-
-
-def edges_to_numpy_safe(
-    spark_df: DataFrame, tmp_dir: str, prefix: str
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    columns = ["user_idx", "product_idx", "unix_ts"]
-    arrays = spark_df_to_numpy_via_parquet(spark_df, tmp_dir, prefix, columns)
-    return arrays["user_idx"], arrays["product_idx"], arrays["unix_ts"]
-
-
-def save_edge_arrays(
-    src: np.ndarray, dst: np.ndarray, ts: np.ndarray, edge_dir: str, prefix: str
-) -> None:
-    np.save(os.path.join(edge_dir, f"{prefix}_src.npy"), src)
-    np.save(os.path.join(edge_dir, f"{prefix}_dst.npy"), dst)
-    np.save(os.path.join(edge_dir, f"{prefix}_ts.npy"), ts)
-
-
-def save_structural_edge_arrays(
-    spark_df: DataFrame, edge_dir: str, relation: str, tmp_dir: str
-) -> None:
-    cols = list(spark_df.columns[:2])
-    arrays = spark_df_to_numpy_via_parquet(
-        spark_df, tmp_dir, f"struct_{relation}", cols
-    )
-    src_col, dst_col = cols[0], cols[1]
     np.save(
-        os.path.join(edge_dir, f"{relation}_src.npy"),
-        arrays[src_col].astype(np.int64),
+        os.path.join(data_dir, "test_user_idx.npy"),
+        np.ascontiguousarray(split.test["user_idx"].to_numpy(), dtype=np.int64),
     )
     np.save(
-        os.path.join(edge_dir, f"{relation}_dst.npy"),
-        arrays[dst_col].astype(np.int64),
+        os.path.join(data_dir, "test_product_idx.npy"),
+        np.ascontiguousarray(split.test["item_idx"].to_numpy(), dtype=np.int64),
     )
-    print(f"  Saved {relation}: {len(arrays[src_col]):,} edges")
+    logger.info("  saved test pairs: %d", len(split.test))
+
+    np.save(
+        os.path.join(data_dir, "val_user_idx.npy"),
+        np.ascontiguousarray(split.val["user_idx"].to_numpy(), dtype=np.int64),
+    )
+    np.save(
+        os.path.join(data_dir, "val_product_idx.npy"),
+        np.ascontiguousarray(split.val["item_idx"].to_numpy(), dtype=np.int64),
+    )
+    logger.info("  saved val pairs:  %d", len(split.val))
+
+    mask_path = os.path.join(data_dir, "train_mask.pkl")
+    with open(mask_path, "wb") as fh:
+        pickle.dump(train_mask, fh, protocol=pickle.HIGHEST_PROTOCOL)
+    logger.info("  saved train_mask.pkl  (%d entries)", len(train_mask))
+
+    logger.info("Saving structural parquets to %s ...", struct_dir)
+
+    prod_cat_df.to_parquet(os.path.join(struct_dir, "product_category.parquet"), index=False)
+    prod_brand_df.to_parquet(os.path.join(struct_dir, "product_brand.parquet"), index=False)
+    logger.info(
+        "  product_category.parquet: %d rows  product_brand.parquet: %d rows",
+        len(prod_cat_df), len(prod_brand_df),
+    )
+
+    logger.info("Saving vocabulary mappings to %s ...", struct_dir)
+
+    for name, mapping in (
+        ("user2idx",     split.user2idx),
+        ("item2idx",     split.item2idx),
+        ("category2idx", category2idx),
+        ("brand2idx",    brand2idx),
+    ):
+        path = os.path.join(struct_dir, f"{name}.json")
+        with open(path, "w") as fh:
+            json.dump({str(k): v for k, v in mapping.items()}, fh)
+        logger.info("  %s: %d entries", name, len(mapping))
 
 
-def build_and_save_sparse_adj(
-    src: np.ndarray, dst: np.ndarray, num_src: int, num_dst: int, graph_dir: str, name: str
-) -> sp.csr_matrix:
-    data = np.ones(len(src), dtype=np.float32)
-    adj = sp.csr_matrix((data, (src, dst)), shape=(num_src, num_dst))
-    adj.data = np.ones_like(adj.data)
-    adj.eliminate_zeros()
+def save_node_counts(node_counts: dict[str, int], data_dir: str) -> None:
+    path = os.path.join(data_dir, "node_counts.json")
+    with open(path, "w") as fh:
+        json.dump(node_counts, fh, indent=2)
+    logger.info("node_counts.json written to %s: %s", path, node_counts)
 
-    sp.save_npz(os.path.join(graph_dir, f"{name}.npz"), adj)
-    print(f"  {name}: shape={adj.shape}, nnz={adj.nnz:,}")
-    return adj
 
-@log_step("LOAD: Save graph metadata")
-def save_graph_meta(
-    graph_dir: str, node_summary: dict, edge_counts: dict
-) -> dict:
-    total_edges = sum(edge_counts.values())
-    meta = {
-        "node_counts": {
-            "user": node_summary.get("num_users", 0),
-            "product": node_summary.get("num_products", 0),
-            "category": node_summary.get("num_categories", 0),
-            "brand": node_summary.get("num_brands", 0),
-            "total": node_summary.get("total_nodes", 0),
-        },
-        "edge_counts": edge_counts,
-        "total_edges": total_edges,
-    }
+def verify_artifacts(
+    data_dir: str,
+    struct_dir: str,
+    node_counts: dict[str, int],
+) -> None:
+    logger.info("Running pre-training sanity check ...")
 
-    path = os.path.join(graph_dir, "graph_meta.json")
-    with open(path, "w") as f:
-        json.dump(meta, f, indent=2)
+    def _npy_ei(prefix: str) -> torch.Tensor:
+        src = np.load(os.path.join(data_dir, f"{prefix}_src.npy"))
+        dst = np.load(os.path.join(data_dir, f"{prefix}_dst.npy"))
+        return torch.from_numpy(np.stack([src, dst])).long().contiguous()
 
-    print(f"Total nodes: {meta['node_counts']['total']:,}")
-    print(f"Total edges: {total_edges:,}")
-    for etype, cnt in edge_counts.items():
-        print(f"    {etype:>20s}: {cnt:>12,}")
+    view_ei     = _npy_ei("view_train")
+    cart_ei     = _npy_ei("cart_train")
+    purchase_ei = _npy_ei("purchase_train")
 
-    return meta
+    pc = pd.read_parquet(os.path.join(struct_dir, "product_category.parquet"))
+    pb = pd.read_parquet(os.path.join(struct_dir, "product_brand.parquet"))
+    category_ei = torch.from_numpy(pc[["product_idx", "category_idx"]].values.T.copy()).long()
+    brand_ei    = torch.from_numpy(pb[["product_idx", "brand_idx"]].values.T.copy()).long()
 
-@log_step("VALIDATE: Check graph integrity")
-def validate_graph(edge_dir: str, graph_dir: str, node_summary: dict, cfg: dict) -> None:
-    n_u = node_summary["num_users"]
-    n_p = node_summary["num_products"]
-    n_c = node_summary["num_categories"]
-    n_b = node_summary["num_brands"]
+    hetero = HeteroData()
+    for ntype, n in node_counts.items():
+        hetero[ntype].x         = torch.arange(n, dtype=torch.long)
+        hetero[ntype].num_nodes = n
 
-    errors = []
+    hetero[("user",     "view",         "product")].edge_index = view_ei
+    hetero[("user",     "cart",         "product")].edge_index = cart_ei
+    hetero[("user",     "purchase",     "product")].edge_index = purchase_ei
+    hetero[("product",  "rev_view",     "user")].edge_index    = view_ei.flip(0).contiguous()
+    hetero[("product",  "rev_cart",     "user")].edge_index    = cart_ei.flip(0).contiguous()
+    hetero[("product",  "rev_purchase", "user")].edge_index    = purchase_ei.flip(0).contiguous()
+    hetero[("product",  "belongs_to",   "category")].edge_index = category_ei.contiguous()
+    hetero[("category", "contains",     "product")].edge_index  = category_ei.flip(0).contiguous()
+    hetero[("product",  "producedBy",   "brand")].edge_index    = brand_ei.contiguous()
+    hetero[("brand",    "brands",       "product")].edge_index  = brand_ei.flip(0).contiguous()
 
-    for beh in cfg["graph"]["behavior_edge_types"]:
-        for split in ["train", "val", "test"]:
-            prefix = f"{beh}_{split}"
-            src_path = os.path.join(edge_dir, f"{prefix}_src.npy")
-            if not os.path.exists(src_path):
-                errors.append(f"MISSING: {prefix}_src.npy")
-                continue
-            src = np.load(src_path)
-            dst = np.load(os.path.join(edge_dir, f"{prefix}_dst.npy"))
+    train_triplets = torch.stack([
+        purchase_ei[0],
+        purchase_ei[1],
+        torch.full((purchase_ei.size(1),), 2, dtype=torch.long),
+    ], dim=1)
 
-            if len(src) != len(dst):
-                errors.append(f"{prefix}: src/dst length mismatch")
-            if len(src) > 0:
-                if src.min() < 0:
-                    errors.append(f"{prefix}: negative src index")
-                if src.max() >= n_u:
-                    errors.append(f"{prefix}: src index >= num_users")
-                if dst.min() < 0:
-                    errors.append(f"{prefix}: negative dst index")
-                if dst.max() >= n_p:
-                    errors.append(f"{prefix}: dst index >= num_products")
+    test_users = np.load(os.path.join(data_dir, "test_user_idx.npy"))
+    test_items = np.load(os.path.join(data_dir, "test_product_idx.npy"))
+    ground_truth = {int(u): int(i) for u, i in zip(test_users, test_items)}
 
-            print(f"  {prefix:>20s}: {len(src):>10,} edges — OK")
-            del src, dst
-
-    for rel, max_s, max_d in [
-        ("belongsTo", n_p, n_c),
-        ("producedBy", n_p, n_b),
-    ]:
-        src = np.load(os.path.join(edge_dir, f"{rel}_src.npy"))
-        dst = np.load(os.path.join(edge_dir, f"{rel}_dst.npy"))
-        if src.max() >= max_s:
-            errors.append(f"{rel}: src exceeds limit")
-        if dst.max() >= max_d:
-            errors.append(f"{rel}: dst exceeds limit")
-        print(f"{rel:>20s}: {len(src):>10,} edges - OK")
-        del src, dst
-
-    if errors:
-        print(f"ERRORS FOUND:")
-        for e in errors:
-            print(f"{e}")
-        raise ValueError(f"Graph validation failed with {len(errors)} errors")
-    else:
-        print(f"All checks PASSED")
+    sanity_check_heterodata(
+        hetero,
+        train_triplets,
+        ground_truth,
+        num_nodes_dict=node_counts,
+        check_leakage=True,
+        verbose=True,
+    )
+    logger.info("Sanity check PASSED — pipeline is ready for training.")

@@ -1,16 +1,29 @@
+from __future__ import annotations
+
+import logging
 import os
-import yaml
+import shutil
 import time
 from functools import wraps
+
+import yaml
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql.types import (
-    StructType, StructField, StringType, DoubleType, LongType, TimestampType
+    DoubleType,
+    LongType,
+    StringType,
+    StructField,
+    StructType,
+    TimestampType,
 )
 
-_CONFIG_CACHE = None
+logger = logging.getLogger(__name__)
+
+_CONFIG_CACHE: dict | None = None
 _PROJECT_ROOT = os.path.abspath(
     os.path.join(os.path.dirname(__file__), "..", "..")
 )
+
 
 def get_project_root() -> str:
     return _PROJECT_ROOT
@@ -24,7 +37,7 @@ def load_config(config_path: str | None = None) -> dict:
     if config_path is None:
         config_path = os.path.join(_PROJECT_ROOT, "config", "spark_config.yaml")
 
-    with open(config_path, "r") as f:
+    with open(config_path) as f:
         _CONFIG_CACHE = yaml.safe_load(f)
 
     return _CONFIG_CACHE
@@ -32,82 +45,111 @@ def load_config(config_path: str | None = None) -> dict:
 
 def ensure_dirs(cfg: dict) -> None:
     paths = cfg["paths"]
-    for key in ["output_dir", "node_mappings_dir", "edge_lists_dir",
-                "splits_dir", "stats_dir", "graph_dir", "small_dir"]:
+    for key in [
+        "output_dir", "node_mappings_dir", "edge_lists_dir",
+        "splits_dir", "stats_dir", "graph_dir", "small_dir",
+    ]:
         os.makedirs(paths[key], exist_ok=True)
 
 
 def create_spark_session(
-    cfg: dict | None = None, app_name_suffix: str = ""
+    cfg: dict | None = None,
+    app_name_suffix: str = "",
 ) -> SparkSession:
     if cfg is None:
         cfg = load_config()
 
     sc = cfg["spark"]
-    app_name = sc["app_name"]
-    if app_name_suffix:
-        app_name = f"{app_name}_{app_name_suffix}"
+    app_name = sc["app_name"] + (f"_{app_name_suffix}" if app_name_suffix else "")
 
-    spark = (SparkSession.builder
+    spark = (
+        SparkSession.builder
         .appName(app_name)
         .master(sc["master"])
-        .config("spark.driver.memory", sc["driver_memory"])
-        .config("spark.executor.memory", sc["executor_memory"])
-        .config("spark.local.dir", sc["local_dir"])
-        .config("spark.sql.shuffle.partitions", sc["shuffle_partitions"])
-        .config("spark.default.parallelism", sc["default_parallelism"])
-        .config("spark.sql.adaptive.enabled", str(sc["aqe_enabled"]).lower())
+        # Memory
+        .config("spark.driver.memory",               sc["driver_memory"])
+        .config("spark.executor.memory",             sc["executor_memory"])
+        .config("spark.driver.maxResultSize",        sc["driver_max_result_size"])
+        # Local temp / checkpoint dirs
+        .config("spark.local.dir",                   sc["local_dir"])
+        # Parallelism
+        .config("spark.sql.shuffle.partitions",      sc["shuffle_partitions"])
+        .config("spark.default.parallelism",         sc["default_parallelism"])
+        # Adaptive Query Execution (AQE) — critical for skewed e-commerce data
+        .config("spark.sql.adaptive.enabled",
+                str(sc["aqe_enabled"]).lower())
+        .config("spark.sql.adaptive.coalescePartitions.enabled",
+                str(sc.get("adaptive_coalesce_enabled", True)).lower())
+        .config("spark.sql.adaptive.skewJoin.enabled",
+                str(sc.get("adaptive_skew_join_enabled", True)).lower())
         .config("spark.sql.autoBroadcastJoinThreshold", sc["broadcast_threshold"])
-        .config("spark.sql.parquet.compression.codec", sc["parquet_compression"])
-        .config("spark.sql.files.maxPartitionBytes", sc["max_partition_bytes"])
-        .config("spark.memory.fraction", sc["memory_fraction"])
-        .config("spark.memory.storageFraction", sc["storage_fraction"])
-        .config("spark.sql.shuffle.spill.enabled", "true")
-        .config("spark.driver.maxResultSize", sc["driver_max_result_size"])
+        # I/O
+        .config("spark.sql.parquet.compression.codec",  sc["parquet_compression"])
+        .config("spark.sql.files.maxPartitionBytes",    sc["max_partition_bytes"])
+        # Shuffle spill to disk (prevents OOM on large group-bys)
+        .config("spark.sql.shuffle.spill.enabled",      "true")
+        # Memory management
+        .config("spark.memory.fraction",               sc["memory_fraction"])
+        .config("spark.memory.storageFraction",        sc["storage_fraction"])
+        # Arrow-based toPandas() — up to 10× faster than row-serialised fallback
         .config("spark.sql.execution.arrow.pyspark.enabled",
                 str(sc.get("arrow_enabled", True)).lower())
         .config("spark.sql.execution.arrow.pyspark.fallback.enabled", "true")
-        .config("spark.executor.heartbeatInterval",
-                sc.get("heartbeat_interval", "120s"))
-        .config("spark.network.timeout",
-                sc.get("network_timeout", "600s"))
+        # Network stability for long-running local jobs
+        .config("spark.executor.heartbeatInterval", sc.get("heartbeat_interval", "120s"))
+        .config("spark.network.timeout",            sc.get("network_timeout",    "600s"))
         .getOrCreate()
     )
+
     spark.sparkContext.setLogLevel("WARN")
+
     checkpoint_dir = sc.get("checkpoint_dir", "/tmp/spark_checkpoints")
+    # Clean up stale checkpoints from previous runs before starting a new one.
+    # Checkpoints are transient (only needed within the same Spark session), so
+    # accumulation across runs causes disk exhaustion (observed: 390GB after ~N runs).
+    if os.path.exists(checkpoint_dir):
+        shutil.rmtree(checkpoint_dir)
+        logger.info("Cleaned up stale checkpoint dir: %s", checkpoint_dir)
+    os.makedirs(checkpoint_dir, exist_ok=True)
     spark.sparkContext.setCheckpointDir(checkpoint_dir)
+
+    logger.info(
+        "SparkSession ready — master=%s  driver_mem=%s  shuffle_parts=%s  AQE=on",
+        sc["master"], sc["driver_memory"], sc["shuffle_partitions"],
+    )
     return spark
 
 
 def get_rees46_schema() -> StructType:
     return StructType([
-        StructField("event_time", TimestampType(), True),
-        StructField("event_type", StringType(), True),
-        StructField("product_id", LongType(), True),
-        StructField("category_id", LongType(), True),
-        StructField("category_code", StringType(), True),
-        StructField("brand", StringType(), True),
-        StructField("price", DoubleType(), True),
-        StructField("user_id", LongType(), True),
-        StructField("user_session", StringType(), True),
+        StructField("event_time",    TimestampType(), True),
+        StructField("event_type",    StringType(),    True),
+        StructField("product_id",    LongType(),      True),
+        StructField("category_id",   LongType(),      True),
+        StructField("category_code", StringType(),    True),
+        StructField("brand",         StringType(),    True),
+        StructField("price",         DoubleType(),    True),
+        StructField("user_id",       LongType(),      True),
+        StructField("user_session",  StringType(),    True),
     ])
 
 
 def log_step(step_name: str):
+    """Decorator that logs entry/exit and wall-clock time of a pipeline step."""
     def decorator(func):
         @wraps(func)
         def wrapper(*args, **kwargs):
-            print(f"{step_name}")
+            logger.info(">>> %s", step_name)
             t0 = time.time()
             result = func(*args, **kwargs)
-            elapsed = time.time() - t0
-            print(f"[{step_name}] Done in {elapsed:.1f}s")
+            logger.info("<<< %s  done in %.1fs", step_name, time.time() - t0)
             return result
         return wrapper
     return decorator
 
 
 def count_and_log(df: DataFrame, label: str) -> int:
+    """Trigger a count action and print the result. Kept with print() for test compatibility."""
     n = df.count()
     print(f"{label}: {n:,}")
     return n
@@ -115,7 +157,7 @@ def count_and_log(df: DataFrame, label: str) -> int:
 
 def get_dir_size_gb(path: str) -> float:
     total = 0
-    for dp, dn, filenames in os.walk(path):
-        for f in filenames:
-            total += os.path.getsize(os.path.join(dp, f))
+    for dirpath, _, filenames in os.walk(path):
+        for fname in filenames:
+            total += os.path.getsize(os.path.join(dirpath, fname))
     return total / (1024 ** 3)

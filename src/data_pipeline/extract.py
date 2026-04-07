@@ -1,58 +1,68 @@
-import os
-import json
-import numpy as np
-import scipy.sparse as sp
-from pyspark.sql import SparkSession, DataFrame
-from .spark_utils import get_rees46_schema, log_step, count_and_log
+from __future__ import annotations
 
-# Raw data
-@log_step("EXTRACT: Load raw CSV")
-def load_raw_csv(spark: SparkSession, csv_pattern: str) -> DataFrame:
-    df = (spark.read
+import logging
+
+from pyspark.sql import DataFrame, SparkSession
+from pyspark.sql import functions as F
+
+from .spark_utils import get_rees46_schema, load_config
+
+logger = logging.getLogger(__name__)
+
+_VALID_BEHAVIORS = ("view", "cart", "purchase")
+
+
+def load_raw_csvs(spark: SparkSession, csv_glob: str) -> DataFrame:
+    df = (
+        spark.read
         .option("header", "true")
         .option("mode", "DROPMALFORMED")
         .option("timestampFormat", "yyyy-MM-dd HH:mm:ss z")
         .schema(get_rees46_schema())
-        .csv(csv_pattern)
+        .csv(csv_glob)
     )
-    count_and_log(df, "Raw records loaded")
+    logger.info("Queued lazy CSV read: %s", csv_glob)
     return df
 
-# Processed data
-@log_step("EXTRACT: Load cleaned Parquet")
-def load_cleaned_parquet(spark: SparkSession, output_dir: str) -> DataFrame:
-    path = os.path.join(output_dir, "cleaned.parquet")
-    df = spark.read.parquet(path)
-    count_and_log(df, "Cleaned records loaded")
-    return df
 
-# Node mappings 
-def load_node_mapping(spark: SparkSession, mappings_dir: str,
-                      name: str) -> DataFrame:
-    path = os.path.join(mappings_dir, f"{name}.parquet")
-    return spark.read.parquet(path)
+def clean(df: DataFrame, cfg: dict | None = None) -> DataFrame:
+    if cfg is None:
+        cfg = load_config()
 
-def load_all_node_mappings(spark: SparkSession, mappings_dir: str) -> dict:
-    mappings = {}
-    for name in ["user2idx", "product2idx", "category2idx", "brand2idx"]:
-        mappings[name] = load_node_mapping(spark, mappings_dir, name)
-    return mappings
+    fc = cfg["filter"]
+    unknown_brand = fc.get("unknown_brand", "unknown")
+    unknown_cat   = fc.get("unknown_category", "unknown")
+    level         = fc.get("category_level", "top")
 
-# Graph metadata
-def load_node_summary(stats_dir: str) -> dict:
-    path = os.path.join(stats_dir, "node_summary.json")
-    with open(path, "r") as f:
-        return json.load(f)
+    df = df.dropna(subset=["user_id", "product_id", "event_type", "event_time"])
+    df = df.filter(F.col("event_type").isin(list(_VALID_BEHAVIORS)))
+    df = df.dropDuplicates(["user_id", "product_id", "event_type", "event_time"])
+    df = df.withColumn("timestamp", F.col("event_time").cast("long"))
 
-def load_graph_meta(graph_dir: str) -> dict:
-    path = os.path.join(graph_dir, "graph_meta.json")
-    with open(path, "r") as f:
-        return json.load(f)
+    brand_clean = F.lower(F.trim(F.col("brand")))
+    df = df.withColumn(
+        "brand",
+        F.when(F.col("brand").isNotNull() & (brand_clean != ""), brand_clean)
+         .otherwise(F.lit(unknown_brand)),
+    )
 
-# Numpy edge arrays
-def load_edge_arrays(edge_dir: str, prefix: str):
-    src = np.load(os.path.join(edge_dir, f"{prefix}_src.npy"))
-    dst = np.load(os.path.join(edge_dir, f"{prefix}_dst.npy"))
-    ts_path = os.path.join(edge_dir, f"{prefix}_ts.npy")
-    ts = np.load(ts_path) if os.path.exists(ts_path) else None
-    return src, dst, ts
+    if level == "top":
+        cat_expr = F.when(
+            F.col("category_code").isNotNull() & (F.col("category_code") != ""),
+            F.split(F.col("category_code"), r"\.").getItem(0),
+        ).otherwise(F.lit(unknown_cat))
+    elif level == "second":
+        parts = F.split(F.col("category_code"), r"\.")
+        cat_expr = F.when(
+            F.col("category_code").isNotNull() & (F.col("category_code") != ""),
+            F.concat_ws(".", parts.getItem(0), F.coalesce(parts.getItem(1), F.lit("general"))),
+        ).otherwise(F.lit(unknown_cat))
+    else:
+        cat_expr = F.when(
+            F.col("category_code").isNotNull() & (F.col("category_code") != ""),
+            F.col("category_code"),
+        ).otherwise(F.lit(unknown_cat))
+
+    df = df.withColumn("category", cat_expr)
+
+    return df.select("user_id", "product_id", "event_type", "event_time", "timestamp", "category", "brand", "price")
