@@ -1,14 +1,14 @@
 # --- Paths ---
 paths:
-  raw_data_dir: "/mnt/data/rees46/raw"
-  raw_csv_pattern: "/mnt/data/rees46/raw/*.csv"
-  output_dir: "/mnt/data/rees46/processed"
-  node_mappings_dir: "/mnt/data/rees46/processed/node_mappings"
-  edge_lists_dir: "/mnt/data/rees46/processed/edge_lists"
-  splits_dir: "/mnt/data/rees46/processed/splits"
-  stats_dir: "/mnt/data/rees46/processed/statistics"
-  graph_dir: "/mnt/data/rees46/processed/graph"
-  small_dir: "/mnt/data/rees46/processed/small"
+  raw_data_dir: "data/raw"
+  raw_csv_pattern: "data/raw/*.csv"
+  output_dir: "data/processed"
+  node_mappings_dir: "data/processed/node_mappings"
+  edge_lists_dir: "data/processed/edge_lists"
+  splits_dir: "data/processed/splits"
+  stats_dir: "data/processed/statistics"
+  graph_dir: "data/processed/graph"
+  small_dir: "data/processed/small"
 
 # --- Spark ---
 spark:
@@ -16,11 +16,14 @@ spark:
   master: "local[*]"
   driver_memory: "30g"
   executor_memory: "30g"
-  local_dir: "/mnt/data/spark-temp"
-  checkpoint_dir: "/mnt/data/spark-checkpoints"
+  # Sửa lại thư mục temp của Spark để không bị lỗi ghi ổ đĩa
+  local_dir: "data/spark-temp"
+  checkpoint_dir: "data/spark-checkpoints"
   shuffle_partitions: 200
   default_parallelism: 64
   aqe_enabled: true
+  adaptive_coalesce_enabled: true
+  adaptive_skew_join_enabled: true
   broadcast_threshold: "256m"
   parquet_compression: "snappy"
   max_partition_bytes: "256m"
@@ -46,12 +49,12 @@ filter:
 
 # --- Temporal Split ---
 split:
-  # REES46: Oct 2019 - Mar 2020
-  # Train: Oct 2019 - Jan 2020 (4 tháng)
-  # Val: Feb 2020 (1 tháng)
-  # Test: Mar 2020 (1 tháng)
-  train_end: "2020-01-31"
-  val_end: "2020-02-29"
+  # REES46: Oct 2019 - Apr 2020
+  # Train: Oct 2019 - Feb 2020 (5 tháng)
+  # Val: Mar 2020 (1 tháng)
+  # Test: Apr 2020 (1 tháng)
+  train_end: "2020-02-29"
+  val_end: "2020-03-31"
 
 # --- Graph Schema ---
 graph:

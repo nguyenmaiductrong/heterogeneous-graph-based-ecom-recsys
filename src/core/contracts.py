@@ -1,8 +1,6 @@
 from __future__ import annotations
  
 from dataclasses import dataclass, field
-from typing import Dict, List, Literal, Optional, Tuple
- 
 import torch
 from torch import Tensor
 
@@ -13,11 +11,11 @@ NUM_GNN_LAYERS: int = 2
 LOW_RANK: int = 16  # r for A_phi @ B_beta^T
 SVD_RANK: int = 256 # q for randomized SVD
  
-NODE_TYPES: List[str] = ["user", "product", "category", "brand"]
-BEHAVIOR_TYPES: List[str] = ["view", "cart", "purchase"]
+NODE_TYPES: list[str] = ["user", "product", "category", "brand"]
+BEHAVIOR_TYPES: list[str] = ["view", "cart", "purchase"]
 TARGET_BEHAVIOR: str = "purchase"
 
-RELATION_TYPES: List[Tuple[str, str, str]] = [
+RELATION_TYPES: list[tuple[str, str, str]] = [
     ("user",     "view",       "product"),
     ("user",     "cart",       "product"),
     ("user",     "purchase",   "product"),
@@ -30,32 +28,32 @@ RELATION_TYPES: List[Tuple[str, str, str]] = [
     ("brand",    "brands",     "product"),
 ]
 
-BEHAVIOR_LOSS_WEIGHTS: Dict[str, float] = {
+BEHAVIOR_LOSS_WEIGHTS: dict[str, float] = {
     "purchase": 1.0,
     "cart":     0.3,
     "view":     0.1,
 }
 
-BEHAVIOR_TO_ID: Dict[str, int] = {"view": 0, "cart": 1, "purchase": 2}
-ID_TO_BEHAVIOR: Dict[int, str] = {v: k for k, v in BEHAVIOR_TO_ID.items()}
+BEHAVIOR_TO_ID: dict[str, int] = {"view": 0, "cart": 1, "purchase": 2}
+ID_TO_BEHAVIOR: dict[int, str] = {v: k for k, v in BEHAVIOR_TO_ID.items()}
 
 @dataclass
 class SampledSubgraph:
     # {node_type: Tensor(num_nodes_of_type, EMBED_DIM)}
-    node_features: Dict[str, Tensor]
- 
+    node_features: dict[str, Tensor]
+
     # {(src_type, edge_type, dst_type): Tensor(2, num_edges)}
-    edge_index: Dict[Tuple[str, str, str], Tensor]
- 
+    edge_index: dict[tuple[str, str, str], Tensor]
+
     # {(src_type, edge_type, dst_type): Tensor(num_edges,)}
     # values in {0=view, 1=cart, 2=purchase}
-    edge_behavior_origin: Dict[Tuple[str, str, str], Tensor]
- 
+    edge_behavior_origin: dict[tuple[str, str, str], Tensor]
+
     # Indices into node_features["user"] for this batch
     # shape: (batch_size,)
     target_user_indices: Tensor
- 
-    node_id_map: Dict[str, Tensor]
+
+    node_id_map: dict[str, Tensor]
  
     def validate(self) -> None:
         for ntype, feat in self.node_features.items():
@@ -79,7 +77,7 @@ class SampledSubgraph:
 class GNNOutput:
     # BEFORE hierarchy gating — per-behavior
     # {behavior: {"user": (B, d), "product": (B, d)}}
-    per_behavior_emb: Dict[str, Dict[str, Tensor]]
+    per_behavior_emb: dict[str, dict[str, Tensor]]
  
     # AFTER multi-order concat + projection
     final_user_emb: Tensor   # (num_users_in_batch, d)
@@ -107,8 +105,8 @@ class SVDFactors:
     SVD-view embedding (never materialize full I×J matrix):
       g_user = US_k @ (VS_k^T @ E_item)   # O(q*d)
     """
-    US: Dict[str, Tensor]   # {behavior: (num_users, q)}
-    VS: Dict[str, Tensor]   # {behavior: (num_items, q)}
+    US: dict[str, Tensor]   # {behavior: (num_users, q)}
+    VS: dict[str, Tensor]   # {behavior: (num_items, q)}
  
     def validate(self) -> None:
         for beh in BEHAVIOR_TYPES:
@@ -163,13 +161,68 @@ class EvalInput:
     user_embeddings: Tensor             # (num_eval_users, d)
     item_embeddings: Tensor             # (num_items, d)
     eval_user_ids: Tensor               # (num_eval_users,)
-    ground_truth: Dict[int, int]        # {user_id: target_item_id}
-    exclude_items: Dict[int, List[int]] # {user_id: [train_pos_items]}
+    ground_truth: dict[int, int]        # {user_id: target_item_id}
+    exclude_items: dict[int, list[int]] # {user_id: [train_pos_items]}
  
-    def validate(self) -> None:
-        assert self.user_embeddings.size(1) == EMBED_DIM
-        assert self.item_embeddings.size(1) == EMBED_DIM
-        assert len(self.ground_truth) == self.eval_user_ids.size(0)
+    def validate(self, total_num_users: int | None = None) -> None:
+        """Validate EvalInput tensor shapes and index bounds.
+
+        Parameters
+        ----------
+        total_num_users:
+            The authoritative total user count from ``node_counts.json``
+            (i.e. ``SplitResult.num_users``).  Pass this to enable a strict
+            bounds check on ``eval_user_ids``, which holds *global* user
+            indices in ``[0, total_num_users)`` — NOT positions into
+            ``user_embeddings`` (which has size ``N_eval_users``).
+            When omitted the global-ID bounds check is skipped.
+        """
+        n_eval_users = self.user_embeddings.size(0)
+        num_items    = self.item_embeddings.size(0)
+
+        assert self.user_embeddings.size(1) == EMBED_DIM, (
+            f"user_embeddings dim1={self.user_embeddings.size(1)}, expected {EMBED_DIM}"
+        )
+        assert self.item_embeddings.size(1) == EMBED_DIM, (
+            f"item_embeddings dim1={self.item_embeddings.size(1)}, expected {EMBED_DIM}"
+        )
+
+        # user_embeddings is ordered by POSITION in eval_user_ids, not by
+        # global user index.  Check the positional pairing, not a value bound.
+        assert n_eval_users == self.eval_user_ids.size(0), (
+            f"user_embeddings has {n_eval_users} rows but "
+            f"eval_user_ids has {self.eval_user_ids.size(0)} entries — "
+            "they must have the same length (embeddings are ordered by eval_user_ids position)"
+        )
+        assert len(self.ground_truth) == self.eval_user_ids.size(0), (
+            f"ground_truth has {len(self.ground_truth)} entries but "
+            f"eval_user_ids has {self.eval_user_ids.size(0)}"
+        )
+
+        # eval_user_ids holds GLOBAL user indices; check against total vocab size
+        # when the authoritative count is provided.
+        if total_num_users is not None:
+            uid_max = int(self.eval_user_ids.max().item())
+            assert uid_max < total_num_users, (
+                f"eval_user_ids contains global index {uid_max} >= "
+                f"total_num_users {total_num_users}.  "
+                "This is a vocabulary mismatch between the saved mapping and "
+                "the node counts passed to the model."
+            )
+
+        # Item bounds: ground_truth values are global item indices into item_embeddings
+        # (item_embeddings covers ALL items, unlike user_embeddings which covers only eval users).
+        gt_items = list(self.ground_truth.values())
+        item_min = min(gt_items)
+        item_max = max(gt_items)
+        assert item_min >= 0, (
+            f"ground_truth contains negative item index {item_min}"
+        )
+        assert item_max < num_items, (
+            f"ground_truth contains item index {item_max} >= "
+            f"item_embeddings.size(0) {num_items}.  "
+            "This will cause a CUDA OOB during evaluator scoring."
+        )
 
 @dataclass
 class ServingArtifacts:
@@ -185,11 +238,11 @@ class CrossComboWeightSpec:
     """
     W(phi,beta) = W_base + Delta_phi + Delta_beta + A_phi @ B_beta^T
     """
-    w_base:     Tuple[int, int] = (EMBED_DIM, EMBED_DIM)
-    delta_phi:  Tuple[int, int] = (EMBED_DIM, EMBED_DIM)  # × |R|
-    delta_beta: Tuple[int, int] = (EMBED_DIM, EMBED_DIM)  # × |B|
-    a_phi:      Tuple[int, int] = (EMBED_DIM, LOW_RANK)   # × |R|
-    b_beta:     Tuple[int, int] = (EMBED_DIM, LOW_RANK)   # × |B|
+    w_base:     tuple[int, int] = (EMBED_DIM, EMBED_DIM)
+    delta_phi:  tuple[int, int] = (EMBED_DIM, EMBED_DIM)  # × |R|
+    delta_beta: tuple[int, int] = (EMBED_DIM, EMBED_DIM)  # × |B|
+    a_phi:      tuple[int, int] = (EMBED_DIM, LOW_RANK)   # × |R|
+    b_beta:     tuple[int, int] = (EMBED_DIM, LOW_RANK)   # × |B|
  
     @property
     def total_params(self) -> int:
