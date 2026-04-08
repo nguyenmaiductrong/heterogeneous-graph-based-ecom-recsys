@@ -1,0 +1,41 @@
+# GraphSAGE-CF — Purchase-only bipartite baseline
+# ================================================
+# Architecture : GraphSAGE mean-aggregator, 2 layers
+# Input        : purchase edges only  (same as LightGCN baseline)
+# Loss         : BPR  +  L2 regularisation on raw embeddings
+#
+# Training environment: Google Colab (GPU T4/A100)
+# Data source  : huggingface.co/datasets/nguyenmaiductrong/rees46-processed-data
+#
+# Run:
+#   python -m src.training.graphsage_baseline \
+#     --config config/graphsage_baseline.yaml \
+#     [--download_hf]          # first-time HuggingFace download
+#
+# Or directly:
+#   python src/training/graphsage_baseline.py \
+#     --data_dir /content/data/temporal \
+#     --download_hf
+
+data:
+  data_dir: /content/data/temporal
+
+model:
+  # embed_dim MUST match src/core/contracts.py::EMBED_DIM (currently 64)
+  # to be compatible with TemporalSplitEvaluator.
+  embed_dim: 64
+  n_layers: 2
+  dropout: 0.1
+
+training:
+  batch_size: 8192
+  device: cuda
+  epochs: 100
+  eval_every: 5       # run validation every N epochs
+  l2_lambda: 1.0e-04
+  lr: 0.001
+  max_grad_norm: 5.0
+  patience: 10        # early stopping: stop after N non-improving eval epochs
+  save_dir: /content/checkpoints-graphsage
+  save_every: 10
+  keep_top_k: 5
