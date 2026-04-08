@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 import torch
 from torch import Tensor
 
-EMBED_DIM: int = 128
+EMBED_DIM: int = 64
 NUM_HEADS: int = 4
 HEAD_DIM: int = EMBED_DIM // NUM_HEADS  # 32
 NUM_GNN_LAYERS: int = 2

@@ -1,8 +1,3 @@
-"""
-Usage
-python -m src.training.trainer --config config/training.yaml
-python -m src.training.trainer --config config/training.yaml --device cpu
-"""
 from __future__ import annotations
 
 import json
@@ -24,15 +19,13 @@ from src.core.evaluator import TemporalSplitEvaluator
 
 logger = logging.getLogger(__name__)
 
-
-# Config
 @dataclass
 class TrainConfig:
     epochs: int = 30
     batch_size: int = 512
-    lr: float = 1e-3
-    weight_decay: float = 1e-5
-    l2_lambda: float = 1e-5
+    lr: float = 3e-4
+    weight_decay: float = 1e-3
+    l2_lambda: float = 1e-4
     num_neg: int = 1
     max_grad_norm: float = 1.0
     amp: bool = True
@@ -74,18 +67,14 @@ class TrainConfig:
             wandb_save_every=w.get("save_every", cls.wandb_save_every),
         )
 
-
 def load_yaml_config(path: str) -> dict:
     import yaml
     with open(path) as f:
         return yaml.safe_load(f)
 
-
-# Checkpoint helpers
 def _find_latest_checkpoint(save_dir: Path) -> Path | None:
     ckpts = sorted(save_dir.glob("epoch_*.pt"))
     return ckpts[-1] if ckpts else None
-
 
 def _save_checkpoint(
     save_dir: Path,
@@ -108,7 +97,6 @@ def _save_checkpoint(
         save_dir / f"epoch_{epoch:03d}.pt",
     )
 
-
 def _load_checkpoint(
     ckpt_path: Path,
     model: BAGNNModel,
@@ -124,8 +112,6 @@ def _load_checkpoint(
     logger.info("Resumed from %s (epoch %d, loss=%.4f)", ckpt_path, resumed_epoch, ckpt.get("loss", float("nan")))
     return resumed_epoch + 1
 
-
-# Dataset
 class InteractionDataset(Dataset):
     def __init__(self, triplets: torch.Tensor) -> None:
         assert triplets.ndim == 2 and triplets.size(1) == 3
@@ -137,8 +123,6 @@ class InteractionDataset(Dataset):
     def __getitem__(self, idx: int) -> torch.Tensor:
         return self.triplets[idx]
 
-
-# train_epoch
 def train_epoch(
     model: BAGNNModel,
     sampler: BehaviorAwareNeighborSampler,
@@ -151,7 +135,6 @@ def train_epoch(
     max_grad_norm: float = 1.0,
     amp: bool = True,
 ) -> dict[str, float]:
-    """One full pass over the training set."""
     model.train()
     total_loss = 0.0
     n_steps = 0
@@ -233,8 +216,6 @@ def train_epoch(
 
     return {"train/loss": total_loss / max(n_steps, 1)}
 
-
-# Embedding export
 @torch.no_grad()
 def export_embeddings(
     model: BAGNNModel,
@@ -244,12 +225,6 @@ def export_embeddings(
     device: torch.device,
     batch_size: int = 512,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """
-    Returns
-    -------
-    user_emb : (N_u, d) CPU tensor — ordered by user_ids
-    item_emb : (n_items, d) CPU tensor
-    """
     model.eval()
     d = model.embed_dim
 
@@ -273,8 +248,6 @@ def export_embeddings(
 
     return user_emb, item_emb
 
-
-# eval_epoch
 @torch.no_grad()
 def eval_epoch(
     model: BAGNNModel,
@@ -287,19 +260,23 @@ def eval_epoch(
     device: torch.device,
     batch_size: int = 512,
 ) -> dict[str, float]:
+    valid_users = list(ground_truth.keys())
+    eval_user_ids_filtered = torch.tensor(valid_users, dtype=torch.long, device=eval_user_ids.device)
+
     user_emb, item_emb = export_embeddings(
-        model, sampler, eval_user_ids, n_items, device, batch_size
+        model, sampler, eval_user_ids_filtered, n_items, device, batch_size
     )
+    
     eval_input = EvalInput(
         user_embeddings=user_emb,
         item_embeddings=item_emb,
-        eval_user_ids=eval_user_ids,
+        eval_user_ids=eval_user_ids_filtered, 
         ground_truth=ground_truth,
         exclude_items=exclude_items,
     )
+    
     return evaluator.evaluate(eval_input, batch_size=2048, mode="sampled")
 
-# Main training loop
 def train(
     model: BAGNNModel,
     sampler: BehaviorAwareNeighborSampler,
@@ -312,12 +289,6 @@ def train(
     cfg: TrainConfig,
     device: torch.device,
 ) -> None:
-    """Full training run with auto-resume and early stopping on NDCG@20.
-
-    Resume priority:
-      1. Nếu use_wandb=True: thử tải checkpoint từ W&B Artifact (latest).
-      2. Fallback: tìm checkpoint local trong save_dir (epoch_*.pt).
-    """
     model.to(device)
 
     dataset = InteractionDataset(train_triplets)
@@ -339,7 +310,6 @@ def train(
     save_dir = Path(cfg.save_dir)
     save_dir.mkdir(parents=True, exist_ok=True)
 
-    # --- Khởi tạo W&B (nếu được bật) ---
     wandb_manager = None
     wandb_run = None
     if cfg.use_wandb:
@@ -365,7 +335,6 @@ def train(
         })
         logger.info("W&B enabled — project=%s run=%s", cfg.wandb_project, wandb_run.id)
 
-    # Resume: W&B trước, local fallback
     start_epoch = 0
     if wandb_manager is not None:
         start_epoch = wandb_manager.load_checkpoint(model, optimizer, scaler, device)
@@ -378,7 +347,7 @@ def train(
     best_ndcg = -1.0
     no_improve = 0
     metrics = {}
-
+    
     epoch_pbar = tqdm(range(start_epoch, cfg.epochs), desc="epochs", dynamic_ncols=True)
     for epoch in epoch_pbar:
         train_log = train_epoch(
@@ -446,8 +415,6 @@ def train(
 
     logger.info("Training complete. Best NDCG@20=%.4f", best_ndcg)
 
-
-# Entry point
 if __name__ == "__main__":
     import argparse
     import pickle
@@ -464,7 +431,7 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default="config/training.yaml")
-    parser.add_argument("--device", default=None, help="Override device from config")
+    parser.add_argument("--device", default=None)
     args = parser.parse_args()
 
     cfg_dict = load_yaml_config(args.config)
@@ -485,8 +452,7 @@ if __name__ == "__main__":
     else:
         NODE_COUNTS = cfg_dict["data"]["node_counts"]
         logger.warning(
-            "node_counts.json not found in %s; using YAML values %s. "
-            "Run prepare_data.py to generate authoritative counts.",
+            "node_counts.json not found in %s; using YAML values %s. ",
             _DATA, NODE_COUNTS,
         )
 
@@ -528,7 +494,6 @@ if __name__ == "__main__":
             torch.full((n_p,), 2, dtype=torch.long),
         ], dim=1)
 
-        # Use validation split for early stopping — test split is held out for final evaluation only.
         val_users = torch.from_numpy(np.load(f"{_DATA}/val_user_idx.npy")).long()
         val_items = np.load(f"{_DATA}/val_product_idx.npy")
         ground_truth = {int(u): int(i) for u, i in zip(val_users.tolist(), val_items.tolist())}
@@ -545,14 +510,8 @@ if __name__ == "__main__":
 
         return hetero, train_triplets, val_users, ground_truth, exclude_items, behavior_counts
 
-    logger.info("Loading REES46 data (Global Temporal Split) ...")
     hetero, train_triplets, eval_user_ids, ground_truth, exclude_items, behavior_counts = load_data()
-    logger.info(
-        "users=%d  products=%d  train_purchase=%d  eval_users=%d",
-        NODE_COUNTS["user"], NODE_COUNTS["product"],
-        len(train_triplets), len(eval_user_ids),
-    )
-
+    
     m_cfg = cfg_dict.get("model", {})
     s_cfg = cfg_dict.get("sampler", {})
 
@@ -568,14 +527,11 @@ if __name__ == "__main__":
 
     model = BAGNNModel(
         n_nodes=NODE_COUNTS,
-        embed_dim=m_cfg.get("embed_dim", 128),
+        embed_dim=m_cfg.get("embed_dim", 64),
         n_layers=m_cfg.get("n_layers", 2),
         rank=m_cfg.get("rank", 16),
-        dropout=m_cfg.get("dropout", 0.1),
+        dropout=m_cfg.get("dropout", 0.4),
     ).to(device)
-
-    n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    logger.info("Model params: %d (%.1fM)", n_params, n_params / 1e6)
 
     train(
         model=model,
