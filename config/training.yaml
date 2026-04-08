@@ -1,42 +1,42 @@
 data:
-  data_dir: "data/processed/temporal"
-  struct_dir: "data/processed/temporal/node_mappings"
+  data_dir: /content/data/temporal
   node_counts:
-    user: 267973
-    product: 60798
-    category: 14
     brand: 2734
+    category: 14
+    product: 60798
+    user: 267973
+  struct_dir: /content/data/temporal/node_mappings
 
 model:
-  embed_dim: 128
+  dropout: 0.4          # [Đã sửa] Tăng từ 0.1 -> 0.4
+  embed_dim: 64         # [Đã sửa] Giảm từ 128 -> 64
   n_layers: 2
   rank: 16
-  dropout: 0.1
 
 sampler:
-  hop1_budget: 15  
-  hop2_budget: 10  
+  hop1_budget: 15
+  hop2_budget: 10
 
 training:
+  amp: true
+  batch_size: 2048  
+  device: cuda
   epochs: 30
-  batch_size: 8192      
-  lr: 3.0e-3            
-  weight_decay: 1.0e-5
-  l2_lambda: 1.0e-5
-  num_neg: 1
-  max_grad_norm: 1.0
-  amp: true          
-  patience: 5
-  eval_every: 1
   eval_batch_size: 16384 
+  eval_every: 1
+  l2_lambda: 1.0e-04 
+  lr: 0.0003
+  max_grad_norm: 1.0
+  num_neg: 1
   num_workers: 8
-  save_dir: "/content/checkpoints" 
-  device: "cuda"
+  patience: 5
+  save_dir: /content/checkpoints-c2
+  weight_decay: 1.0e-03
 
 wandb:
+  artifact_name: bagnn-checkpoint-v2
   enabled: true
-  project: "bagnn-recsys"
-  entity: "nguyenmaiductrong37-h-c-vi-n-c-ng-ngh-b-u-ch-nh-vi-n-th-ng"
-  run_name: "bagnn-g4"
-  artifact_name: "bagnn-checkpoint"
-  save_every: 5
+  entity: nguyenmaiductrong37-h-c-vi-n-c-ng-ngh-b-u-ch-nh-vi-n-th-ng
+  project: bagnn-recsys
+  run_name: bagnn-g4-v2
+  save_every: 1
