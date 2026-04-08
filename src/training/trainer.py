@@ -13,6 +13,7 @@ from pathlib import Path
 
 import torch
 from torch.utils.data import Dataset, DataLoader
+from tqdm import tqdm
 
 from src.model.bagnn import BAGNNModel
 from src.core.contracts import BEHAVIOR_TYPES
@@ -155,7 +156,8 @@ def train_epoch(
     total_loss = 0.0
     n_steps = 0
 
-    for raw_batch in dataloader:
+    pbar = tqdm(dataloader, desc="train", leave=False, dynamic_ncols=True)
+    for raw_batch in pbar:
         raw_batch = raw_batch.to(device)
         users_g = raw_batch[:, 0]
         items_g = raw_batch[:, 1]
@@ -170,11 +172,11 @@ def train_epoch(
             user_emb, item_emb = model(subgraph)
 
             user_x = subgraph["user"].x.contiguous()
-            u_loc = torch.searchsorted(user_x, users_g)
+            u_loc = torch.searchsorted(user_x, users_g.contiguous())
 
             prod_x = subgraph["product"].x
             sorted_px, sort_ord = prod_x.sort()
-            pos_p = torch.searchsorted(sorted_px, items_g).clamp(max=sorted_px.size(0) - 1)
+            pos_p = torch.searchsorted(sorted_px, items_g.contiguous()).clamp(max=sorted_px.size(0) - 1)
             found_p = sorted_px[pos_p] == items_g
             pp_loc = sort_ord[pos_p]
 
@@ -227,6 +229,7 @@ def train_epoch(
 
         total_loss += log["loss/total"]
         n_steps += 1
+        pbar.set_postfix(loss=f"{log['loss/total']:.4f}")
 
     return {"train/loss": total_loss / max(n_steps, 1)}
 
@@ -266,9 +269,7 @@ def export_embeddings(
         sub = sampler.sample(seeds, seed_type="user").to(device)
         with torch.amp.autocast("cuda", enabled=torch.cuda.is_available()):
             u_local, _ = model(sub)
-        user_x = sub["user"].x
-        pos = torch.searchsorted(user_x, seeds)
-        user_emb[start:end] = u_local[pos].float().cpu()
+        user_emb[start:end] = u_local.float().cpu()
 
     return user_emb, item_emb
 
@@ -378,7 +379,8 @@ def train(
     no_improve = 0
     metrics = {}
 
-    for epoch in range(start_epoch, cfg.epochs):
+    epoch_pbar = tqdm(range(start_epoch, cfg.epochs), desc="epochs", dynamic_ncols=True)
+    for epoch in epoch_pbar:
         train_log = train_epoch(
             model, sampler, loader, optimizer, loss_fn, scaler, device,
             num_neg=cfg.num_neg, max_grad_norm=cfg.max_grad_norm, amp=cfg.amp,
@@ -386,6 +388,8 @@ def train(
         train_loss = train_log["train/loss"]
 
         row = f"Epoch {epoch:03d} | " + " | ".join(f"{k}={v:.4f}" for k, v in train_log.items())
+
+        postfix: dict[str, str] = {"loss": f"{train_loss:.4f}"}
 
         if (epoch + 1) % cfg.eval_every == 0:
             metrics = eval_epoch(
@@ -396,6 +400,9 @@ def train(
             row += " | " + " | ".join(f"{k}={v:.4f}" for k, v in metrics.items())
 
             ndcg20 = metrics.get("NDCG@20", 0.0)
+            postfix["ndcg20"] = f"{ndcg20:.4f}"
+            postfix["best"] = f"{max(best_ndcg, ndcg20):.4f}"
+
             if ndcg20 > best_ndcg:
                 best_ndcg = ndcg20
                 no_improve = 0
@@ -410,9 +417,9 @@ def train(
             else:
                 no_improve += 1
 
+        epoch_pbar.set_postfix(postfix)
         _save_checkpoint(save_dir, epoch, model, optimizer, scaler, train_loss, metrics)
 
-        # Log metrics + upload artifact lên W&B 
         if wandb_manager is not None:
             wandb_run.log({**train_log, **metrics, "epoch": epoch})
             cloud_ok = wandb_manager.save_checkpoint(
@@ -470,8 +477,6 @@ if __name__ == "__main__":
     _DATA = cfg_dict["data"]["data_dir"]
     _STRUCT = cfg_dict["data"]["struct_dir"]
 
-    # node_counts.json written by prepare_data.py takes precedence over the
-    # YAML values, which may be stale (full-dataset counts on a small split).
     _nc_path = os.path.join(_DATA, "node_counts.json")
     if os.path.exists(_nc_path):
         with open(_nc_path) as _f:
@@ -505,9 +510,6 @@ if __name__ == "__main__":
             hetero[ntype].x = torch.arange(n)
             hetero[ntype].num_nodes = n
 
-        # .contiguous() after .flip(0): flip returns a view with negative stride.
-        # PyG's scatter_add_ requires C-contiguous layout; without an explicit
-        # .contiguous() call PyTorch allocates a hidden copy per forward pass.
         hetero[("user", "view", "product")].edge_index     = view_ei.contiguous()
         hetero[("user", "cart", "product")].edge_index     = cart_ei.contiguous()
         hetero[("user", "purchase", "product")].edge_index = purchase_ei.contiguous()
