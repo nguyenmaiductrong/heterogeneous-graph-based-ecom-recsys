@@ -183,7 +183,7 @@ class TemporalSplitEvaluator:
             )
         if mode == "full":
             return self.evaluate_full_ranking(
-                eval_input, batch_size=min(batch_size, 512),
+                eval_input, batch_size=batch_size,
             )
         raise ValueError(
             f"Unknown mode {mode!r}; use 'sampled' or 'full'"
