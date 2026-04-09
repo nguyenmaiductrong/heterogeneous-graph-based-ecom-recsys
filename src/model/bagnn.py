@@ -1,14 +1,3 @@
-"""
-BAGNN — Behavior-Aware Graph Neural Network
-============================================
-Node types  : user, product, category, brand
-Edge types  : view, cart, purchase (+ reverses), belongs_to, contains, producedBy, brands
-
-Core novelty: W(φ, β) = W_base + A_φ @ B_β.T
-  - Structural edges (belongs_to, producedBy) inherit β from upstream user behavior
-  - Per-edge beta computed via einsum to avoid O(E·d·d) materialization
-"""
-
 from __future__ import annotations
 
 import torch
@@ -20,11 +9,8 @@ from torch_geometric.data import HeteroData
 from torch_geometric.utils import softmax
 from typing import Dict, Optional, Tuple
 
-# ---------------------------------------------------------------------------
-# Constants
-# ---------------------------------------------------------------------------
-
-EMBED_DIM: int = 128
+from src.model.hierarchy_gate import HierarchyGate
+from src.core.contracts import EMBED_DIM
 
 NODE_TYPES = ["user", "product", "category", "brand"]
 
@@ -48,37 +34,25 @@ ALL_EDGE_TYPES = BEHAVIOR_EDGES + STRUCTURAL_EDGES
 
 BEHAVIOR_ORIGIN: Dict[str, int] = {"view": 0, "cart": 1, "purchase": 2}
 
-# Precomputed for O(1) lookup in forward pass
 _REL_IDX: Dict[Tuple[str, str, str], int] = {et: i for i, et in enumerate(ALL_EDGE_TYPES)}
 
-# β index for each edge name: behavior edges → 0/1/2; structural/reverse → 3
 _BEH_IDX: Dict[str, int] = {
     "view": 0, "cart": 1, "purchase": 2,
     "rev_view": 0, "rev_cart": 1, "rev_purchase": 2,
     "belongs_to": 3, "contains": 3, "producedBy": 3, "brands": 3,
 }
 
+_REV_BEH_KEYS = {"rev_view": "view", "rev_cart": "cart", "rev_purchase": "purchase"}
 
-# ---------------------------------------------------------------------------
-# N1.1 — Low-rank behavior-aware weight decomposition
-# W(φ, β) = W_base + A_φ @ B_β.T
-# ---------------------------------------------------------------------------
 
 class BehaviorAwareWeight(nn.Module):
-    """
-    W(φ, β) = W_base  +  A_φ  @  B_β.T
-
-    β ∈ {0=view, 1=cart, 2=purchase, 3=structural}
-    φ ∈ {0=user, 1=product, 2=category, 3=brand}
-    """
-
     def __init__(
         self,
         in_dim:  int,
         out_dim: int,
         rank:    int = 16,
         n_phi:   int = len(NODE_TYPES),
-        n_beta:  int = 4,              # 0-2 behavior + 3 structural
+        n_beta:  int = 4,
     ) -> None:
         super().__init__()
         self.W_base = nn.Parameter(torch.empty(out_dim, in_dim))
@@ -89,24 +63,11 @@ class BehaviorAwareWeight(nn.Module):
         nn.init.kaiming_uniform_(self.B)
 
     def forward(self, phi: int, beta: int) -> Tensor:
-        """Returns W(φ, β) of shape (out_dim, in_dim). beta=-1 maps to β=3 (structural)."""
         b_idx = beta if beta >= 0 else 3
         return self.W_base + self.A[phi] @ self.B[b_idx].T
 
 
-# ---------------------------------------------------------------------------
-# N1.2 — BAGNNConv: one heterogeneous convolution step
-# ---------------------------------------------------------------------------
-
 class BAGNNConv(nn.Module):
-    """
-    Single BAGNN convolution layer.
-
-    For behavior edges: uniform β per edge type.
-    For structural edges: per-edge β from edge_attr (behavior_origin inherited
-      from hop-1 sampling), enabling W(φ=product, β=view) vs W(φ=product, β=purchase).
-    """
-
     def __init__(
         self,
         in_dim:      int = EMBED_DIM,
@@ -120,7 +81,7 @@ class BAGNNConv(nn.Module):
 
         self.baw     = BehaviorAwareWeight(in_dim, out_dim, rank)
         self.rel_emb = nn.Embedding(n_relations, out_dim)
-        self.beh_emb = nn.Embedding(4, out_dim)      # 0-2 behavior + 3 structural
+        self.beh_emb = nn.Embedding(4, out_dim)
         self.a_att   = nn.Parameter(torch.empty(4 * out_dim))
         self.norm    = nn.LayerNorm(out_dim)
         nn.init.xavier_uniform_(self.a_att.unsqueeze(0))
@@ -130,11 +91,18 @@ class BAGNNConv(nn.Module):
         x_dict:          Dict[str, Tensor],
         edge_index_dict: Dict[Tuple, Tensor],
         edge_attr_dict:  Optional[Dict[Tuple, Tensor]] = None,
-    ) -> Dict[str, Tensor]:
-        all_r_emb = self.rel_emb.weight   # (n_relations, out_dim)
-        all_b_emb = self.beh_emb.weight   # (4, out_dim)
+    ) -> Tuple[Dict[str, Tensor], Dict[str, Tensor]]:
+        all_r_emb = self.rel_emb.weight
+        all_b_emb = self.beh_emb.weight
 
         agg: Dict[str, Optional[Tensor]] = {t: None for t in NODE_TYPES}
+
+        n_users = x_dict["user"].size(0) if "user" in x_dict else 0
+        ref = next(iter(x_dict.values()))
+        beh_user_agg: Dict[str, Tensor] = {
+            k: torch.zeros(n_users, self.out_dim, device=ref.device, dtype=ref.dtype)
+            for k in ("view", "cart", "purchase")
+        }
 
         for edge_type, edge_index in edge_index_dict.items():
             src_type, edge_name, dst_type = edge_type
@@ -153,42 +121,36 @@ class BAGNNConv(nn.Module):
             attr     = (edge_attr_dict or {}).get(edge_type)
 
             if beta_raw < 0 and attr is not None and attr.numel() > 0:
-                # Structural edge with per-edge behavior_origin tags
                 origin = attr.view(-1).long().clamp(0, 2)
 
                 base_msg   = torch.einsum("oi,ei->eo", self.baw.W_base, h_src)
-                A_phi      = self.baw.A[phi]                              # (out_dim, rank)
-                # Avoid materializing (E, in_dim, rank) — compute mid per-group
+                A_phi      = self.baw.A[phi]
                 mid = torch.zeros(origin.size(0), self.baw.B.size(-1),
                                   device=h_src.device, dtype=h_src.dtype)
                 for b_idx in origin.unique():
                     mask = origin == b_idx
-                    mid[mask] = (h_src[mask] @ self.baw.B[b_idx]).to(mid.dtype)  # (E_b, rank)
+                    mid[mask] = (h_src[mask] @ self.baw.B[b_idx]).to(mid.dtype)
                 msg        = base_msg + mid @ A_phi.T
 
-                b_emb      = all_b_emb[origin]                        # (E, d) — per-edge
+                b_emb      = all_b_emb[origin]
                 h_dst_proj = torch.einsum("oi,ei->eo", self.baw.W_base, h_dst)
             else:
-                # Behavior edge or structural edge without attr: uniform β
                 beta_idx   = beta_raw if beta_raw >= 0 else 3
                 W          = self.baw(phi, beta_raw)
                 msg        = torch.einsum("oi,ei->eo", W, h_src)
-                b_emb      = None                                      # uniform; handled via scalar below
+                b_emb      = None
                 h_dst_proj = F.linear(h_dst, W)
 
-            # Fused attention: avoid materializing (E, 4*d) concat
-            # r_emb and possibly b_emb are uniform per edge-type → reduce to scalars
             d = self.out_dim
             a0, a1, a2, a3 = (self.a_att[:d], self.a_att[d:2*d],
                                self.a_att[2*d:3*d], self.a_att[3*d:])
 
-            r_scalar = (all_r_emb[_REL_IDX[edge_type]] * a2).sum()   # scalar
+            r_scalar = (all_r_emb[_REL_IDX[edge_type]] * a2).sum()
 
             if beta_raw < 0 and attr is not None and attr.numel() > 0:
-                # per-edge b_emb
-                b_term = (b_emb * a3).sum(-1)                         # (E,)
+                b_term = (b_emb * a3).sum(-1)
             else:
-                b_term = (all_b_emb[beta_idx] * a3).sum()             # scalar
+                b_term = (all_b_emb[beta_idx] * a3).sum()
 
             e = ((msg * a0).sum(-1)
                  + (h_dst_proj * a1).sum(-1)
@@ -202,6 +164,12 @@ class BAGNNConv(nn.Module):
                 agg[dst_type] = weighted.new_zeros(N_dst, self.out_dim)
             agg[dst_type].scatter_add_(0, dst_idx.unsqueeze(-1).expand_as(weighted), weighted)
 
+            beh_key = _REV_BEH_KEYS.get(edge_name)
+            if beh_key is not None and n_users > 0:
+                beh_user_agg[beh_key].scatter_add_(
+                    0, dst_idx.unsqueeze(-1).expand_as(weighted), weighted
+                )
+
         out_dict: Dict[str, Tensor] = {}
         for t in NODE_TYPES:
             if agg[t] is not None:
@@ -212,16 +180,10 @@ class BAGNNConv(nn.Module):
             elif t in x_dict:
                 out_dict[t] = x_dict[t]
 
-        return out_dict
+        return out_dict, beh_user_agg
 
-
-# ---------------------------------------------------------------------------
-# N1.3 — BAGNNLayer stack + BAGNNModel
-# ---------------------------------------------------------------------------
 
 class BAGNNLayer(nn.Module):
-    """Stacks `n_layers` BAGNNConv layers with dropout between layers."""
-
     def __init__(
         self,
         in_dim:   int = EMBED_DIM,
@@ -230,9 +192,11 @@ class BAGNNLayer(nn.Module):
         n_layers: int = 2,
         rank:     int = 16,
         dropout:  float = 0.1,
+        use_checkpoint: bool = True,
     ) -> None:
         super().__init__()
         assert n_layers >= 1
+        self.use_checkpoint = use_checkpoint
         dims = [in_dim] + [hid_dim] * (n_layers - 1) + [out_dim]
         self.convs   = nn.ModuleList([
             BAGNNConv(in_dim=dims[i], out_dim=dims[i + 1], rank=rank)
@@ -245,41 +209,36 @@ class BAGNNLayer(nn.Module):
         x_dict:          Dict[str, Tensor],
         edge_index_dict: Dict[Tuple, Tensor],
         edge_attr_dict:  Optional[Dict[Tuple, Tensor]] = None,
-    ) -> Dict[str, Tensor]:
+    ) -> Tuple[Dict[str, Tensor], Dict[str, Tensor]]:
+        BEH_KEYS = ["view", "cart", "purchase"]
         h = x_dict
+        beh_user_agg: Dict[str, Tensor] = {}
+
         for i, conv in enumerate(self.convs):
-            # Gradient checkpointing: recompute activations during backward
-            # instead of storing them, halving peak activation memory.
-            if self.training:
-                # checkpoint requires tensor inputs; pass node tensors explicitly
-                node_types = list(h.keys())
+            if self.training and self.use_checkpoint:
+                node_types = [t for t in NODE_TYPES if t in h]
                 node_vals  = [h[t] for t in node_types]
 
                 def _conv(*vals, _conv=conv, _nt=node_types,
-                          _eid=edge_index_dict, _ead=edge_attr_dict):
+                          _eid=edge_index_dict, _ead=edge_attr_dict, _bk=BEH_KEYS):
                     x = dict(zip(_nt, vals))
-                    return list(_conv(x, _eid, _ead).values())
+                    out_dict, b_agg = _conv(x, _eid, _ead)
+                    return [out_dict[t] for t in _nt] + [b_agg[k] for k in _bk]
 
-                out_vals = grad_checkpoint(_conv, *node_vals, use_reentrant=False)
-                h = dict(zip(node_types, out_vals))
+                out_all  = grad_checkpoint(_conv, *node_vals, use_reentrant=False)
+                n        = len(node_types)
+                h        = dict(zip(node_types, out_all[:n]))
+                beh_user_agg = {k: out_all[n + j] for j, k in enumerate(BEH_KEYS)}
             else:
-                h = conv(h, edge_index_dict, edge_attr_dict)
+                h, beh_user_agg = conv(h, edge_index_dict, edge_attr_dict)
+
             if i < len(self.convs) - 1:
                 h = {t: self.dropout(v) for t, v in h.items()}
-        return h
+
+        return h, beh_user_agg
 
 
 class BAGNNModel(nn.Module):
-    """
-    Full BAGNN model for heterogeneous e-commerce recommendation.
-
-    Architecture
-    ------------
-    1. Node-type input projections  (raw feat → embed_dim)
-    2. BAGNNLayer stack             (behavior-aware message passing)
-    3. Dot-product decoder          score(u, i) = h_u · h_i
-    """
-
     def __init__(
         self,
         feat_dims: Optional[Dict[str, int]] = None,
@@ -288,6 +247,7 @@ class BAGNNModel(nn.Module):
         n_layers:  int   = 2,
         rank:      int   = 16,
         dropout:   float = 0.1,
+        use_grad_checkpoint: bool = True,
     ) -> None:
         super().__init__()
         self.embed_dim = embed_dim
@@ -303,9 +263,17 @@ class BAGNNModel(nn.Module):
         self.bagnn = BAGNNLayer(
             in_dim=embed_dim, hid_dim=embed_dim, out_dim=embed_dim,
             n_layers=n_layers, rank=rank, dropout=dropout,
+            use_checkpoint=use_grad_checkpoint,
         )
 
-    def encode(self, data: HeteroData) -> Dict[str, Tensor]:
+        self.beh_proj = nn.ModuleDict({
+            "view":     nn.Linear(embed_dim, embed_dim),
+            "cart":     nn.Linear(embed_dim, embed_dim),
+            "purchase": nn.Linear(embed_dim, embed_dim),
+        })
+        self.hierarchy_gate = HierarchyGate(embed_dim)
+
+    def encode(self, data: HeteroData) -> Tuple[Dict[str, Tensor], Dict[str, Tensor]]:
         device = next(self.parameters()).device
         x_dict: Dict[str, Tensor] = {}
         for t in NODE_TYPES:
@@ -333,18 +301,30 @@ class BAGNNModel(nn.Module):
 
         return self.bagnn(x_dict, edge_index_dict, edge_attr_dict or None)
 
-    def forward(self, data: HeteroData) -> Tuple[Tensor, Tensor]:
-        """Returns (user_emb, item_emb): (N_u, d), (N_i, d)."""
-        h = self.encode(data)
-        user_emb = h.get("user",    torch.empty(0, self.embed_dim, device=next(self.parameters()).device))
-        item_emb = h.get("product", torch.empty(0, self.embed_dim, device=next(self.parameters()).device))
+    def forward(self, data: HeteroData, return_beh_embs: bool = False):
+        h, beh_user_agg = self.encode(data)
+        device   = next(self.parameters()).device
+        user_raw = h.get("user",    torch.empty(0, self.embed_dim, device=device))
+        item_emb = h.get("product", torch.empty(0, self.embed_dim, device=device))
+
+        emb_view     = self.beh_proj["view"](beh_user_agg.get("view",     user_raw))
+        emb_cart     = self.beh_proj["cart"](beh_user_agg.get("cart",     user_raw))
+        emb_purchase = self.beh_proj["purchase"](beh_user_agg.get("purchase", user_raw))
+
+        if user_raw.size(0) > 0:
+            user_emb, _ = self.hierarchy_gate(emb_view, emb_cart, emb_purchase)
+        else:
+            user_emb = user_raw
+
+        if return_beh_embs:
+            return user_emb, item_emb, {"view": emb_view, "cart": emb_cart, "purchase": emb_purchase}
         return user_emb, item_emb
 
     def score(self, data: HeteroData, user_idx: Tensor, item_idx: Tensor) -> Tensor:
-        """Dot-product scores for (user, item) pairs. Returns (B,)."""
         user_emb, item_emb = self.forward(data)
         return (user_emb[user_idx] * item_emb[item_idx]).sum(dim=-1)
 
     def embedding_l2_norm(self) -> Tensor:
-        """L2 norm of input projection weights only (not GNN weights)."""
-        return sum(p.pow(2).sum() for p in self.input_proj.parameters())
+        l2 = sum(p.pow(2).sum() for p in self.input_proj.parameters())
+        l2 = l2 + sum(p.pow(2).sum() for p in self.beh_proj.parameters())
+        return l2
