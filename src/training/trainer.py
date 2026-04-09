@@ -42,6 +42,7 @@ class TrainConfig:
     wandb_save_every: int = 5
     cl_weight: float = 0.1
     use_bf16: bool = True
+    max_view_triplets: int = -1
 
     @classmethod
     def from_yaml(cls, cfg: dict) -> "TrainConfig":
@@ -69,6 +70,7 @@ class TrainConfig:
             wandb_save_every=w.get("save_every", cls.wandb_save_every),
             cl_weight=t.get("cl_weight", cls.cl_weight),
             use_bf16=t.get("use_bf16", cls.use_bf16),
+            max_view_triplets=t.get("max_view_triplets", cls.max_view_triplets),
         )
 
 def load_yaml_config(path: str) -> dict:
@@ -536,10 +538,18 @@ if __name__ == "__main__":
         n_v = view_ei.size(1)
         n_c = cart_ei.size(1)
         n_p = purchase_ei.size(1)
+
+        view_train_ei = view_ei
+        n_v_train = n_v
+        if 0 < train_cfg.max_view_triplets < n_v:
+            perm = torch.randperm(n_v)[:train_cfg.max_view_triplets]
+            view_train_ei = view_ei[:, perm]
+            n_v_train = train_cfg.max_view_triplets
+
         train_triplets = torch.cat([
-            torch.stack([view_ei[0],     view_ei[1],     torch.full((n_v,), 0, dtype=torch.long)], dim=1),
-            torch.stack([cart_ei[0],     cart_ei[1],     torch.full((n_c,), 1, dtype=torch.long)], dim=1),
-            torch.stack([purchase_ei[0], purchase_ei[1], torch.full((n_p,), 2, dtype=torch.long)], dim=1),
+            torch.stack([view_train_ei[0], view_train_ei[1], torch.full((n_v_train,), 0, dtype=torch.long)], dim=1),
+            torch.stack([cart_ei[0],       cart_ei[1],       torch.full((n_c,),       1, dtype=torch.long)], dim=1),
+            torch.stack([purchase_ei[0],   purchase_ei[1],   torch.full((n_p,),       2, dtype=torch.long)], dim=1),
         ], dim=0)
 
         val_users = torch.from_numpy(np.load(f"{_DATA}/val_user_idx.npy")).long()
@@ -551,7 +561,7 @@ if __name__ == "__main__":
         exclude_items = {int(k): list(int(x) for x in v) for k, v in raw_mask.items()}
 
         behavior_counts = {
-            "view": int(view_ei.size(1)),
+            "view": n_v_train,
             "cart": int(cart_ei.size(1)),
             "purchase": n_p,
         }
@@ -569,6 +579,7 @@ if __name__ == "__main__":
         config=NeighborSamplerConfig(
             hop1_budget=s_cfg.get("hop1_budget", 10),
             hop2_budget=s_cfg.get("hop2_budget", 5),
+            hop1_sample_replace=s_cfg.get("hop1_sample_replace", False),
         ),
         device=device,
     )
