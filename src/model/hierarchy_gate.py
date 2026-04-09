@@ -12,10 +12,6 @@ from .hetero_embedding import (
     NUM_EVENTS,
 )
 
-torch.manual_seed(42)
-
-#  HierarchyGate  
-
 class HierarchyGate(nn.Module):
     """
     Soft gating module fuse 3 behavior embeddings theo thứ tự

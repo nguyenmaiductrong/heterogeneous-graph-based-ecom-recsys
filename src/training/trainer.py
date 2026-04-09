@@ -13,7 +13,7 @@ from tqdm import tqdm
 from src.model.bagnn import BAGNNModel
 from src.core.contracts import BEHAVIOR_TYPES
 from src.graph.neighbor_sampler import BehaviorAwareNeighborSampler
-from src.training.losses import bpr_loss, MultiTaskBPRLoss
+from src.training.losses import bpr_loss, MultiTaskBPRLoss, ContrastiveLearning
 from src.core.contracts import EvalInput
 from src.core.evaluator import TemporalSplitEvaluator
 
@@ -39,7 +39,9 @@ class TrainConfig:
     wandb_entity: str = "nguyenmaiductrong37"
     wandb_run_name: str = "bagnn-training"
     wandb_artifact_name: str = "bagnn-checkpoint"
-    wandb_save_every: int = 5 
+    wandb_save_every: int = 5
+    cl_weight: float = 0.1
+    use_bf16: bool = True
 
     @classmethod
     def from_yaml(cls, cfg: dict) -> "TrainConfig":
@@ -65,6 +67,8 @@ class TrainConfig:
             wandb_run_name=w.get("run_name", cls.wandb_run_name),
             wandb_artifact_name=w.get("artifact_name", cls.wandb_artifact_name),
             wandb_save_every=w.get("save_every", cls.wandb_save_every),
+            cl_weight=t.get("cl_weight", cls.cl_weight),
+            use_bf16=t.get("use_bf16", cls.use_bf16),
         )
 
 def load_yaml_config(path: str) -> dict:
@@ -106,8 +110,11 @@ def _load_checkpoint(
 ) -> int:
     ckpt = torch.load(ckpt_path, map_location=device)
     model.load_state_dict(ckpt["model_state_dict"])
-    optimizer.load_state_dict(ckpt["optimizer_state_dict"])
-    scaler.load_state_dict(ckpt["scaler_state_dict"])
+    try:
+        optimizer.load_state_dict(ckpt["optimizer_state_dict"])
+        scaler.load_state_dict(ckpt["scaler_state_dict"])
+    except (ValueError, KeyError, RuntimeError):
+        logger.warning("Optimizer/scaler state incompatible with checkpoint — starting with fresh optimizer state.")
     resumed_epoch = int(ckpt["epoch"])
     logger.info("Resumed from %s (epoch %d, loss=%.4f)", ckpt_path, resumed_epoch, ckpt.get("loss", float("nan")))
     return resumed_epoch + 1
@@ -131,12 +138,16 @@ def train_epoch(
     loss_fn: MultiTaskBPRLoss,
     scaler: torch.amp.GradScaler,
     device: torch.device,
+    cl_fn: ContrastiveLearning,
     num_neg: int = 1,
     max_grad_norm: float = 1.0,
     amp: bool = True,
+    cl_weight: float = 0.1,
+    use_bf16: bool = True,
 ) -> dict[str, float]:
     model.train()
     total_loss = 0.0
+    total_cl_loss = 0.0
     n_steps = 0
 
     pbar = tqdm(dataloader, desc="train", leave=False, dynamic_ncols=True)
@@ -151,8 +162,11 @@ def train_epoch(
 
         optimizer.zero_grad(set_to_none=True)
 
-        with torch.amp.autocast("cuda", enabled=amp):
-            user_emb, item_emb = model(subgraph)
+        l_cl = torch.zeros(1, device=device).squeeze()
+
+        _amp_dtype = torch.bfloat16 if use_bf16 else torch.float16
+        with torch.amp.autocast("cuda", dtype=_amp_dtype, enabled=amp and device.type == "cuda"):
+            user_emb, item_emb, beh_embs = model(subgraph, return_beh_embs=True)
 
             user_x = subgraph["user"].x.contiguous()
             u_loc = torch.searchsorted(user_x, users_g.contiguous())
@@ -182,7 +196,10 @@ def train_epoch(
                 pp_b = pp_loc[mask]
                 B_b = u_b.size(0)
 
-                neg_loc = torch.randint(0, N_items, (B_b, num_neg), device=device)
+                if N_items <= 1:
+                    continue
+                neg_loc = torch.randint(0, N_items - 1, (B_b, num_neg), device=device)
+                neg_loc[neg_loc >= pp_b.unsqueeze(-1)] += 1
 
                 u_emb_b = user_emb[u_b]
                 pos_emb_b = item_emb[pp_b]
@@ -193,11 +210,20 @@ def train_epoch(
 
                 behavior_losses[beh_name] = bpr_loss(pos_s, neg_s)
 
+            view_u = u_loc[bev == 0].unique()
+            purch_u = u_loc[bev == 2].unique()
+            if view_u.numel() >= 2 and purch_u.numel() >= 2:
+                common = sorted(set(view_u.tolist()) & set(purch_u.tolist()))
+                if len(common) >= 2:
+                    ct = torch.tensor(common, device=device)
+                    l_cl = cl_fn(beh_embs["view"][ct].float(), beh_embs["purchase"][ct].float())
+
         if not behavior_losses:
             continue
 
         l2 = model.embedding_l2_norm()
         loss, log = loss_fn(behavior_losses, l2)
+        loss = loss + cl_weight * l_cl.float()
 
         if amp:
             scaler.scale(loss).backward()
@@ -211,10 +237,14 @@ def train_epoch(
             optimizer.step()
 
         total_loss += log["loss/total"]
+        total_cl_loss += l_cl.item()
         n_steps += 1
-        pbar.set_postfix(loss=f"{log['loss/total']:.4f}")
+        pbar.set_postfix(loss=f"{log['loss/total']:.4f}", cl=f"{l_cl.item():.4f}")
 
-    return {"train/loss": total_loss / max(n_steps, 1)}
+    return {
+        "train/loss": total_loss / max(n_steps, 1),
+        "train/cl_loss": total_cl_loss / max(n_steps, 1),
+    }
 
 @torch.no_grad()
 def export_embeddings(
@@ -224,16 +254,18 @@ def export_embeddings(
     n_items: int,
     device: torch.device,
     batch_size: int = 512,
+    use_bf16: bool = True,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     model.eval()
     d = model.embed_dim
+    _amp_dtype = torch.bfloat16 if use_bf16 else torch.float16
 
     item_emb = torch.zeros(n_items, d)
     for start in range(0, n_items, batch_size):
         end = min(start + batch_size, n_items)
         seeds = torch.arange(start, end, device=device)
         sub = sampler.sample(seeds, seed_type="product").to(device)
-        with torch.amp.autocast("cuda", enabled=torch.cuda.is_available()):
+        with torch.amp.autocast("cuda", dtype=_amp_dtype, enabled=device.type == "cuda"):
             _, item_local = model(sub)
         item_emb[start:end] = item_local.float().cpu()
 
@@ -242,7 +274,7 @@ def export_embeddings(
         end = min(start + batch_size, len(user_ids))
         seeds = user_ids[start:end].to(device)
         sub = sampler.sample(seeds, seed_type="user").to(device)
-        with torch.amp.autocast("cuda", enabled=torch.cuda.is_available()):
+        with torch.amp.autocast("cuda", dtype=_amp_dtype, enabled=device.type == "cuda"):
             u_local, _ = model(sub)
         user_emb[start:end] = u_local.float().cpu()
 
@@ -259,12 +291,13 @@ def eval_epoch(
     evaluator: TemporalSplitEvaluator,
     device: torch.device,
     batch_size: int = 512,
+    use_bf16: bool = True,
 ) -> dict[str, float]:
     valid_users = list(ground_truth.keys())
     eval_user_ids_filtered = torch.tensor(valid_users, dtype=torch.long, device=eval_user_ids.device)
 
     user_emb, item_emb = export_embeddings(
-        model, sampler, eval_user_ids_filtered, n_items, device, batch_size
+        model, sampler, eval_user_ids_filtered, n_items, device, batch_size, use_bf16=use_bf16
     )
     
     eval_input = EvalInput(
@@ -275,7 +308,7 @@ def eval_epoch(
         exclude_items=exclude_items,
     )
     
-    return evaluator.evaluate(eval_input, batch_size=2048, mode="sampled")
+    return evaluator.evaluate(eval_input, batch_size=batch_size, mode="full")
 
 def train(
     model: BAGNNModel,
@@ -303,8 +336,15 @@ def train(
     )
 
     loss_fn = MultiTaskBPRLoss(behavior_counts, l2_lambda=cfg.l2_lambda).to(device)
-    optimizer = torch.optim.Adam(model.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
-    scaler = torch.amp.GradScaler("cuda", enabled=cfg.amp)
+    cl_fn = ContrastiveLearning(temperature=0.1).to(device)
+    emb_params = list(model.input_proj.parameters()) + list(model.beh_proj.parameters())
+    emb_ids = {id(p) for p in emb_params}
+    other_params = [p for p in model.parameters() if id(p) not in emb_ids]
+    optimizer = torch.optim.Adam([
+        {"params": other_params,  "weight_decay": cfg.weight_decay},
+        {"params": emb_params,    "weight_decay": 0.0},
+    ], lr=cfg.lr)
+    scaler = torch.amp.GradScaler("cuda", enabled=cfg.amp and not cfg.use_bf16 and device.type == "cuda")
     evaluator = TemporalSplitEvaluator(ks=[10, 20, 50], device=str(device))
 
     save_dir = Path(cfg.save_dir)
@@ -332,6 +372,7 @@ def train(
             "l2_lambda": cfg.l2_lambda,
             "num_neg": cfg.num_neg,
             "amp": cfg.amp,
+            "cl_weight": cfg.cl_weight,
         })
         logger.info("W&B enabled — project=%s run=%s", cfg.wandb_project, wandb_run.id)
 
@@ -352,7 +393,9 @@ def train(
     for epoch in epoch_pbar:
         train_log = train_epoch(
             model, sampler, loader, optimizer, loss_fn, scaler, device,
+            cl_fn=cl_fn,
             num_neg=cfg.num_neg, max_grad_norm=cfg.max_grad_norm, amp=cfg.amp,
+            cl_weight=cfg.cl_weight, use_bf16=cfg.use_bf16,
         )
         train_loss = train_log["train/loss"]
 
@@ -364,7 +407,7 @@ def train(
             metrics = eval_epoch(
                 model, sampler,
                 eval_user_ids, ground_truth, exclude_items, n_items,
-                evaluator, device, cfg.eval_batch_size,
+                evaluator, device, cfg.eval_batch_size, use_bf16=cfg.use_bf16,
             )
             row += " | " + " | ".join(f"{k}={v:.4f}" for k, v in metrics.items())
 
@@ -441,6 +484,9 @@ if __name__ == "__main__":
     device = torch.device(_device_str if torch.cuda.is_available() or _device_str == "cpu" else "cpu")
     logger.info("Device: %s", device)
 
+    if device.type == "cuda":
+        torch.backends.cudnn.benchmark = True
+
     _DATA = cfg_dict["data"]["data_dir"]
     _STRUCT = cfg_dict["data"]["struct_dir"]
 
@@ -487,12 +533,14 @@ if __name__ == "__main__":
         hetero[("product", "producedBy", "brand")].edge_index    = brand_ei.contiguous()
         hetero[("brand", "brands", "product")].edge_index        = brand_ei.flip(0).contiguous()
 
+        n_v = view_ei.size(1)
+        n_c = cart_ei.size(1)
         n_p = purchase_ei.size(1)
-        train_triplets = torch.stack([
-            purchase_ei[0],
-            purchase_ei[1],
-            torch.full((n_p,), 2, dtype=torch.long),
-        ], dim=1)
+        train_triplets = torch.cat([
+            torch.stack([view_ei[0],     view_ei[1],     torch.full((n_v,), 0, dtype=torch.long)], dim=1),
+            torch.stack([cart_ei[0],     cart_ei[1],     torch.full((n_c,), 1, dtype=torch.long)], dim=1),
+            torch.stack([purchase_ei[0], purchase_ei[1], torch.full((n_p,), 2, dtype=torch.long)], dim=1),
+        ], dim=0)
 
         val_users = torch.from_numpy(np.load(f"{_DATA}/val_user_idx.npy")).long()
         val_items = np.load(f"{_DATA}/val_product_idx.npy")
@@ -531,6 +579,7 @@ if __name__ == "__main__":
         n_layers=m_cfg.get("n_layers", 2),
         rank=m_cfg.get("rank", 16),
         dropout=m_cfg.get("dropout", 0.4),
+        use_grad_checkpoint=m_cfg.get("use_grad_checkpoint", True),
     ).to(device)
 
     train(
