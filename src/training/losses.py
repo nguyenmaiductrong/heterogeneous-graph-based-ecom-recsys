@@ -8,12 +8,9 @@ from src.core.contracts import BEHAVIOR_LOSS_WEIGHTS
 
 
 class PopularityBiasedNegativeSampler:
-    """
-    Tạo ra các mẫu Negative Samples để dạy model theo độ phổ biến
-    """
     def __init__(
         self,
-        item_counts: dict[str, torch.Tensor], # số lần item i được tương tác 
+        item_counts: dict[str, torch.Tensor],
         num_items: int,
         alpha: float = 0.75,
         device: str = "cpu",
@@ -62,12 +59,21 @@ def bpr_loss(
     return -F.logsigmoid(pos_scores - neg_scores).mean()
 
 
-class MultiTaskBPRLoss(nn.Module):
-    """
-    L_total = Σ_b  w_b * BPR_b  +  λ * ||Θ||²
-    Trong đó w_b là task weight cho behavior b (w_b ∝ 1/sqrt(N_b) — tự động cân bằng theo tần suất.)
-    """
+class ContrastiveLearning(nn.Module):
+    def __init__(self, temperature: float = 0.1):
+        super().__init__()
+        self.temperature = temperature
 
+    def forward(self, z1: torch.Tensor, z2: torch.Tensor) -> torch.Tensor:
+        z1 = F.normalize(z1, dim=-1)
+        z2 = F.normalize(z2, dim=-1)
+        N = z1.size(0)
+        sim = torch.mm(z1, z2.T) / self.temperature
+        labels = torch.arange(N, device=z1.device)
+        return (F.cross_entropy(sim, labels) + F.cross_entropy(sim.T, labels)) / 2
+
+
+class MultiTaskBPRLoss(nn.Module):
     BEHAVIOR_ORDER = ["view", "cart", "purchase"]
 
     def __init__(self, behavior_counts: dict[str, int], l2_lambda: float = 1e-5):
@@ -77,7 +83,6 @@ class MultiTaskBPRLoss(nn.Module):
             [BEHAVIOR_LOSS_WEIGHTS[b] / np.sqrt(behavior_counts[b]) for b in self.BEHAVIOR_ORDER],
             dtype=torch.float32,
         )
-        # Chuẩn hóa để tổng weights = số lượng behaviors
         normalized = raw / raw.sum() * len(self.BEHAVIOR_ORDER)
         self.register_buffer("task_weights", normalized)
 
@@ -89,16 +94,20 @@ class MultiTaskBPRLoss(nn.Module):
     ) -> tuple[torch.Tensor, dict[str, float]]:
         log_dict = {}
         total = torch.tensor(0.0, device=self.task_weights.device)
-        
-        # Cộng dồn loss có trọng số
+        n_present = 0
+
         for idx, beh in enumerate(self.BEHAVIOR_ORDER):
             if beh not in behavior_losses:
                 continue
+            n_present += 1
             beh_loss = behavior_losses[beh].float()
             w = self.task_weights[idx]
             total = total + w * beh_loss
             log_dict[f"loss/{beh}"] = beh_loss.item()
             log_dict[f"weight/{beh}"] = w.item()
+
+        if n_present > 0:
+            total = total * (len(self.BEHAVIOR_ORDER) / n_present)
 
         if model_params is not None and self.l2_lambda > 0:
             l2_term = self.l2_lambda * model_params.float()
