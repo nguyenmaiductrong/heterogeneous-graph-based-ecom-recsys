@@ -11,7 +11,7 @@ model:
   dropout: 0.2
   embed_dim: 128
   n_layers: 2
-  rank: 16
+  rank: 32
   use_grad_checkpoint: false
 
 sampler:
@@ -30,9 +30,9 @@ training:
   l2_lambda: 1.0e-06
   lr: 0.0003
   max_grad_norm: 1.0
-  cl_weight: 0.1
+  cl_weight: 0.05
   max_view_triplets: 4000000
-  num_neg: 4
+  num_neg: 8
   num_workers: 4
   patience: 5
   save_dir: /content/checkpoints-v3

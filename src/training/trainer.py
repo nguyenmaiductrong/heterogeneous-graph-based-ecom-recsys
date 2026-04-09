@@ -212,13 +212,25 @@ def train_epoch(
 
                 behavior_losses[beh_name] = bpr_loss(pos_s, neg_s)
 
-            view_u = u_loc[bev == 0].unique()
+            view_u  = u_loc[bev == 0].unique()
+            cart_u  = u_loc[bev == 1].unique()
             purch_u = u_loc[bev == 2].unique()
-            if view_u.numel() >= 2 and purch_u.numel() >= 2:
-                common = sorted(set(view_u.tolist()) & set(purch_u.tolist()))
-                if len(common) >= 2:
-                    ct = torch.tensor(common, device=device)
-                    l_cl = cl_fn(beh_embs["view"][ct].float(), beh_embs["purchase"][ct].float())
+            cl_terms = []
+            for z1_key, z2_key, s1, s2 in [
+                ("view",  "cart",     view_u,  cart_u),
+                ("cart",  "purchase", cart_u,  purch_u),
+                ("view",  "purchase", view_u,  purch_u),
+            ]:
+                ct = s1[torch.isin(s1, s2)]
+                if ct.size(0) >= 2:
+                    z1_emb = beh_embs[z1_key][ct].float()
+                    z2_emb = beh_embs[z2_key][ct].float()
+                    alpha = 0.4 + 0.2 * torch.rand(1, device=device)
+                    z_mix = alpha * z1_emb + (1 - alpha) * z2_emb
+                    pair_loss = (cl_fn(z1_emb, z2_emb) + cl_fn(z1_emb, z_mix) + cl_fn(z2_emb, z_mix)) / 3
+                    cl_terms.append(pair_loss)
+            if cl_terms:
+                l_cl = sum(cl_terms) / len(cl_terms)
 
         if not behavior_losses:
             continue
