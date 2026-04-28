@@ -153,7 +153,81 @@ class ContrastiveLearning(nn.Module):
             cl_loss = cl_loss / count
 
         return cl_loss
-    
+
+
+class SvdGnnContrastive(nn.Module):
+    """Per-batch InfoNCE between GNN user embeddings and SVD-projected user
+    embeddings. Per behavior, per user. Global supervision beyond L-hop.
+
+    Math (per behavior k):
+        svd_user[i] = US_k[user_global[i]] @ (VS_k[item_global].T @ item_emb)
+    O(q*d) intermediate; never materialises I*J.
+    """
+    def __init__(
+        self,
+        svd_factors: SVDFactors,
+        behaviors: list[str] | None = None,
+        tau: float = 0.2,
+    ):
+        super().__init__()
+        from src.core.contracts import BEHAVIOR_TYPES
+        self.behaviors = list(behaviors) if behaviors else list(BEHAVIOR_TYPES)
+        self.tau = tau
+        for b in self.behaviors:
+            if b not in svd_factors.US or b not in svd_factors.VS:
+                raise KeyError(f"SVD factors missing behaviour {b!r}")
+            self.register_buffer(f"_us_{b}", svd_factors.US[b], persistent=False)
+            self.register_buffer(f"_vs_{b}", svd_factors.VS[b], persistent=False)
+
+    def _us(self, beh: str) -> torch.Tensor:
+        return getattr(self, f"_us_{beh}")
+
+    def _vs(self, beh: str) -> torch.Tensor:
+        return getattr(self, f"_vs_{beh}")
+
+    @staticmethod
+    def _info_nce(z_a: torch.Tensor, z_b: torch.Tensor, tau: float) -> torch.Tensor:
+        z_a = F.normalize(z_a, dim=-1)
+        z_b = F.normalize(z_b, dim=-1)
+        sim = (z_a @ z_b.T) / tau
+        labels = torch.arange(z_a.size(0), device=z_a.device)
+        return 0.5 * (F.cross_entropy(sim, labels) + F.cross_entropy(sim.T, labels))
+
+    def forward(
+        self,
+        beh_embs: dict[str, torch.Tensor],
+        user_global: torch.Tensor,
+        item_emb: torch.Tensor,
+        item_global: torch.Tensor,
+    ) -> torch.Tensor:
+        device = item_emb.device
+        if item_emb.size(0) == 0 or user_global.numel() < 2:
+            return torch.zeros((), device=device)
+
+        loss = torch.zeros((), device=device)
+        n_terms = 0
+        i_g = item_global.long()
+        u_g = user_global.long()
+
+        for b in self.behaviors:
+            if b not in beh_embs:
+                continue
+            gnn_user = beh_embs[b]
+            B = gnn_user.size(0)
+            if B < 2:
+                continue
+            US_b = self._us(b)
+            VS_b = self._vs(b)
+
+            us_rows = US_b[u_g]
+            vs_rows = VS_b[i_g]
+            context = vs_rows.T @ item_emb
+            svd_user = us_rows @ context
+
+            loss = loss + self._info_nce(gnn_user, svd_user, self.tau)
+            n_terms += 1
+
+        return loss / max(n_terms, 1)
 
 
 if __name__ == "__main__":
