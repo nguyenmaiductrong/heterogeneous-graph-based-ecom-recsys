@@ -37,10 +37,14 @@ env/
 # ========================
 # Data — KHÔNG PUSH DATA LÊN GITHUB
 # ========================
+data/
 data/raw/
 data/processed/
 data/sample/
 *.csv
+*.zip
+*.npy
+*.npz
 *.parquet
 *.json
 !configs/**/*.json
@@ -96,3 +100,4 @@ mlruns/
 !paper/**/*.html
 anomaly_report.json
 validation_report.json
+data

@@ -1,0 +1,59 @@
+version: "1.0"
+name: behaviors
+owner: team-data
+description: >
+  User behavior interactions with products.
+  Three behavior types are tracked: view, cart, purchase.
+  Target behavior for recommendation is: purchase.
+
+behavior_types:
+  - name: view
+    id: 0
+    loss_weight: 0.1
+    description: User viewed a product page
+
+  - name: cart
+    id: 1
+    loss_weight: 0.3
+    description: User added a product to their cart
+
+  - name: purchase
+    id: 2
+    loss_weight: 1.0
+    description: User completed a purchase (target behavior)
+
+schema:
+  - name: user_id
+    type: string
+    nullable: false
+    description: ID of the user performing the action
+
+  - name: product_id
+    type: string
+    nullable: false
+    description: ID of the product being interacted with
+
+  - name: behavior_type
+    type: string
+    nullable: false
+    enum: [view, cart, purchase]
+    description: Type of interaction
+
+  - name: behavior_id
+    type: integer
+    nullable: false
+    enum: [0, 1, 2]
+    description: Encoded behavior type (view=0, cart=1, purchase=2)
+
+  - name: timestamp
+    type: datetime
+    nullable: false
+    description: When the interaction occurred
+
+quality:
+  - rule: user_id is not null
+  - rule: product_id is not null
+  - rule: behavior_type in [view, cart, purchase]
+  - rule: behavior_id in [0, 1, 2]
+  - rule: timestamp is not null
+  - rule: purchase count <= cart count <= view count (expected trend)

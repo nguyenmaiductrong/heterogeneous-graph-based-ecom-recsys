@@ -1,0 +1,55 @@
+data:
+  data_dir:  ./data/temporal #/content/data/temporal
+  node_counts:
+    brand: 2734
+    category: 14
+    product: 60798
+    user: 267973
+  struct_dir: ./data/temporal/node_mappings #/content/data/temporal/node_mappings
+
+model:
+  dropout: 0.2
+  embed_dim: 128
+  n_layers: 2
+  rank: 32
+  use_grad_checkpoint: false
+  n_intents: 32
+
+sampler:
+  hop1_budget: 10
+  hop2_budget: 5
+  hop1_sample_replace: true
+
+training:
+  amp: true
+  use_bf16: true
+  batch_size: 8192
+  device: cuda
+  epochs: 2 #30
+  eval_batch_size: 256 #16384
+  eval_every: 1
+  eval_subsample: 10000   # 0 = full eval mỗi epoch
+  eval_seed: 42
+  l2_lambda: 1.0e-06
+  lr: 0.0003
+  max_grad_norm: 1.0
+  cl_weight: 0.3
+  cl_g_weight: 1.0e-5
+  max_view_triplets: 20000 #4000000
+  num_neg: 8
+  num_workers: 4
+  patience: 5
+  save_dir: checkpoints-v4
+  weight_decay: 1.0e-03
+
+contrastive:
+  svd_path: ./data/temporal/svd_factors.pt
+  global_tau: 0.2
+
+wandb:
+  artifact_name: bagnn-checkpoint-v4
+  enabled: true
+  entity: nguyenmaiductrong37-h-c-vi-n-c-ng-ngh-b-u-ch-nh-vi-n-th-ng
+  project: bagnn-recsys
+  run_name: bagnn-g4-v3
+  save_every: 1

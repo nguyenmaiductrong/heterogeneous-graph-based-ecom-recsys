@@ -57,6 +57,10 @@ filter:
   category_level: "top"
 
 split:
+  # REES46: Oct 2019 - Apr 2020
+  # Train: Oct 2019 - Feb 2020 (5 tháng)
+  # Val: Mar 2020 (1 tháng)
+  # Test: Apr 2020 (1 tháng)
   train_end: "2020-02-29"
   val_end: "2020-03-31"
 
