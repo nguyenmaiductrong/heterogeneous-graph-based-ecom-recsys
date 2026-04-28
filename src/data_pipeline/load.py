@@ -146,6 +146,14 @@ def save_artifacts(
             json.dump({str(k): v for k, v in mapping.items()}, fh)
         logger.info("  %s: %d entries", name, len(mapping))
 
+    compute_and_save_svd_factors(
+        data_dir=data_dir,
+        num_users=split.num_users,
+        num_items=split.num_items,
+        rank=256,
+        n_iter=4,
+    )
+
 
 def save_node_counts(node_counts: dict[str, int], data_dir: str) -> None:
     path = os.path.join(data_dir, "node_counts.json")
@@ -210,3 +218,91 @@ def verify_artifacts(
         verbose=True,
     )
     logger.info("Sanity check PASSED — pipeline is ready for training.")
+
+
+def compute_and_save_svd_factors(
+    data_dir: str,
+    num_users: int,
+    num_items: int,
+    *,
+    rank: int = 256,
+    n_iter: int = 4,
+    behaviors: tuple[str, ...] = ("view", "cart", "purchase"),
+    seed: int = 42,
+) -> None:
+    """Per-behavior randomized SVD of the GCN-normalized binary user×item
+    adjacency. Writes data_dir/svd_factors.pt.
+
+    Convention (matches src/core/contracts.SVDFactors):
+        A_norm_k  ≈  US_k @ VS_k^T
+        US_k = U_k * sqrt(S_k)   (num_users, rank)
+        VS_k = V_k * sqrt(S_k)   (num_items, rank)
+
+    Reads {beh}_train_{src,dst}.npy already on disk. Uses sklearn's
+    randomized_svd — never densifies A.
+    """
+    import scipy.sparse as sp
+    from sklearn.utils.extmath import randomized_svd
+    from src.core.contracts import SVDFactors
+
+    logger.info(
+        "Computing SVD factors  rank=%d  n_iter=%d  behaviors=%s",
+        rank, n_iter, behaviors,
+    )
+
+    US_dict: dict[str, torch.Tensor] = {}
+    VS_dict: dict[str, torch.Tensor] = {}
+
+    for beh in behaviors:
+        src_path = os.path.join(data_dir, f"{beh}_train_src.npy")
+        dst_path = os.path.join(data_dir, f"{beh}_train_dst.npy")
+        if not (os.path.exists(src_path) and os.path.exists(dst_path)):
+            raise FileNotFoundError(
+                f"Missing edge files for behavior {beh!r}: {src_path} / {dst_path}. "
+                "Call save_artifacts() first."
+            )
+
+        src = np.load(src_path)
+        dst = np.load(dst_path)
+
+        A = sp.csr_matrix(
+            (np.ones(len(src), dtype=np.float32), (src, dst)),
+            shape=(num_users, num_items),
+            dtype=np.float32,
+        )
+        A.sum_duplicates()
+        A.data = np.minimum(A.data, 1.0)
+
+        deg_u = np.asarray(A.sum(axis=1)).ravel().astype(np.float32)
+        deg_v = np.asarray(A.sum(axis=0)).ravel().astype(np.float32)
+        d_u_inv = np.where(deg_u > 0, 1.0 / np.sqrt(deg_u), 0.0).astype(np.float32)
+        d_v_inv = np.where(deg_v > 0, 1.0 / np.sqrt(deg_v), 0.0).astype(np.float32)
+        A_norm = (sp.diags(d_u_inv) @ A @ sp.diags(d_v_inv)).tocsr()
+
+        logger.info(
+            "  [%s] adj shape=%s nnz=%d  → randomized_svd",
+            beh, A_norm.shape, A_norm.nnz,
+        )
+
+        U, S, Vt = randomized_svd(
+            A_norm, n_components=rank, n_iter=n_iter, random_state=seed,
+        )
+        sqrt_S = np.sqrt(S).astype(np.float32)
+        US = (U * sqrt_S).astype(np.float32)
+        VS = (Vt.T * sqrt_S).astype(np.float32)
+
+        assert US.shape == (num_users, rank), (beh, US.shape)
+        assert VS.shape == (num_items, rank), (beh, VS.shape)
+
+        US_dict[beh] = torch.from_numpy(US)
+        VS_dict[beh] = torch.from_numpy(VS)
+
+        del A, A_norm, U, S, Vt, US, VS, sqrt_S, deg_u, deg_v, d_u_inv, d_v_inv
+
+    svd = SVDFactors(US=US_dict, VS=VS_dict)
+    svd.validate()
+
+    out_path = os.path.join(data_dir, "svd_factors.pt")
+    torch.save(svd, out_path)
+    size_mb = os.path.getsize(out_path) / (1024 ** 2)
+    logger.info("SVD factors saved: %s  (%.1f MB)", out_path, size_mb)

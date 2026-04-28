@@ -39,7 +39,7 @@ def test_evaluator_metrics_and_masking():
     metrics_1 = evaluator.evaluate(eval_input_1, batch_size=2, mode="full")
 
     # Cả hai user đều có target lọt top 1.
-    assert metrics_1['Recall@1'] == 1.0, "Masking logic bị sai, User 0 không đưa Item 1 lên Top 1 được."
+    assert metrics_1['HR@1'] == 1.0, "Masking logic bị sai, User 0 không đưa Item 1 lên Top 1 được."
     assert metrics_1['NDCG@1'] == 1.0
 
     # ---------------------------------------------------------
@@ -58,11 +58,11 @@ def test_evaluator_metrics_and_masking():
     # [FIX] Đã thêm mode="full" vào đây
     metrics_2 = evaluator.evaluate(eval_input_2, batch_size=2, mode="full")
 
-    # Tổng Recall@1 = 0 (Không ai trúng Top 1)
-    assert metrics_2['Recall@1'] == 0.0
-    
-    # Tổng Recall@2 = (0 + 1) / 2 = 0.5
-    assert metrics_2['Recall@2'] == 0.5
+    # Tổng HR@1 = 0 (Không ai trúng Top 1)
+    assert metrics_2['HR@1'] == 0.0
+
+    # Tổng HR@2 = (0 + 1) / 2 = 0.5
+    assert metrics_2['HR@2'] == 0.5
     
     # NDCG của User 1 tại Rank 2 = 1 / log2(2 + 1) = 1 / log2(3) = 0.6309
     # Tổng NDCG@2 = (0 + 0.6309) / 2 = 0.3154
