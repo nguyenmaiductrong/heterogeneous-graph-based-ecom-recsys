@@ -1,26 +1,26 @@
-# --- Paths ---
 paths:
-  raw_data_dir: "/mnt/data/rees46/raw"
-  raw_csv_pattern: "/mnt/data/rees46/raw/*.csv"
-  output_dir: "/mnt/data/rees46/processed"
-  node_mappings_dir: "/mnt/data/rees46/processed/node_mappings"
-  edge_lists_dir: "/mnt/data/rees46/processed/edge_lists"
-  splits_dir: "/mnt/data/rees46/processed/splits"
-  stats_dir: "/mnt/data/rees46/processed/statistics"
-  graph_dir: "/mnt/data/rees46/processed/graph"
-  small_dir: "/mnt/data/rees46/processed/small"
+  raw_data_dir: "data/raw"
+  raw_csv_pattern: "data/raw/*.csv"
+  output_dir: "data/processed"
+  node_mappings_dir: "data/processed/node_mappings"
+  edge_lists_dir: "data/processed/edge_lists"
+  splits_dir: "data/processed/splits"
+  stats_dir: "data/processed/statistics"
+  graph_dir: "data/processed/graph"
+  small_dir: "data/processed/small"
 
-# --- Spark ---
 spark:
   app_name: "REES46_HetGraph_Pipeline"
   master: "local[*]"
   driver_memory: "30g"
   executor_memory: "30g"
-  local_dir: "/mnt/data/spark-temp"
-  checkpoint_dir: "/mnt/data/spark-checkpoints"
+  local_dir: "data/spark-temp"
+  checkpoint_dir: "data/spark-checkpoints"
   shuffle_partitions: 200
   default_parallelism: 64
   aqe_enabled: true
+  adaptive_coalesce_enabled: true
+  adaptive_skew_join_enabled: true
   broadcast_threshold: "256m"
   parquet_compression: "snappy"
   max_partition_bytes: "256m"
@@ -31,29 +31,67 @@ spark:
   heartbeat_interval: "120s"
   network_timeout: "600s"
 
-# --- Filtering ---
+protocol:
+  name: "warm_new_purchase_full_ranking"
+  behaviors: ["view", "cart", "purchase"]
+  target_behavior: "purchase"
+  split_timezone: "UTC"
+  transductive_item_vocab: false
+  allow_transductive_item_metadata: false
+  target: "new_purchase"
+  ground_truth: "all_purchases"
+  drop_repeated_train_purchases_from_eval: true
+  candidate_set: "warm_train_items"
+
 filter:
   min_user_interactions: 5
   min_item_interactions: 5
+  min_train_user_purchases: 5
+  min_train_item_purchases: 5
+  iterative_filter_rounds: 3
   require_purchase: true
   fill_missing_brand: true
   unknown_brand: "__UNKNOWN_BRAND__"
   unknown_category: "__UNKNOWN_CATEGORY__"
-  # "top" = trước dấu '.', "second" = 2 cấp, "full" = toàn bộ
+  unknown_session: "__UNKNOWN_SESSION__"
   category_level: "top"
-  # Số vòng lặp lọc cold-start (2-3 là đủ hội tụ)
-  iterative_filter_rounds: 3
 
-# --- Temporal Split ---
 split:
-  # REES46: Dec 2019 - Mar 2020
-  # Train: Dec 2019 - Jan 2020 (5 tháng)
-  # Val: Feb 2020 (1 tháng)
-  # Test: Mar 2020 (1 tháng)
-  train_end: "2020-01-31"
-  val_end: "2020-02-29"
+  train_end: "2020-02-29"
+  val_end: "2020-03-31"
 
-# --- Graph Schema ---
+artifacts:
+  save_edge_timestamps: true
+  save_ground_truth_parquet: true
+  save_ground_truth_pickle: true
+  save_train_events_parquet: true
+  save_data_card: true
+  save_manifest: true
+
+sequence:
+  enabled: true
+  max_len: 50
+  event_order_tie_breaker: ["timestamp", "behavior_id", "item_idx"]
+
+behavior:
+  ids:
+    view: 0
+    cart: 1
+    purchase: 2
+  weights:
+    view: 1.0
+    cart: 3.0
+    purchase: 5.0
+
+evaluation:
+  full_ranking: true
+  primary_metric: "NDCG@20"
+  metrics: ["Recall@10", "Recall@20", "Recall@50", "NDCG@10", "NDCG@20", "NDCG@50"]
+  ground_truth: "all_new_test_purchases"
+  mask_behaviors_primary: ["purchase"]
+  mask_behaviors_seen_all: ["view", "cart", "purchase"]
+  save_baseline_contract: true
+
 graph:
   node_types:
     - user
@@ -76,3 +114,9 @@ graph:
 sampling:
   create_small_version: true
   small_num_users: 100000
+
+sanity:
+  fail_on_future_train_edge: true
+  fail_on_ground_truth_collapse: true
+  fail_on_eval_positive_in_primary_mask: true
+  fail_on_unexpected_behavior: true

@@ -1,463 +1,393 @@
-from pyspark.sql import DataFrame, Window
+from __future__ import annotations
+
+import logging
+from typing import Iterable, Literal
+
+import numpy as np
+import pandas as pd
+from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import functions as F
+from pyspark.sql.window import Window
 
-from .spark_utils import log_step, count_and_log
-from pyspark.sql.types import StructType, StructField, LongType
+from .splitter import DataSplitter, SplitResult
 
-# STEP 1: CLEANING
-@log_step("TRANSFORM: Clean data")
-def clean_raw_data(df: DataFrame, cfg: dict) -> DataFrame:
-    fc = cfg["filter"]
-    behaviors = cfg["graph"]["behavior_edge_types"]
+logger = logging.getLogger(__name__)
 
-    # 1. Drop nulls
-    df = df.dropna(subset=["user_id", "product_id", "event_type", "event_time"])
+_VALID_BEHAVIORS = ("view", "cart", "purchase")
+_DEFAULT_BEHAVIOR_IDS = {"view": 0, "cart": 1, "purchase": 2}
 
-    # 2. Filter behaviors
-    df = df.filter(F.col("event_type").isin(behaviors))
 
-    # 2b. Validate price — loại null, âm, 0, và outlier cực đoan
-    price_lower = fc.get("price_min", 0.01)
-    price_upper = fc.get("price_max", 50000.0)
-    df = df.filter(
-        F.col("price").isNotNull()
-        & (F.col("price") >= price_lower)
-        & (F.col("price") <= price_upper)
-    )
+def _train_window(df: DataFrame, train_cutoff_ts: int) -> DataFrame:
+    return df.filter(F.col("timestamp") < train_cutoff_ts)
 
-    # 2c. Validate timestamp — loại records ngoài khoảng hợp lệ
-    #     (parse lỗi -> epoch 1970, hoặc timestamp tương lai)
-    date_min = fc.get("date_min", "2019-10-01")
-    date_max = fc.get("date_max", "2020-04-30")
-    df = df.filter(
-        (F.col("event_time") >= F.lit(date_min).cast("timestamp"))
-        & (F.col("event_time") <= F.lit(date_max).cast("timestamp"))
-    )
 
-    # 2d. Lọc bot/spam users — users có quá nhiều interactions/ngày
-    #     là bot hoặc crawler, sẽ dominate graph và làm sai embedding
-    max_daily = fc.get("max_daily_interactions", 500)
-    daily_counts = (df
-        .withColumn("_date", F.to_date(F.col("event_time")))
-        .groupBy("user_id", "_date")
-        .count()
-    )
-    bot_users = (daily_counts
-        .filter(F.col("count") > max_daily)
-        .select("user_id")
-        .distinct()
-    )
-    n_bots = bot_users.count()
-    print(f"  Bot/spam users detected (>{max_daily} interactions/day): {n_bots:,}")
-    df = df.join(bot_users, on="user_id", how="left_anti")
+def filter_by_train_only_counts(
+    df: DataFrame,
+    target_behavior: str,
+    train_cutoff_ts: int,
+    *,
+    min_user_purchases: int,
+    min_item_purchases: int,
+    rounds: int = 3,
+) -> DataFrame:
+    """Iteratively keep users and items whose train-window target-behavior count
+    meets the thresholds. Filtering decisions use only the train window so no
+    val/test signal can change the train vocabulary.
+    """
+    if min_user_purchases <= 1 and min_item_purchases <= 1:
+        return df
 
-    # 3. Category extraction
-    level = fc["category_level"]
-    unknown_cat = fc["unknown_category"]
-
-    if level == "top":
-        df = df.withColumn(
-            "category",
-            F.when(
-                F.col("category_code").isNotNull() & (F.col("category_code") != ""),
-                F.split(F.col("category_code"), "\\.").getItem(0)
-            ).otherwise(F.lit(unknown_cat))
-        )
-    elif level == "second":
-        df = df.withColumn(
-            "category",
-            F.when(
-                F.col("category_code").isNotNull() & (F.col("category_code") != ""),
-                F.concat_ws(".",
-                    F.split(F.col("category_code"), "\\.").getItem(0),
-                    F.coalesce(
-                        F.split(F.col("category_code"), "\\.").getItem(1),
-                        F.lit("general")
-                    )
-                )
-            ).otherwise(F.lit(unknown_cat))
-        )
-    else:  # full
-        df = df.withColumn(
-            "category",
-            F.when(
-                F.col("category_code").isNotNull() & (F.col("category_code") != ""),
-                F.col("category_code")
-            ).otherwise(F.lit(unknown_cat))
+    for r in range(max(rounds, 1)):
+        train_target = (
+            df.filter(F.col("timestamp") < train_cutoff_ts)
+              .filter(F.col("event_type") == target_behavior)
         )
 
-    # 4. Brand
-    unknown_brand = fc["unknown_brand"]
-    if fc["fill_missing_brand"]:
-        df = df.withColumn(
-            "brand_clean",
-            F.when(
-                F.col("brand").isNotNull() & (F.col("brand") != ""),
-                F.lower(F.trim(F.col("brand")))
-            ).otherwise(F.lit(unknown_brand))
-        )
-    else:
-        df = (df
-            .filter(F.col("brand").isNotNull() & (F.col("brand") != ""))
-            .withColumn("brand_clean", F.lower(F.trim(F.col("brand"))))
-        )
-
-    # 5. Deduplicate
-    df = df.dropDuplicates(["user_id", "product_id", "event_type", "event_time"])
-
-    # 6. Date column
-    df = df.withColumn("event_date", F.to_date(F.col("event_time")))
-
-    # Select final columns
-    df = df.select(
-        "user_id", "product_id", "event_type",
-        "event_time", "event_date",
-        "category", "brand_clean", "price"
-    )
-
-    count_and_log(df, "After cleaning")
-    return df
-
-# STEP 1b: COLD-START FILTERING
-@log_step("TRANSFORM: Filter cold-start")
-def filter_cold_start(df: DataFrame, cfg: dict) -> DataFrame:
-    fc = cfg["filter"]
-    target = cfg["graph"]["target_behavior"]
-    rounds = fc["iterative_filter_rounds"]
-
-    prev_count = df.count()
-    print(f"  Before filtering: {prev_count:,}")
-
-    for i in range(rounds):
-        # --- Filter users ---
-        user_counts = df.groupBy("user_id").count()
-        if fc["require_purchase"]:
-            purchase_users = (df
-                .filter(F.col("event_type") == target)
-                .select("user_id").distinct()
+        if min_item_purchases > 1:
+            valid_items = (
+                train_target.groupBy("product_id").count()
+                .filter(F.col("count") >= min_item_purchases)
+                .select("product_id")
             )
-            valid_users = (user_counts
-                .filter(F.col("count") >= fc["min_user_interactions"])
-                .join(purchase_users, on="user_id", how="inner")
+            df = df.join(F.broadcast(valid_items), on="product_id", how="inner")
+
+        if min_user_purchases > 1:
+            train_target = (
+                df.filter(F.col("timestamp") < train_cutoff_ts)
+                  .filter(F.col("event_type") == target_behavior)
+            )
+            valid_users = (
+                train_target.groupBy("user_id").count()
+                .filter(F.col("count") >= min_user_purchases)
                 .select("user_id")
             )
-        else:
-            valid_users = (user_counts
-                .filter(F.col("count") >= fc["min_user_interactions"])
-                .select("user_id")
-            )
-        df = df.join(F.broadcast(valid_users), on="user_id", how="inner")
+            df = df.join(F.broadcast(valid_users), on="user_id", how="inner")
 
-        # --- Filter items ---
-        item_counts = df.groupBy("product_id").count()
-        valid_items = (item_counts
-            .filter(F.col("count") >= fc["min_item_interactions"])
-            .select("product_id")
-        )
-        df = df.join(F.broadcast(valid_items), on="product_id", how="inner")
-        df = df.checkpoint()
-        curr_count = df.count()
-        removed = prev_count - curr_count
-        print(f"  Round {i+1}: {curr_count:,} (removed {removed:,})")
-        if removed < prev_count * 0.001:
-            break
-        prev_count = curr_count
+        df = df.checkpoint(eager=False)
+        logger.info("filter_by_train_only_counts: round %d/%d done.", r + 1, rounds)
 
     return df
 
-# STEP 2: NODE ID MAPPINGS
-@log_step("TRANSFORM: Build node mappings")
-def build_node_mapping(df: DataFrame, col_name: str, mapping_name: str) -> DataFrame:
-    distinct_rdd = df.select(col_name).distinct().rdd.map(lambda r: r[0])
-    indexed_rdd  = distinct_rdd.zipWithIndex()
 
-    schema = StructType([
-        StructField(col_name, df.schema[col_name].dataType, False),
-        StructField("idx", LongType(), False),
-    ])
-    mapping_df = df.sparkSession.createDataFrame(indexed_rdd, schema)
-    n = mapping_df.count()
-    print(f"  {mapping_name}: {n:,} unique entries")
-    return mapping_df
+def temporal_split_purchases(
+    df: DataFrame,
+    target_behavior: str,
+    train_end: str,
+    val_end: str,
+    *,
+    transductive_item_vocab: bool = False,
+    drop_repeated_train_purchases_from_eval: bool = True,
+    protocol_name: str = "warm_new_purchase_full_ranking",
+) -> SplitResult:
+    """Pull the target-behavior rows to Pandas and run the date-based split.
 
-@log_step("TRANSFORM: Build Product -> Category lookup")
-def build_product_category(df: DataFrame, product_map: DataFrame,
-                           category_map: DataFrame) -> DataFrame:
-    w = Window.partitionBy("product_id").orderBy(F.desc("count"))
-    product_cat = (df
-        .groupBy("product_id", "category").count()
-        .withColumn("rank", F.row_number().over(w))
-        .filter(F.col("rank") == 1)
-        .select("product_id", "category")
+    Train-only filtering must already be applied to ``df``.
+    """
+    purchase_spark = df.filter(F.col("event_type") == target_behavior).select(
+        F.col("user_id"),
+        F.col("product_id").alias("item_id"),
+        F.col("timestamp"),
+        F.col("event_type"),
+    ).cache()
+    purchase_df = purchase_spark.toPandas()
+    purchase_spark.unpersist()
+
+    logger.info(
+        "Temporal — %s interactions: %d  (unique users: %d, items: %d)",
+        target_behavior, len(purchase_df),
+        purchase_df["user_id"].nunique(), purchase_df["item_id"].nunique(),
     )
 
-    result = (product_cat
-        .join(product_map.select(
-            F.col("product_id"), F.col("idx").alias("product_idx")),
-            on="product_id", how="inner")
-        .join(category_map.select(
-            F.col("category"), F.col("idx").alias("category_idx")),
-            on="category", how="inner")
-        .select("product_idx", "category_idx")
+    split = DataSplitter(purchase_df).temporal_split_by_dates(
+        train_end=train_end, val_end=val_end,
+        transductive_item_vocab=transductive_item_vocab,
+        drop_repeated_train_purchases_from_eval=drop_repeated_train_purchases_from_eval,
+        protocol_name=protocol_name,
     )
-    count_and_log(result, "Product -> Category links")
-    return result
+    logger.info("\n%s", split.summary())
+    return split
 
-@log_step("TRANSFORM: Build Product -> Brand lookup")
-def build_product_brand(df: DataFrame, product_map: DataFrame,
-                        brand_map: DataFrame) -> DataFrame:
-    w = Window.partitionBy("product_id").orderBy(F.desc("count"))
-    product_brand = (df
-        .groupBy("product_id", "brand_clean").count()
-        .withColumn("rank", F.row_number().over(w))
-        .filter(F.col("rank") == 1)
-        .select("product_id", "brand_clean")
+
+def _user_item_maps(spark: SparkSession, split: SplitResult) -> tuple[DataFrame, DataFrame]:
+    user_map = spark.createDataFrame(
+        [(int(k), int(v)) for k, v in split.user2idx.items()],
+        schema="user_id LONG, user_idx LONG",
     )
-
-    result = (product_brand
-        .join(product_map.select(
-            F.col("product_id"), F.col("idx").alias("product_idx")),
-            on="product_id", how="inner")
-        .join(brand_map.select(
-            F.col("brand_clean"), F.col("idx").alias("brand_idx")),
-            on="brand_clean", how="inner")
-        .select("product_idx", "brand_idx")
+    item_map = spark.createDataFrame(
+        [(int(k), int(v)) for k, v in split.item2idx.items()],
+        schema="product_id LONG, item_idx LONG",
     )
-    count_and_log(result, "Product -> Brand links")
-    return result
+    return user_map, item_map
 
-# STEP 3: BEHAVIOR EDGE LISTS
-def build_behavior_edges(df: DataFrame, behavior: str,
-                         user_map: DataFrame,
-                         product_map: DataFrame) -> DataFrame:
-    edges = (df
-        .filter(F.col("event_type") == behavior)
-        .join(user_map.select(
-            F.col("user_id"), F.col("idx").alias("user_idx")),
-            on="user_id", how="inner")
-        .join(product_map.select(
-            F.col("product_id"), F.col("idx").alias("product_idx")),
-            on="product_id", how="inner")
-        .withColumn("unix_ts", F.col("event_time").cast("long"))
-        .select("user_idx", "product_idx", "unix_ts", "event_date")
-    )
-    n = edges.count()
-    print(f"  {behavior:>10s}: {n:>12,} edges")
-    return edges
 
-def temporal_split(edges_df: DataFrame, behavior: str, cfg: dict) -> tuple:
-    sc = cfg["split"]
-    
-    labeled = edges_df.withColumn(
-        "split",
-        F.when(F.col("event_date") <= sc["train_end"], F.lit("train"))
-         .when(F.col("event_date") <= sc["val_end"],   F.lit("val"))
-         .otherwise(F.lit("test"))
-    )
-    labeled.cache()
+def map_auxiliary(
+    df: DataFrame,
+    spark: SparkSession,
+    split: SplitResult,
+    target_behavior: str,
+    *,
+    global_cutoff: int,
+) -> DataFrame:
+    """Map non-target events through the train vocab. Drops rows whose
+    timestamp is outside the train window or whose user/item is not in vocab.
+    """
+    user_map, item_map = _user_item_maps(spark, split)
 
-    train_df = labeled.filter(F.col("split") == "train").drop("split")
-    val_df   = labeled.filter(F.col("split") == "val").drop("split")
-    test_df  = labeled.filter(F.col("split") == "test").drop("split")
-
-    counts = (labeled.groupBy("split").count()
-                     .collect())
-    count_map = {r["split"]: r["count"] for r in counts}
-    total = sum(count_map.values())
-    for s in ["train", "val", "test"]:
-        n = count_map.get(s, 0)
-        print(f"{behavior} {s}: {n:,} ({n/total*100:.1f}%)")
-
-    labeled.unpersist()
-    return train_df, val_df, test_df
-
-# STEP 3b: LEAVE-ONE-OUT SPLIT (Protocol A — chuẩn baselines cho A* paper)
-
-@log_step("TRANSFORM: Leave-one-out split (Protocol A)")
-def leave_one_out_split(df: DataFrame, cfg: dict,
-                        user_map: DataFrame,
-                        product_map: DataFrame,
-                        loo_dir: str) -> dict:
-    target = cfg["graph"]["target_behavior"]
-    spark = df.sparkSession
-
-    w = Window.partitionBy("user_id").orderBy(F.desc("event_time"))
-
-    purchases = (df
-        .filter(F.col("event_type") == target)
-        .withColumn("loo_rank", F.row_number().over(w))
+    aux = (
+        df.filter(F.col("event_type") != target_behavior)
+        .join(F.broadcast(user_map), on="user_id",    how="inner")
+        .join(F.broadcast(item_map), on="product_id", how="inner")
+        .filter(F.col("timestamp") < global_cutoff)
     )
 
-    purchases = purchases.checkpoint()
+    cols = [
+        F.col("user_idx").cast("long").alias("user_idx"),
+        F.col("item_idx").cast("long").alias("item_idx"),
+        F.col("timestamp").cast("long").alias("timestamp"),
+        F.col("event_type"),
+    ]
+    if "user_session" in aux.columns:
+        cols.append(F.col("user_session"))
+    return aux.select(*cols)
 
-    user_max_rank = (purchases
-        .groupBy("user_id")
-        .agg(F.max("loo_rank").alias("max_rank"))
-    )
-    valid_eval_users = (user_max_rank
-        .filter(F.col("max_rank") >= 2)
-        .select("user_id")
-    )
-    n_eval_users = valid_eval_users.count()
-    n_total_users = user_max_rank.count()
-    n_dropped = n_total_users - n_eval_users
-    print(f"  Total users with purchases:    {n_total_users:,}")
-    print(f"  Users with >= 2 purchases:     {n_eval_users:,}")
-    print(f"  Users dropped (< 2 purchases): {n_dropped:,}")
 
-    test_purchases = (purchases
-        .join(valid_eval_users, on="user_id", how="inner")
-        .filter(F.col("loo_rank") == 1)
+def map_all_train_events(
+    df: DataFrame,
+    spark: SparkSession,
+    split: SplitResult,
+    *,
+    global_cutoff: int,
+    behavior_ids: dict[str, int] | None = None,
+) -> DataFrame:
+    """Build the full train-window event log (view + cart + purchase) mapped to
+    train indices. Output schema is the contract for ``train_events.parquet``.
+    """
+    if behavior_ids is None:
+        behavior_ids = _DEFAULT_BEHAVIOR_IDS
+
+    user_map, item_map = _user_item_maps(spark, split)
+
+    rows = (
+        df.filter(F.col("event_type").isin(list(_VALID_BEHAVIORS)))
+        .join(F.broadcast(user_map), on="user_id",    how="inner")
+        .join(F.broadcast(item_map), on="product_id", how="inner")
+        .filter(F.col("timestamp") < global_cutoff)
     )
 
-    val_purchases = (purchases
-        .join(valid_eval_users, on="user_id", how="inner")
-        .filter(F.col("loo_rank") == 2)
+    behavior_id_col = F.coalesce(*[
+        F.when(F.col("event_type") == b, F.lit(int(behavior_ids[b])))
+        for b in _VALID_BEHAVIORS
+    ]).cast("int")
+
+    cols = [
+        F.col("user_idx").cast("long").alias("user_idx"),
+        F.col("item_idx").cast("long").alias("item_idx"),
+        F.col("event_type").alias("behavior"),
+        behavior_id_col.alias("behavior_id"),
+        F.col("timestamp").cast("long").alias("timestamp"),
+    ]
+    if "user_session" in rows.columns:
+        cols.append(F.col("user_session"))
+
+    return rows.select(*cols)
+
+
+def build_structural_edges(
+    df: DataFrame,
+    spark: SparkSession,
+    item2idx: dict,
+    *,
+    train_cutoff_ts: int | None = None,
+    metadata_source: Literal["train_only", "all_rows"] = "train_only",
+    unknown_category: str = "__UNKNOWN_CATEGORY__",
+    unknown_brand: str = "__UNKNOWN_BRAND__",
+) -> tuple[pd.DataFrame, pd.DataFrame, dict, dict, dict]:
+    """Compute mode category/brand per product. Primary protocol restricts the
+    source rows to the train window so no future metadata leaks in.
+
+    Returns: prod_cat_df, prod_brand_df, category2idx, brand2idx, meta_stats.
+    """
+    if metadata_source == "train_only":
+        if train_cutoff_ts is None:
+            raise ValueError("train_cutoff_ts is required when metadata_source='train_only'")
+        df = df.filter(F.col("timestamp") < train_cutoff_ts)
+    elif metadata_source != "all_rows":
+        raise ValueError(f"Unknown metadata_source: {metadata_source!r}")
+
+    item_map = spark.createDataFrame(
+        [(int(k), int(v)) for k, v in item2idx.items()],
+        schema="product_id LONG, product_idx LONG",
     )
 
-    test_val_keys = (test_purchases
-        .select("user_id", "product_id", "event_time")
-        .unionByName(
-            val_purchases.select("user_id", "product_id", "event_time")
+    item_rows = (
+        df.join(F.broadcast(item_map), on="product_id", how="inner")
+        .select("product_id", "product_idx", "category", "brand")
+        .cache()
+    )
+
+    w_mode = Window.partitionBy("product_id").orderBy(F.desc("cnt"))
+
+    cat_mode = (
+        item_rows
+        .groupBy("product_id", "product_idx", "category")
+        .count().withColumnRenamed("count", "cnt")
+        .withColumn("rn", F.row_number().over(w_mode))
+        .filter(F.col("rn") == 1)
+        .select("product_idx", "category")
+    )
+
+    brand_mode = (
+        item_rows
+        .groupBy("product_id", "product_idx", "brand")
+        .count().withColumnRenamed("count", "cnt")
+        .withColumn("rn", F.row_number().over(w_mode))
+        .filter(F.col("rn") == 1)
+        .select("product_idx", "brand")
+    )
+
+    cat_pdf   = cat_mode.toPandas()
+    brand_pdf = brand_mode.toPandas()
+    item_rows.unpersist()
+
+    seen_products = set(map(int, cat_pdf["product_idx"].tolist()) if not cat_pdf.empty else [])
+    all_products  = set(int(v) for v in item2idx.values())
+    missing_meta_products = all_products - seen_products
+
+    if missing_meta_products:
+        logger.info(
+            "build_structural_edges: %d products lack metadata in source rows -> "
+            "assigning unknown category/brand.",
+            len(missing_meta_products),
         )
-    )
-    test_val_keys = test_val_keys.checkpoint()
+        if cat_pdf.empty:
+            cat_pdf = pd.DataFrame(columns=["product_idx", "category"])
+        if brand_pdf.empty:
+            brand_pdf = pd.DataFrame(columns=["product_idx", "brand"])
+        miss_rows_cat = pd.DataFrame({
+            "product_idx": sorted(missing_meta_products),
+            "category":    [unknown_category] * len(missing_meta_products),
+        })
+        miss_rows_brand = pd.DataFrame({
+            "product_idx": sorted(missing_meta_products),
+            "brand":       [unknown_brand] * len(missing_meta_products),
+        })
+        cat_pdf   = pd.concat([cat_pdf, miss_rows_cat],     ignore_index=True)
+        brand_pdf = pd.concat([brand_pdf, miss_rows_brand], ignore_index=True)
 
-    train_purchases = (df
-        .filter(F.col("event_type") == target)
-        .join(test_val_keys,
-              on=["user_id", "product_id", "event_time"],
-              how="left_anti")
-    )
+    unique_cats   = sorted(cat_pdf["category"].dropna().unique().tolist())
+    unique_brands = sorted(brand_pdf["brand"].dropna().unique().tolist())
+    category2idx  = {c: i for i, c in enumerate(unique_cats)}
+    brand2idx     = {b: i for i, b in enumerate(unique_brands)}
 
-    auxiliary = df.filter(F.col("event_type") != target)
-    cols = ["user_id", "product_id", "event_type",
-            "event_time", "event_date", "category", "brand_clean", "price"]
-    train_all = (train_purchases.select(cols)
-                 .unionByName(auxiliary.select(cols)))
+    cat_pdf["category_idx"] = cat_pdf["category"].map(category2idx).astype(np.int64)
+    brand_pdf["brand_idx"]  = brand_pdf["brand"].map(brand2idx).astype(np.int64)
 
-    def to_indexed(src_df):
-        return (src_df
-            .join(user_map.select(
-                F.col("user_id"), F.col("idx").alias("user_idx")),
-                on="user_id", how="inner")
-            .join(product_map.select(
-                F.col("product_id"), F.col("idx").alias("product_idx")),
-                on="product_id", how="inner")
-        )
+    prod_cat_df = cat_pdf[["product_idx", "category_idx"]].copy()
+    prod_cat_df["product_idx"]  = prod_cat_df["product_idx"].astype(np.int64)
+    prod_brand_df = brand_pdf[["product_idx", "brand_idx"]].copy()
+    prod_brand_df["product_idx"] = prod_brand_df["product_idx"].astype(np.int64)
 
-    val_pairs = (to_indexed(val_purchases)
-        .select("user_idx", "product_idx")
-    )
-    val_pairs_path = os.path.join(loo_dir, "_val_pairs_parquet")
-    val_pairs.write.mode("overwrite").parquet(val_pairs_path)
-
-    test_pairs = (to_indexed(test_purchases)
-        .select("user_idx", "product_idx")
-    )
-    test_pairs_path = os.path.join(loo_dir, "_test_pairs_parquet")
-    test_pairs.write.mode("overwrite").parquet(test_pairs_path)
-
-    train_all_indexed = (to_indexed(train_all)
-        .withColumn("unix_ts", F.col("event_time").cast("long"))
-        .select("user_idx", "product_idx", "event_type", "unix_ts")
-    )
-    train_path = os.path.join(loo_dir, "_train_all_parquet")
-    train_all_indexed.write.mode("overwrite").parquet(train_path)
-
-    train_reload = spark.read.parquet(train_path)
-    train_stats = (train_reload
-        .groupBy("event_type").count()
-        .collect()
-    )
-    train_stats_map = {r["event_type"]: r["count"] for r in train_stats}
-    n_train_all = sum(train_stats_map.values())
-    n_train_purchase = train_stats_map.get(target, 0)
-    n_train_view = train_stats_map.get("view", 0)
-    n_train_cart = train_stats_map.get("cart", 0)
-
-    n_val = spark.read.parquet(val_pairs_path).count()
-    n_test = spark.read.parquet(test_pairs_path).count()
-
-    print(f"LOO Split Summary:")
-    print(f"Train total: {n_train_all:>12,}")
-    print(f"- view: {n_train_view:>12,}  (all)")
-    print(f"- cart: {n_train_cart:>12,}  (all)")
-    print(f"- purchase: {n_train_purchase:>12,}  (excl. val+test)")
-    print(f"Val pairs: {n_val:>12,}  (1 per user)")
-    print(f"Test pairs: {n_test:>12,}  (1 per user)")
-    print(f"Eval users: {n_eval_users:>12,}")
-
-    return {
-        "train_parquet_path": train_path,
-        "val_parquet_path": val_pairs_path,
-        "test_parquet_path": test_pairs_path,
-        "eval_user_count": n_eval_users,
-        "val_count": n_val,
-        "test_count": n_test,
+    n_unknown_cat   = int((cat_pdf["category"]   == unknown_category).sum())
+    n_unknown_brand = int((brand_pdf["brand"]    == unknown_brand).sum())
+    meta_stats = {
+        "metadata_source":              metadata_source,
+        "num_products":                 len(item2idx),
+        "num_categories":               len(category2idx),
+        "num_brands":                   len(brand2idx),
+        "products_unknown_category":    n_unknown_cat,
+        "products_unknown_brand":       n_unknown_brand,
+        "products_missing_metadata":    len(missing_meta_products),
     }
 
+    item_metadata = pd.DataFrame({
+        "product_idx":     prod_cat_df["product_idx"].values,
+    }).merge(
+        cat_pdf[["product_idx", "category", "category_idx"]],   on="product_idx", how="left",
+    ).merge(
+        brand_pdf[["product_idx", "brand", "brand_idx"]],       on="product_idx", how="left",
+    )
+    item_metadata["metadata_source"] = metadata_source
 
-import os
-
-
-# STEP 4: SMALL VERSION SEED SELECTION
-@log_step("TRANSFORM: Select seed users for REES46-Small")
-def select_seed_users(df: DataFrame, num_users: int) -> DataFrame:
-    user_stats = (df
-        .groupBy("user_id")
-        .agg(
-            F.countDistinct("event_type").alias("num_behaviors"),
-            F.count("*").alias("total_interactions"),
-            F.sum(F.when(F.col("event_type") == "purchase", 1)
-                  .otherwise(0)).alias("num_purchases"),
-        )
+    logger.info(
+        "Structural edges: %d products -> %d categories, %d brands. unknown_cat=%d unknown_brand=%d",
+        len(item2idx), len(category2idx), len(brand2idx),
+        n_unknown_cat, n_unknown_brand,
     )
 
-    seed_users = (user_stats
-        .orderBy(
-            F.desc("num_behaviors"),
-            F.desc("num_purchases"),
-            F.desc("total_interactions"),
-        )
-        .limit(num_users)
-        .select("user_id")
+    meta_stats["item_metadata"] = item_metadata
+    return prod_cat_df, prod_brand_df, category2idx, brand2idx, meta_stats
+
+
+def build_train_mask(
+    purchase_train: pd.DataFrame,
+    aux_spark: DataFrame | None,
+    eval_user_ids: Iterable[int],
+    spark: SparkSession,
+    *,
+    mask_behaviors: tuple[str, ...] = ("purchase",),
+) -> dict[int, list[int]]:
+    """Build per-user seen-item sets for full-ranking eval masking.
+
+    Primary call uses ``mask_behaviors=("purchase",)``. The seen-all diagnostic
+    mask uses ``("view", "cart", "purchase")``. The auxiliary DataFrame may be
+    None when ``mask_behaviors`` does not include any auxiliary behavior.
+    """
+    eval_users = sorted({int(u) for u in eval_user_ids})
+    eval_users_df = spark.createDataFrame(
+        [(u,) for u in eval_users], schema="user_idx LONG"
     )
 
-    count_and_log(seed_users, "Seed users selected")
-    return seed_users
+    parts = []
+    if "purchase" in mask_behaviors and not purchase_train.empty:
+        purchase_spark = spark.createDataFrame(
+            purchase_train[["user_idx", "item_idx"]]
+            .astype({"user_idx": "int64", "item_idx": "int64"})
+        )
+        parts.append(
+            purchase_spark.select(
+                F.col("user_idx").cast("long"),
+                F.col("item_idx").cast("long"),
+            )
+        )
 
+    aux_behaviors = tuple(b for b in mask_behaviors if b in ("view", "cart"))
+    if aux_behaviors:
+        if aux_spark is None:
+            raise ValueError(
+                f"aux_spark is required when mask_behaviors includes {aux_behaviors}"
+            )
+        parts.append(
+            aux_spark
+            .filter(F.col("event_type").isin(list(aux_behaviors)))
+            .select(
+                F.col("user_idx").cast("long"),
+                F.col("item_idx").cast("long"),
+            )
+        )
 
-@log_step("TRANSFORM: Expand subgraph from seeds")
-def expand_subgraph(df: DataFrame, seed_users: DataFrame) -> DataFrame:
-    sub_df = df.join(F.broadcast(seed_users), on="user_id", how="inner")
-    count_and_log(sub_df, "Subgraph interactions")
-    return sub_df
+    if not parts:
+        return {u: [] for u in eval_users}
 
-# DATA PROFILING
-@log_step("PROFILE: Data statistics")
-def print_data_profile(df: DataFrame):
-    total = df.count()
-    n_users = df.select("user_id").distinct().count()
-    n_items = df.select("product_id").distinct().count()
-    n_cats = df.select("category").distinct().count()
-    n_brands = df.select("brand_clean").distinct().count()
+    union_df = parts[0]
+    for p in parts[1:]:
+        union_df = union_df.union(p)
 
-    print(f"Total interactions: {total:,}")
-    print(f"Unique users: {n_users:,}")
-    print(f"Unique products: {n_items:,}")
-    print(f"Unique categories: {n_cats:,}")
-    print(f"Unique brands: {n_brands:,}")
-    print(f"Density: {total / max(n_users * n_items, 1) * 100:.6f}%")
+    mask_rows = (
+        union_df
+        .join(F.broadcast(eval_users_df), on="user_idx", how="inner")
+        .distinct()
+        .groupBy("user_idx")
+        .agg(F.collect_list("item_idx").alias("seen_items"))
+        .collect()
+    )
 
-    # Behavior distribution
-    print(f"Behavior distribution:")
-    for row in df.groupBy("event_type").count().orderBy(F.desc("count")).collect():
-        pct = row["count"] / total * 100
-        print(f"{row['event_type']:>10s}: {row['count']:>12,} ({pct:.1f}%)")
+    mask = {int(r["user_idx"]): [int(x) for x in r["seen_items"]] for r in mask_rows}
+    for u in eval_users:
+        mask.setdefault(u, [])
 
-    # Date range
-    dr = df.agg(
-        F.min("event_date").alias("min"), F.max("event_date").alias("max")
-    ).collect()[0]
-    print(f"Date range: {dr['min']} -> {dr['max']}")
+    avg = float(np.mean([len(v) for v in mask.values()])) if mask else 0.0
+    logger.info(
+        "Train mask (mask_behaviors=%s): %d users, avg %.1f seen items per user.",
+        mask_behaviors, len(mask), avg,
+    )
+    return mask
