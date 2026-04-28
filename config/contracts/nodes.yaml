@@ -1,0 +1,69 @@
+version: "1.0"
+name: nodes
+owner: team-data
+description: >
+  Node types in the heterogeneous graph for ecommerce recommendation system.
+
+node_types:
+  - name: user
+    description: A customer who interacts with products
+    fields:
+      - name: user_id
+        type: string
+        nullable: false
+        unique: true
+        description: Unique identifier for each user
+      - name: embedding
+        type: float_array
+        dim: 128
+        nullable: false
+        description: Learned user embedding vector (EMBED_DIM=128)
+
+  - name: product
+    description: A product listed on the ecommerce platform
+    fields:
+      - name: product_id
+        type: string
+        nullable: false
+        unique: true
+        description: Unique identifier for each product
+      - name: embedding
+        type: float_array
+        dim: 128
+        nullable: false
+        description: Learned product embedding vector (EMBED_DIM=128)
+
+  - name: category
+    description: Product category (e.g. Electronics, Fashion)
+    fields:
+      - name: category_id
+        type: string
+        nullable: false
+        unique: true
+        description: Unique identifier for each category
+      - name: embedding
+        type: float_array
+        dim: 128
+        nullable: false
+        description: Learned category embedding vector (EMBED_DIM=128)
+
+  - name: brand
+    description: Brand or manufacturer of a product
+    fields:
+      - name: brand_id
+        type: string
+        nullable: false
+        unique: true
+        description: Unique identifier for each brand
+      - name: embedding
+        type: float_array
+        dim: 128
+        nullable: false
+        description: Learned brand embedding vector (EMBED_DIM=128)
+
+quality:
+  - rule: user_id is not null
+  - rule: product_id is not null
+  - rule: category_id is not null
+  - rule: brand_id is not null
+  - rule: all embedding vectors must have dim == 128
