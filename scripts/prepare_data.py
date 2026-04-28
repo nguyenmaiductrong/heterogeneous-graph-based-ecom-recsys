@@ -317,6 +317,20 @@ def main() -> None:
             },
         )
 
+    expected_manifest_files = [
+        os.path.join(args.stats_dir, "split_manifest.json"),
+        os.path.join(args.stats_dir, "data_card.md"),
+        os.path.join(args.stats_dir, "data_card.json"),
+        os.path.join(args.stats_dir, "baseline_contract.md"),
+        os.path.join(args.stats_dir, "artifacts_manifest.json"),
+    ]
+    missing = [p for p in expected_manifest_files if not os.path.exists(p)]
+    assert not missing, (
+        "Manifest integration incomplete — missing files: "
+        + ", ".join(missing)
+    )
+    logger.info("Manifest files OK: %s", expected_manifest_files)
+
     logger.info("=" * 60)
     logger.info("Data preparation complete.")
     logger.info("Artifacts: data_dir=%s graph_dir=%s struct_dir=%s stats_dir=%s",

@@ -113,31 +113,44 @@ def save_eval_split(
     graph_dir: str,
     split_name: str,
 ) -> dict[int, list[int]]:
-    """Save val/test artifacts: edge arrays, multi-positive ground truth, parquet."""
-    user_arr = np.ascontiguousarray(df["user_idx"].to_numpy(), dtype=np.int64)
-    item_arr = np.ascontiguousarray(df["item_idx"].to_numpy(), dtype=np.int64)
-    ts_arr   = np.ascontiguousarray(df["timestamp"].to_numpy(), dtype=np.int64)
+    """Save val/test artifacts: edge arrays, multi-positive ground truth, parquet.
+
+    Eval positives are deduplicated by (user_idx, item_idx); duplicates collapse
+    to the earliest observed timestamp so every artifact (.npy, .pkl, .parquet)
+    encodes the same set of unique pairs.
+    """
+    raw_eval_events = len(df)
+
+    parquet_cols = ["user_idx", "item_idx", "timestamp"]
+    unique_df = (
+        df[parquet_cols]
+        .astype({"user_idx": "int64", "item_idx": "int64", "timestamp": "int64"})
+        .groupby(["user_idx", "item_idx"], as_index=False, sort=True)["timestamp"]
+        .min()
+        .reset_index(drop=True)
+    )
+    unique_eval_positives = len(unique_df)
+
+    user_arr = np.ascontiguousarray(unique_df["user_idx"].to_numpy(), dtype=np.int64)
+    item_arr = np.ascontiguousarray(unique_df["item_idx"].to_numpy(), dtype=np.int64)
+    ts_arr   = np.ascontiguousarray(unique_df["timestamp"].to_numpy(), dtype=np.int64)
 
     np.save(os.path.join(data_dir, f"{split_name}_user_idx.npy"),    user_arr)
     np.save(os.path.join(data_dir, f"{split_name}_product_idx.npy"), item_arr)
     np.save(os.path.join(data_dir, f"{split_name}_timestamp.npy"),   ts_arr)
 
-    gt = _build_ground_truth(df)
+    gt = _build_ground_truth(unique_df)
     pkl_path = os.path.join(data_dir, f"{split_name}_ground_truth.pkl")
     with open(pkl_path, "wb") as fh:
         pickle.dump(gt, fh, protocol=pickle.HIGHEST_PROTOCOL)
 
-    parquet_cols = ["user_idx", "item_idx", "timestamp"]
-    parquet_df = df[parquet_cols].astype({
-        "user_idx": "int64", "item_idx": "int64", "timestamp": "int64"
-    }).reset_index(drop=True)
-    parquet_df.to_parquet(
+    unique_df.to_parquet(
         os.path.join(graph_dir, f"{split_name}_ground_truth.parquet"), index=False,
     )
 
     logger.info(
-        "  saved %s: %d positives across %d users",
-        split_name, len(df), len(gt),
+        "  saved %s: raw_eval_events=%d unique_eval_positives=%d across %d users",
+        split_name, raw_eval_events, unique_eval_positives, len(gt),
     )
     return gt
 
@@ -208,14 +221,16 @@ def save_artifacts(
 
     if train_events_spark is not None:
         train_events_path = os.path.join(graph_dir, "train_events.parquet")
-        tmp = os.path.join(graph_dir, "_tmp_train_events")
-        try:
-            train_events_spark.write.mode("overwrite").parquet(tmp)
-            table = pq.read_table(tmp)
-            pq.write_table(table, train_events_path)
-            logger.info("  train_events.parquet rows=%d", table.num_rows)
-        finally:
-            shutil.rmtree(tmp, ignore_errors=True)
+        # Write directly as a partitioned parquet directory; do NOT pull into the
+        # driver via pyarrow (the train-window event log can be tens of millions
+        # of rows and would OOM the driver).
+        train_events_spark.write.mode("overwrite").parquet(train_events_path)
+        logger.info("  train_events.parquet written to %s", train_events_path)
+
+    if split.candidate_item_idx is not None:
+        candidate_arr = np.ascontiguousarray(split.candidate_item_idx, dtype=np.int64)
+        np.save(os.path.join(data_dir, "candidate_item_idx.npy"), candidate_arr)
+        logger.info("  candidate_item_idx.npy: %d items", len(candidate_arr))
 
     logger.info("Saving vocabulary mappings to %s ...", struct_dir)
     for name, mapping in (
@@ -352,9 +367,38 @@ def verify_artifacts(
         train_triplets,
         eval_pairs,
         num_nodes_dict=node_counts,
-        check_leakage=False,
+        check_leakage=True,
         verbose=True,
     )
+
+    candidate_path = os.path.join(data_dir, "candidate_item_idx.npy")
+    assert os.path.exists(candidate_path), (
+        f"candidate_item_idx.npy missing at {candidate_path}"
+    )
+    candidate_arr = np.load(candidate_path)
+    assert candidate_arr.dtype == np.int64, (
+        f"candidate_item_idx.npy dtype {candidate_arr.dtype}, expected int64"
+    )
+    num_items = int(node_counts.get("product", 0))
+    if candidate_arr.size > 0:
+        assert int(candidate_arr.min()) >= 0, (
+            f"candidate_item_idx.npy min {int(candidate_arr.min())} < 0"
+        )
+        assert int(candidate_arr.max()) < num_items, (
+            f"candidate_item_idx.npy max {int(candidate_arr.max())} >= num_items={num_items}"
+        )
+    # Primary protocol uses the warm_train_items candidate set, which equals
+    # arange(num_items) over the train-window item vocab.
+    expected = np.arange(num_items, dtype=np.int64)
+    assert np.array_equal(candidate_arr, expected), (
+        "candidate_item_idx.npy must equal np.arange(num_items) for the "
+        "warm_train_items protocol"
+    )
+    logger.info(
+        "  candidate_item_idx.npy OK: %d items (warm_train_items)",
+        len(candidate_arr),
+    )
+
     logger.info("Sanity check PASSED — pipeline is ready for training.")
 
 

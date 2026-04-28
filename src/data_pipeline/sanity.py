@@ -188,8 +188,17 @@ def sanity_check_ground_truth(
     *,
     split_name: str = "test",
 ) -> None:
-    """Ensure multi-positive ground truth was not collapsed."""
+    """Ensure multi-positive ground truth was not collapsed and contains no duplicates."""
     logger.info("sanity_check_ground_truth(%s): starting ...", split_name)
+
+    n_pq_rows = len(parquet_df)
+    n_pq_unique_pairs = int(
+        parquet_df[["user_idx", "item_idx"]].drop_duplicates().shape[0]
+    )
+    assert n_pq_rows == n_pq_unique_pairs, (
+        f"{split_name}: parquet contains {n_pq_rows - n_pq_unique_pairs} duplicate "
+        f"(user_idx, item_idx) rows ({n_pq_rows} total, {n_pq_unique_pairs} unique)"
+    )
 
     pq_pairs = set(
         (int(u), int(i)) for u, i in zip(parquet_df["user_idx"], parquet_df["item_idx"])
@@ -203,9 +212,14 @@ def sanity_check_ground_truth(
         f"parquet ({len(pq_pairs)} pairs); difference={len(pq_pairs ^ gt_pairs)}"
     )
 
-    n_total = sum(len(v) for v in gt.values())
-    assert n_total == len(gt_pairs), (
+    n_gt_total = sum(len(v) for v in gt.values())
+    assert n_gt_total == len(gt_pairs), (
         f"{split_name}: ground truth contains duplicate (user,item) pairs"
+    )
+
+    assert n_pq_rows == n_gt_total, (
+        f"{split_name}: parquet has {n_pq_rows} rows but ground truth pkl has "
+        f"{n_gt_total} positives — they must reference the same unique pairs"
     )
 
     logger.info(

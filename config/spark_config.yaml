@@ -30,8 +30,14 @@ spark:
   arrow_enabled: true
   heartbeat_interval: "120s"
   network_timeout: "600s"
+  session_timezone: "UTC"
 
 protocol:
+  # Primary protocol is WARM-START ONLY: user2idx and item2idx are built from
+  # the train window, so val/test users and items that did not appear in train
+  # are dropped. Numbers produced under this protocol MUST NOT be used to claim
+  # cold-start SOTA — a separate cold-start protocol (transductive item vocab,
+  # cold-user/item subsets) is required for those comparisons.
   name: "warm_new_purchase_full_ranking"
   behaviors: ["view", "cart", "purchase"]
   target_behavior: "purchase"
@@ -39,7 +45,7 @@ protocol:
   transductive_item_vocab: false
   allow_transductive_item_metadata: false
   target: "new_purchase"
-  ground_truth: "all_purchases"
+  ground_truth: "all_new_purchases"
   drop_repeated_train_purchases_from_eval: true
   candidate_set: "warm_train_items"
 
@@ -91,7 +97,7 @@ evaluation:
   full_ranking: true
   primary_metric: "NDCG@20"
   metrics: ["Recall@10", "Recall@20", "Recall@50", "NDCG@10", "NDCG@20", "NDCG@50"]
-  ground_truth: "all_new_test_purchases"
+  ground_truth: "all_new_purchases"
   mask_behaviors_primary: ["purchase"]
   mask_behaviors_seen_all: ["view", "cart", "purchase"]
   save_baseline_contract: true

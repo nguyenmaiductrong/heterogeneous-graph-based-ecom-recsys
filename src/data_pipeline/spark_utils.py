@@ -98,6 +98,9 @@ def create_spark_session(
         # Network stability for long-running local jobs
         .config("spark.executor.heartbeatInterval", sc.get("heartbeat_interval", "120s"))
         .config("spark.network.timeout",            sc.get("network_timeout",    "600s"))
+        # Pin the SQL session timezone so timestamp casts/parses are reproducible
+        # across machines (the temporal split depends on this).
+        .config("spark.sql.session.timeZone",       sc.get("session_timezone", "UTC"))
         .getOrCreate()
     )
 

@@ -225,13 +225,21 @@ def build_structural_edges(
         .cache()
     )
 
-    w_mode = Window.partitionBy("product_id").orderBy(F.desc("cnt"))
+    # Tie-break the mode deterministically by ordering the secondary key
+    # alphabetically (asc). Without this, two categories/brands with equal
+    # counts could be picked non-deterministically across Spark runs.
+    w_mode_cat   = Window.partitionBy("product_id").orderBy(
+        F.desc("cnt"), F.asc("category"),
+    )
+    w_mode_brand = Window.partitionBy("product_id").orderBy(
+        F.desc("cnt"), F.asc("brand"),
+    )
 
     cat_mode = (
         item_rows
         .groupBy("product_id", "product_idx", "category")
         .count().withColumnRenamed("count", "cnt")
-        .withColumn("rn", F.row_number().over(w_mode))
+        .withColumn("rn", F.row_number().over(w_mode_cat))
         .filter(F.col("rn") == 1)
         .select("product_idx", "category")
     )
@@ -240,7 +248,7 @@ def build_structural_edges(
         item_rows
         .groupBy("product_id", "product_idx", "brand")
         .count().withColumnRenamed("count", "cnt")
-        .withColumn("rn", F.row_number().over(w_mode))
+        .withColumn("rn", F.row_number().over(w_mode_brand))
         .filter(F.col("rn") == 1)
         .select("product_idx", "brand")
     )
@@ -286,6 +294,23 @@ def build_structural_edges(
     prod_cat_df["product_idx"]  = prod_cat_df["product_idx"].astype(np.int64)
     prod_brand_df = brand_pdf[["product_idx", "brand_idx"]].copy()
     prod_brand_df["product_idx"] = prod_brand_df["product_idx"].astype(np.int64)
+
+    n_cat_dupes   = int(prod_cat_df.duplicated(subset=["product_idx"]).sum())
+    n_brand_dupes = int(prod_brand_df.duplicated(subset=["product_idx"]).sum())
+    assert n_cat_dupes == 0, (
+        f"product_category.parquet has {n_cat_dupes} duplicate product_idx rows; "
+        "structural edges must be one-row-per-product"
+    )
+    assert n_brand_dupes == 0, (
+        f"product_brand.parquet has {n_brand_dupes} duplicate product_idx rows; "
+        "structural edges must be one-row-per-product"
+    )
+    logger.info(
+        "  product_category rows=%d (unique product_idx=%d), "
+        "product_brand rows=%d (unique product_idx=%d)",
+        len(prod_cat_df),   prod_cat_df["product_idx"].nunique(),
+        len(prod_brand_df), prod_brand_df["product_idx"].nunique(),
+    )
 
     n_unknown_cat   = int((cat_pdf["category"]   == unknown_category).sum())
     n_unknown_brand = int((brand_pdf["brand"]    == unknown_brand).sum())
