@@ -1,4 +1,3 @@
-# --- Paths ---
 paths:
   raw_data_dir: "data/raw"
   raw_csv_pattern: "data/raw/*.csv"
@@ -10,44 +9,55 @@ paths:
   graph_dir: "data/processed/graph"
   small_dir: "data/processed/small"
 
-# --- Spark ---
 spark:
   app_name: "REES46_HetGraph_Pipeline"
   master: "local[*]"
-  driver_memory: "30g"
-  executor_memory: "30g"
-  # Sửa lại thư mục temp của Spark để không bị lỗi ghi ổ đĩa
+  driver_memory: "36g"
+  executor_memory: "36g"
   local_dir: "data/spark-temp"
   checkpoint_dir: "data/spark-checkpoints"
-  shuffle_partitions: 200
-  default_parallelism: 64
+  shuffle_partitions: 128
+  default_parallelism: 16
   aqe_enabled: true
   adaptive_coalesce_enabled: true
   adaptive_skew_join_enabled: true
-  broadcast_threshold: "256m"
+  broadcast_threshold: "512m"
   parquet_compression: "snappy"
   max_partition_bytes: "256m"
   memory_fraction: 0.6
   storage_fraction: 0.2
-  driver_max_result_size: "4g"
+
+  driver_max_result_size: "6g"
   arrow_enabled: true
   heartbeat_interval: "120s"
   network_timeout: "600s"
+  session_timezone: "UTC"
 
-# --- Filtering ---
+protocol:
+  name: "warm_new_purchase_full_ranking"
+  behaviors: ["view", "cart", "purchase"]
+  target_behavior: "purchase"
+  split_timezone: "UTC"
+  transductive_item_vocab: false
+  allow_transductive_item_metadata: false
+  target: "new_purchase"
+  ground_truth: "all_new_purchases"
+  drop_repeated_train_purchases_from_eval: true
+  candidate_set: "warm_train_items"
+
 filter:
   min_user_interactions: 5
   min_item_interactions: 5
+  min_train_user_purchases: 5
+  min_train_item_purchases: 5
+  iterative_filter_rounds: 3
   require_purchase: true
   fill_missing_brand: true
   unknown_brand: "__UNKNOWN_BRAND__"
   unknown_category: "__UNKNOWN_CATEGORY__"
-  # "top" = trước dấu '.', "second" = 2 cấp, "full" = toàn bộ
+  unknown_session: "__UNKNOWN_SESSION__"
   category_level: "top"
-  # Số vòng lặp lọc cold-start
-  iterative_filter_rounds: 3
 
-# --- Temporal Split ---
 split:
   # REES46: Oct 2019 - Apr 2020
   # Train: Oct 2019 - Feb 2020 (5 tháng)
@@ -56,7 +66,36 @@ split:
   train_end: "2020-02-29"
   val_end: "2020-03-31"
 
-# --- Graph Schema ---
+artifacts:
+  save_edge_timestamps: true
+  save_ground_truth_parquet: true
+  save_ground_truth_pickle: true
+  save_train_events_parquet: true
+
+sequence:
+  enabled: true
+  max_len: 50
+  event_order_tie_breaker: ["timestamp", "behavior_id", "item_idx"]
+
+behavior:
+  ids:
+    view: 0
+    cart: 1
+    purchase: 2
+  weights:
+    view: 1.0
+    cart: 3.0
+    purchase: 5.0
+
+evaluation:
+  full_ranking: true
+  primary_metric: "NDCG@20"
+  ks: [10, 20, 50]
+  metrics: ["HR@10", "HR@20", "HR@50", "NDCG@10", "NDCG@20", "NDCG@50"]
+  ground_truth: "all_new_purchases"
+  mask_behaviors_primary: ["purchase"]
+  mask_behaviors_seen_all: ["view", "cart", "purchase"]
+
 graph:
   node_types:
     - user
@@ -79,3 +118,9 @@ graph:
 sampling:
   create_small_version: true
   small_num_users: 100000
+
+sanity:
+  fail_on_future_train_edge: true
+  fail_on_ground_truth_collapse: true
+  fail_on_eval_positive_in_primary_mask: true
+  fail_on_unexpected_behavior: true

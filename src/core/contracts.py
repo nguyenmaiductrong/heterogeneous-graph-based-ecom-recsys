@@ -5,12 +5,10 @@ import torch
 from torch import Tensor
 
 EMBED_DIM: int = 128
+LOW_RANK: int = 16  # rank r cho A_phi @ B_beta^T (CrossComboWeightSpec)
 NUM_HEADS: int = 4
 HEAD_DIM: int = EMBED_DIM // NUM_HEADS  # 32
 NUM_GNN_LAYERS: int = 2
-LOW_RANK: int = 16  # r for A_phi @ B_beta^T
-SVD_RANK: int = 256 # q for randomized SVD
- 
 NODE_TYPES: list[str] = ["user", "product", "category", "brand"]
 BEHAVIOR_TYPES: list[str] = ["view", "cart", "purchase"]
 TARGET_BEHAVIOR: str = "purchase"
@@ -91,28 +89,6 @@ class GNNOutput:
                 assert e.dim() == 2 and e.size(1) == EMBED_DIM
         assert self.final_user_emb.size(1) == EMBED_DIM
         assert self.final_item_emb.size(1) == EMBED_DIM
-
-@dataclass
-class SVDFactors:
-    """
-    Producer: P1 (preprocessing, runs once)
-    Consumer: P3 (ContrastiveLearning — SVD-augmented view)
- 
-    For behavior k:
-      US_k = U_k @ S_k   shape: (num_users, SVD_RANK)
-      VS_k = V_k @ S_k   shape: (num_items, SVD_RANK)
- 
-    SVD-view embedding (never materialize full I×J matrix):
-      g_user = US_k @ (VS_k^T @ E_item)   # O(q*d)
-    """
-    US: dict[str, Tensor]   # {behavior: (num_users, q)}
-    VS: dict[str, Tensor]   # {behavior: (num_items, q)}
- 
-    def validate(self) -> None:
-        for beh in BEHAVIOR_TYPES:
-            assert beh in self.US and beh in self.VS
-            assert self.US[beh].size(1) == SVD_RANK
-            assert self.VS[beh].size(1) == SVD_RANK
 
 @dataclass
 class GatedOutput:
@@ -296,23 +272,15 @@ def _self_test() -> None:
     )
     gnn.validate()
     print("  [PASS] GNNOutput")
- 
-    # 3. SVDFactors
-    svd = SVDFactors(
-        US={b: torch.randn(Nu, SVD_RANK) for b in BEHAVIOR_TYPES},
-        VS={b: torch.randn(Ni, SVD_RANK) for b in BEHAVIOR_TYPES},
-    )
-    svd.validate()
-    print("  [PASS] SVDFactors")
- 
-    # 4. GatedOutput
+
+    # 3. GatedOutput
     gated = GatedOutput(torch.randn(B, EMBED_DIM),
                         torch.randn(B, EMBED_DIM),
                         torch.tensor(0.5))
     gated.validate()
     print("  [PASS] GatedOutput")
  
-    # 5. LossInput / LossOutput
+    # 4. LossInput / LossOutput
     li = LossInput(torch.randn(B, EMBED_DIM),
                    torch.randn(B, EMBED_DIM),
                    torch.randn(B, 4, EMBED_DIM),
