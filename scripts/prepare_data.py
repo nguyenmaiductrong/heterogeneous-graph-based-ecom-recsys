@@ -1,19 +1,35 @@
 from __future__ import annotations
 
+"""Điều phối chuẩn bị dữ liệu theo thời gian.
+
+Luồng (sau khi Spark khởi động):
+1. load_raw_csvs -> clean
+2. filter_by_train_only_counts — ngưỡng số lần mua user/item chỉ trong cửa sổ train
+3. temporal_split_purchases -> SplitResult (vocab, purchase train/val/test)
+4. map_auxiliary, map_all_train_events, build_structural_edges; bỏ cache DataFrame đã làm sạch
+5. build_train_mask (chế độ chính + seen-all) cho user được đánh giá
+6. save_artifacts, save_node_counts
+Dừng SparkSession, sau đó:
+7. verify_artifacts (kiểm tra .npy / parquet, không dùng Spark)
+"""
+
 import argparse
 import logging
 import os
 import shutil
 import sys
 
+import pandas as pd
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.data_pipeline.spark_utils import create_spark_session, load_config
 from src.data_pipeline.extract import load_raw_csvs, clean
 from src.data_pipeline.transform import (
-    filter_cold_items,
+    filter_by_train_only_counts,
     temporal_split_purchases,
     map_auxiliary,
+    map_all_train_events,
     build_structural_edges,
     build_train_mask,
 )
@@ -24,104 +40,72 @@ logger = logging.getLogger(__name__)
 _VALID_BEHAVIORS = ("view", "cart", "purchase")
 
 
+def _resolve_and_prepare_output_dirs(
+    data_dir: str,
+    struct_dir: str,
+    graph_dir: str,
+) -> tuple[str, str, str]:
+    """Chuẩn hóa đường dẫn output (abs) và tạo thư mục — fail sớm nếu cwd/symlink/đĩa lỗi."""
+    d = os.path.abspath(os.path.expanduser(data_dir))
+    s = os.path.abspath(os.path.expanduser(struct_dir))
+    g = os.path.abspath(os.path.expanduser(graph_dir))
+    for label, p in (("data_dir", d), ("struct_dir", s), ("graph_dir", g)):
+        try:
+            os.makedirs(p, exist_ok=True)
+        except OSError as e:
+            raise OSError(
+                f"Không tạo được {label}={p!r}. "
+                "Kiểm tra: cwd đúng chưa, 'data' có phải symlink hỏng/tệp tin, đĩa còn trống không."
+            ) from e
+    return d, s, g
+
+
+def _log_phase(step: int, total: int, title: str) -> None:
+    logger.info("%s Giai đoạn %d/%d — %s %s", "=" * 12, step, total, title, "=" * 12)
+
+
 def _parse_args() -> argparse.Namespace:
     _config_path = os.path.join(
         os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
         "config", "spark_config.yaml",
     )
-    _cfg   = load_config(_config_path)
-    _filt  = _cfg.get("filter", {})
-    _split = _cfg.get("split",  {})
-
-    _default_min_user      = int(_filt.get("min_user_interactions",   5))
-    _default_min_item      = int(_filt.get("min_item_interactions",   5))
-    _default_filter_rounds = int(_filt.get("iterative_filter_rounds", 3))
-    _default_train_end     = str(_split.get("train_end", "2020-02-29"))
-    _default_val_end       = str(_split.get("val_end",   "2020-03-31"))
+    _cfg = load_config(_config_path)
+    _filt = _cfg.get("filter", {})
+    _split = _cfg.get("split", {})
+    _proto = _cfg.get("protocol", {})
 
     p = argparse.ArgumentParser(
-        description="Prepare REES46 data for BAGNN training (Global Temporal Split).",
+        description="Chuẩn bị dữ liệu REES46 cho BPATMP (warm-start, dự đoán mua mới, xếp hạng đầy đủ).",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    p.add_argument(
-        "--csv-glob",
-        required=True,
-        help='Glob pattern for raw REES46 CSV files, e.g. "data/raw/*.csv".',
-    )
-    p.add_argument(
-        "--spark-config",
-        default=_config_path,
-        help="Path to spark_config.yaml (Spark tuning + filter/split defaults).",
-    )
-    p.add_argument(
-        "--data-dir",
-        default="data/processed/temporal",
-        help=(
-            "Output directory for edge arrays, test/val pairs, train_mask, and "
-            "node_counts."
-        ),
-    )
-    p.add_argument(
-        "--struct-dir",
-        default="data/processed/temporal/node_mappings",
-        help=(
-            "Output directory for structural parquets and vocabulary JSONs."
-        ),
-    )
+    p.add_argument("--csv-glob", required=True)
+    p.add_argument("--spark-config", default=_config_path)
+    p.add_argument("--data-dir", default="data/processed/temporal")
+    p.add_argument("--struct-dir", default="data/processed/temporal/node_mappings")
+    p.add_argument("--graph-dir", default="data/processed/temporal/graph")
     p.add_argument(
         "--target-behavior",
-        default="purchase",
+        default=str(_proto.get("target_behavior", "purchase")),
         choices=list(_VALID_BEHAVIORS),
-        help="Behaviour used for the evaluation split.",
     )
     p.add_argument(
-        "--min-interactions",
+        "--min-user-purchases",
         type=int,
-        default=_default_min_user,
-        help=(
-            "Minimum number of target-behaviour interactions per user. "
-            f"Loaded from spark_config.yaml (currently {_default_min_user})."
+        default=int(
+            _filt.get("min_train_user_purchases", _filt.get("min_user_interactions", 5)),
         ),
     )
     p.add_argument(
-        "--min-item-interactions",
+        "--min-item-purchases",
         type=int,
-        default=_default_min_item,
-        help=(
-            "Minimum number of target-behaviour interactions per item. "
-            f"Loaded from spark_config.yaml (currently {_default_min_item})."
+        default=int(
+            _filt.get("min_train_item_purchases", _filt.get("min_item_interactions", 5)),
         ),
     )
-    p.add_argument(
-        "--filter-rounds",
-        type=int,
-        default=_default_filter_rounds,
-        help=(
-            "Iterative cold-start filter rounds. "
-            f"Loaded from spark_config.yaml (currently {_default_filter_rounds})."
-        ),
-    )
-    p.add_argument(
-        "--train-end",
-        default=_default_train_end,
-        help=(
-            "Last calendar day of training window (inclusive UTC). "
-            f"Loaded from spark_config.yaml (currently {_default_train_end!r})."
-        ),
-    )
-    p.add_argument(
-        "--val-end",
-        default=_default_val_end,
-        help=(
-            "Last calendar day of validation window (inclusive UTC). "
-            f"Loaded from spark_config.yaml (currently {_default_val_end!r})."
-        ),
-    )
-    p.add_argument(
-        "--log-level",
-        default="INFO",
-        choices=["DEBUG", "INFO", "WARNING", "ERROR"],
-    )
+    p.add_argument("--filter-rounds", type=int, default=int(_filt.get("iterative_filter_rounds", 3)))
+    p.add_argument("--train-end", default=str(_split.get("train_end", "2020-02-29")))
+    p.add_argument("--val-end", default=str(_split.get("val_end", "2020-03-31")))
+    p.add_argument("--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"])
     return p.parse_args()
 
 
@@ -130,89 +114,167 @@ def main() -> None:
 
     logging.basicConfig(
         level=getattr(logging, args.log_level),
-        format="%(asctime)s  %(levelname)-7s  %(message)s",
+        format="%(asctime)s %(levelname)-7s %(message)s",
         datefmt="%H:%M:%S",
         handlers=[logging.StreamHandler(sys.stdout)],
     )
 
     logger.info("=" * 60)
-    logger.info("REES46 BAGNN Data Preparation (Global Temporal Split)")
+    logger.info("REES46 BPATMP — Chuẩn bị dữ liệu")
     logger.info("=" * 60)
-    logger.info("spark-config         : %s", args.spark_config)
-    logger.info("csv-glob             : %s", args.csv_glob)
-    logger.info("data-dir             : %s", args.data_dir)
-    logger.info("struct-dir           : %s", args.struct_dir)
-    logger.info("target-behavior      : %s", args.target_behavior)
-    logger.info("min-interactions     : %d", args.min_interactions)
-    logger.info("min-item-interactions: %d", args.min_item_interactions)
-    logger.info("filter-rounds        : %d", args.filter_rounds)
-    logger.info("train-end            : %s", args.train_end)
-    logger.info("val-end              : %s", args.val_end)
+
+    args.data_dir, args.struct_dir, args.graph_dir = _resolve_and_prepare_output_dirs(
+        args.data_dir, args.struct_dir, args.graph_dir,
+    )
+    logger.info(
+        "Thư mục output (absolute): data=%s struct=%s graph=%s | cwd=%s",
+        args.data_dir,
+        args.struct_dir,
+        args.graph_dir,
+        os.getcwd(),
+    )
 
     cfg = load_config(args.spark_config)
-    spark = create_spark_session(cfg)
+    proto_cfg = cfg.get("protocol", {})
+    eval_cfg = cfg.get("evaluation", {})
+    filter_cfg = cfg.get("filter", {})
+    behavior_cfg = cfg.get("behavior", {})
 
+    transductive_item_vocab = bool(proto_cfg.get("transductive_item_vocab", False))
+    transductive_metadata = bool(proto_cfg.get("allow_transductive_item_metadata", False))
+    metadata_source = "all_rows" if transductive_metadata else "train_only"
+    drop_repeated = bool(proto_cfg.get("drop_repeated_train_purchases_from_eval", True))
+    protocol_name = str(proto_cfg.get("name", "warm_new_purchase_full_ranking"))
+    primary_mask_behaviors = tuple(eval_cfg.get("mask_behaviors_primary", ["purchase"]))
+    seen_all_mask_behaviors = tuple(eval_cfg.get("mask_behaviors_seen_all", ["view", "cart", "purchase"]))
+    behavior_ids = {b: int(i) for b, i in behavior_cfg.get("ids", {"view": 0, "cart": 1, "purchase": 2}).items()}
+    unknown_brand = str(filter_cfg.get("unknown_brand", "__UNKNOWN_BRAND__"))
+    unknown_category = str(filter_cfg.get("unknown_category", "__UNKNOWN_CATEGORY__"))
+
+    train_cutoff_ts = int(
+        (pd.Timestamp(args.train_end, tz="UTC") + pd.Timedelta(days=1)).timestamp()
+    )
+    val_cutoff_ts = int(
+        (pd.Timestamp(args.val_end, tz="UTC") + pd.Timedelta(days=1)).timestamp()
+    )
+
+    spark = create_spark_session(cfg)
+    node_counts: dict[str, int] = {}
+
+    _total_phases = 7
     try:
+        _log_phase(1, _total_phases, "Đọc & làm sạch CSV thô (Spark)")
         clean_spark = clean(load_raw_csvs(spark, args.csv_glob), cfg)
 
-        if args.min_item_interactions > 1:
-            clean_spark = filter_cold_items(
+        if args.min_user_purchases > 1 or args.min_item_purchases > 1:
+            _log_phase(2, _total_phases, "Lọc bậc theo cửa sổ train (user & item)")
+            clean_spark = filter_by_train_only_counts(
                 clean_spark,
-                args.target_behavior,
-                args.min_item_interactions,
+                target_behavior=args.target_behavior,
+                train_cutoff_ts=train_cutoff_ts,
+                min_user_purchases=args.min_user_purchases,
+                min_item_purchases=args.min_item_purchases,
                 rounds=args.filter_rounds,
+            )
+        else:
+            logger.info(
+                "Giai đoạn 2/%d — bỏ qua (min user/item purchase ≤ 1).", _total_phases,
             )
 
         clean_spark = clean_spark.cache()
 
+        _log_phase(3, _total_phases, "Chia tập theo thời gian (hành vi mục tiêu) -> vocab & các splits")
         split = temporal_split_purchases(
             clean_spark,
             args.target_behavior,
-            args.min_interactions,
             args.train_end,
             args.val_end,
+            transductive_item_vocab=transductive_item_vocab,
+            drop_repeated_train_purchases_from_eval=drop_repeated,
+            protocol_name=protocol_name,
         )
+
+        _log_phase(4, _total_phases, "Cạnh phụ, nhật ký sự kiện train, metadata cấu trúc")
         aux_spark = map_auxiliary(
             clean_spark, spark, split, args.target_behavior,
             global_cutoff=split.train_end_ts,
+        ).cache()
+
+        train_events_spark = map_all_train_events(
+            clean_spark, spark, split,
+            global_cutoff=split.train_end_ts,
+            behavior_ids=behavior_ids,
         )
 
-        prod_cat_df, prod_brand_df, category2idx, brand2idx = build_structural_edges(
+        prod_cat_df, prod_brand_df, category2idx, brand2idx, meta_stats = build_structural_edges(
             clean_spark, spark, split.item2idx,
+            train_cutoff_ts=split.train_end_ts,
+            metadata_source=metadata_source,
+            unknown_category=unknown_category,
+            unknown_brand=unknown_brand,
         )
+        item_metadata_df = meta_stats.pop("item_metadata")
+        del meta_stats
         clean_spark.unpersist()
 
-        train_mask = build_train_mask(split.train, aux_spark, split.test, spark)
+        eval_user_ids = sorted({
+            *split.val["user_idx"].astype(int).tolist(),
+            *split.test["user_idx"].astype(int).tolist(),
+        })
 
+        _log_phase(5, _total_phases, "Mask xếp hạng đầy đủ (chính & seen-all)")
+        train_mask_primary = build_train_mask(
+            split.train, aux_spark, eval_user_ids, spark,
+            mask_behaviors=primary_mask_behaviors,
+        )
+        train_mask_seen_all = build_train_mask(
+            split.train, aux_spark, eval_user_ids, spark,
+            mask_behaviors=seen_all_mask_behaviors,
+        )
+
+        _log_phase(6, _total_phases, "Lưu tensor, parquet, ánh xạ")
         save_artifacts(
-            split, aux_spark, train_mask,
-            prod_cat_df, prod_brand_df, category2idx, brand2idx,
-            args.data_dir, args.struct_dir,
+            split, aux_spark,
+            train_mask_primary, train_mask_seen_all,
+            prod_cat_df, prod_brand_df,
+            category2idx, brand2idx,
+            behavior_ids, item_metadata_df,
+            args.data_dir, args.struct_dir, args.graph_dir,
+            train_events_spark=train_events_spark,
         )
 
         node_counts = {
-            "user":     split.num_users,
-            "product":  split.num_items,
+            "user": split.num_users,
+            "product": split.num_items,
             "category": len(category2idx),
-            "brand":    len(brand2idx),
+            "brand": len(brand2idx),
         }
         save_node_counts(node_counts, args.data_dir)
 
+        aux_spark.unpersist()
+
     finally:
         spark.stop()
-        logger.info("SparkSession stopped.")
+        logger.info("Đã dừng SparkSession.")
         checkpoint_dir = cfg["spark"].get("checkpoint_dir", "/tmp/spark_checkpoints")
         if os.path.exists(checkpoint_dir):
             shutil.rmtree(checkpoint_dir)
-            logger.info("Cleaned up checkpoint dir: %s", checkpoint_dir)
+            logger.info("Đã dọn thư mục checkpoint: %s", checkpoint_dir)
 
-    verify_artifacts(args.data_dir, args.struct_dir, node_counts)
+    _log_phase(7, _total_phases, "Kiểm tra artefact (sanity, không dùng Spark)")
+    verify_artifacts(
+        args.data_dir, args.struct_dir, args.graph_dir, node_counts,
+        train_cutoff_ts=train_cutoff_ts,
+        val_cutoff_ts=val_cutoff_ts,
+    )
 
     logger.info("=" * 60)
-    logger.info("Data preparation complete.")
-    logger.info("Artifacts written to: %s", args.data_dir)
+    logger.info("Hoàn tất chuẩn bị dữ liệu.")
     logger.info(
-        "Run:\n  python -m src.training.trainer --config config/training.yaml"
+        "Artefact: data_dir=%s graph_dir=%s struct_dir=%s",
+        args.data_dir,
+        args.graph_dir,
+        args.struct_dir,
     )
     logger.info("=" * 60)
 

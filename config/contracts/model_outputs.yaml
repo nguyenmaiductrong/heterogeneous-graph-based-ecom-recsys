@@ -3,7 +3,7 @@ name: model_outputs
 owner: team-data
 description: >
   Contracts for model output artifacts used in training, evaluation, and serving.
-  Covers GNNOutput, SVDFactors, GatedOutput, LossOutput, EvalInput, and ServingArtifacts.
+  Covers GNNOutput, GatedOutput, LossOutput, EvalInput, and ServingArtifacts.
 
 model_config:
   embed_dim: 128
@@ -11,7 +11,6 @@ model_config:
   head_dim: 32        # embed_dim // num_heads
   num_gnn_layers: 2
   low_rank: 16        # r for A_phi @ B_beta^T
-  svd_rank: 256       # q for randomized SVD
 
 outputs:
   - name: GNNOutput
@@ -30,16 +29,6 @@ outputs:
         type: float_array
         shape: [batch_size, 128]
         description: Final item embedding after multi-order concat + projection
-
-  - name: SVDFactors
-    description: Precomputed SVD factors for contrastive learning augmentation
-    fields:
-      - name: US
-        type: dict
-        description: "{behavior: Tensor(num_users, 256)} — U @ S factors"
-      - name: VS
-        type: dict
-        description: "{behavior: Tensor(num_items, 256)} — V @ S factors"
 
   - name: GatedOutput
     description: Output after hierarchy gating + contrastive learning
@@ -94,6 +83,5 @@ outputs:
 
 quality:
   - rule: all embedding tensors must have last dim == 128
-  - rule: SVD tensors must have last dim == 256
   - rule: all loss values must be scalar tensors (dim == 0)
   - rule: serving artifact files must exist before inference

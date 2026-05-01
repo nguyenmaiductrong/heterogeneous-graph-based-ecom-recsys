@@ -78,7 +78,7 @@ Tập dữ liệu **REES46** là bộ nhật ký sự kiện (event logs) thươ
 
 ## 3. Pipeline xử lý dữ liệu
 
-Pipeline chuyển đổi file CSV thô thành đồ thị không đồng nhất có cấu trúc qua **4 giai đoạn tuần tự**, được cài đặt trong `src/data_pipeline/` và điều phối bởi `scripts/run_pipeline.sh`.
+Pipeline chuyển đổi file CSV thô thành đồ thị không đồng nhất có cấu trúc: **điểm vào** [`scripts/run_pipeline.sh`](scripts/run_pipeline.sh) (Java, conda, `PYTHONPATH`) gọi [`scripts/prepare_data.py`](scripts/prepare_data.py), trong đó logic Spark nằm ở [`src/data_pipeline/`](src/data_pipeline/). Log Python đánh dấu **giai đoạn 1–7** (đọc/làm sạch → lọc trong cửa sổ train → chia thời gian → cạnh phụ & cấu trúc → mask → ghi artefact → sau khi tắt Spark: kiểm tra sanity).
 
 ![Data Pipeline Diagram](assets/data-pipeline.svg)
 
@@ -184,22 +184,21 @@ heterogeneous-graph-based-ecom-recsys/
 │   └── spark_config.yaml           # Cấu hình pipeline: đường dẫn, ngưỡng lọc, mốc thời gian
 │
 ├── scripts/
-│   └── run_pipeline.sh             # Điểm vào cho toàn bộ pipeline 5 giai đoạn
+│   └── run_pipeline.sh             # Môi trường + gọi prepare_data.py (temporal split)
 │
 ├── src/
 │   ├── core/
 │   │   ├── contracts.py            # Dataclass có kiểu cho mọi cấu trúc I/O giữa các module
-│   │   └── evaluator.py            # LeaveOneOutEvaluator: tính Recall@K, NDCG@K
+│   │   └── evaluator.py            # TemporalSplitEvaluator: HR@K, NDCG@K (full-ranking)
 │   │
 │   ├── data_pipeline/
-│   │   ├── spark_utils.py          # Khởi tạo SparkSession, schema REES46, nạp config
-│   │   ├── extract.py              # Đọc CSV thô / Parquet / ánh xạ nút / mảng cạnh
-│   │   ├── transform.py            # Làm sạch, lọc cold-start, xây cạnh, chia tập dữ liệu
-│   │   └── load.py                 # Lưu Parquet, mảng .npy, ma trận thưa .npz
+│   │   ├── spark_utils.py          # SparkSession, schema REES46, nạp YAML
+│   │   ├── extract.py              # Đọc CSV / schema, làm sạch
+│   │   ├── transform.py            # Lọc, chia tập, xây cạnh, mask
+│   │   └── load.py                 # Ghi Parquet, npy, sanity
 │   │
 │   ├── graph/
-│   │   ├── neighbor_sampler.py     # BehaviorAwareNeighborSampler (2-hop, vector hóa CSR)
-│   │   └── contrastive.py          # Hàm mất mát đối chiếu với biểu diễn tăng cường SVD
+│   │   └── neighbor_sampler.py     # BehaviorAwareNeighborSampler (2-hop, vector hóa CSR)
 │   │
 │   ├── model/
 │   │   ├── bagnn.py                # BehaviorAwareWeight, BAGNNConv, BAGNNLayer, BAGNNModel
@@ -271,18 +270,22 @@ bash scripts/run_pipeline.sh
 
 **Thời gian ước tính:** 120 phút trên máy có 64 GB RAM và 8 CPU cores (PySpark chế độ local).
 
-**Cấu trúc thư mục đầu ra:**
+**Đầu ra mặc định** (temporal split): `data/processed/temporal/` (`--data-dir`), `data/processed/temporal/node_mappings/` (`--struct-dir`), `data/processed/temporal/graph/` (`--graph-dir`). Đổi đường dẫn qua các cờ tương ứng trong `run_pipeline.sh`.
+
+**Cấu trúc thư mục (temporal, `prepare_data.py`):**
 
 ```
-processed/
-├── cleaned.parquet/          # Tương tác đã làm sạch và lọc cold-start
-├── node_mappings/            # user2idx, product2idx, category2idx, brand2idx (.parquet + .csv)
-├── edge_lists/               # Mảng cạnh .npy: {hanh_vi}_{split}_src/dst/ts.npy
-│                             # Cạnh cấu trúc: belongsTo_src/dst.npy, producedBy_src/dst.npy
-├── graph/                    # adj_{hanh_vi}_train.npz + graph_meta.json
-├── loo/                      # adj_loo_{hanh_vi}_train.npz, cặp val/test .npy, loo_meta.json
-└── statistics/               # node_summary.json
+data/processed/temporal/
+├── *_train_{src,dst,ts}.npy       # view, cart, purchase trong cửa sổ train
+├── val_*  test_*                  # cặp eval + timestamp + ground_truth.pkl
+├── train_mask*.pkl, node_counts.json, candidate_item_idx.npy
+data/processed/temporal/node_mappings/
+├── product_{category,brand}.parquet, *2idx.json
+data/processed/temporal/graph/
+├── *_ground_truth.parquet, train_events.parquet, item_metadata.parquet
 ```
+
+*(Cấu trúc kiểu `processed/cleaned.parquet`, `loo/` trong các tài liệu cũ là pipeline LOO / layout khác; không phải output của `run_pipeline.sh` bản temporal hiện tại.)*
 
 ### 7.2 Phân tích khám phá dữ liệu (EDA)
 

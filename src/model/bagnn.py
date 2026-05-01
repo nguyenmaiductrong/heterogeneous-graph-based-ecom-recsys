@@ -67,6 +67,52 @@ class BehaviorAwareWeight(nn.Module):
         return self.W_base + self.A[phi] @ self.B[b_idx].T
 
 
+BEH_BUCKETS: Tuple[str, str, str, str] = ("view", "cart", "purchase", "struct")
+_BEH_W_INIT = torch.tensor([0.30, 0.50, 1.00, 0.40])
+
+
+class BehaviorNormalizedAgg(nn.Module):
+    """Per-(node_type, behavior) aggregation with learned mixing weights.
+
+    Replaces the single agg[dst_type] sum-scatter in BAGNNConv. Each behavior's
+    contribution is LayerNorm'd separately so view (which has ~100x more edges
+    than purchase on REES46) cannot dominate the dst-node representation by raw
+    edge count alone.
+    """
+
+    def __init__(self, out_dim: int) -> None:
+        super().__init__()
+        self.beh_w = nn.ParameterDict({
+            t: nn.Parameter(_BEH_W_INIT.clone()) for t in NODE_TYPES
+        })
+        self.norms = nn.ModuleDict({
+            f"{t}__{b}": nn.LayerNorm(out_dim)
+            for t in NODE_TYPES for b in BEH_BUCKETS
+        })
+
+    def forward(
+        self,
+        agg_pb: Dict[str, Dict[str, Optional[Tensor]]],
+        x_dict: Dict[str, Tensor],
+    ) -> Dict[str, Tensor]:
+        out: Dict[str, Tensor] = {}
+        for t in NODE_TYPES:
+            present = [(i, b) for i, b in enumerate(BEH_BUCKETS) if agg_pb[t][b] is not None]
+            if not present:
+                if t in x_dict:
+                    out[t] = x_dict[t]
+                continue
+            w = F.softmax(self.beh_w[t], dim=0)
+            mixed = sum(
+                w[i] * self.norms[f"{t}__{b}"](agg_pb[t][b])
+                for i, b in present
+            )
+            if t in x_dict and x_dict[t].shape == mixed.shape:
+                mixed = mixed + x_dict[t]
+            out[t] = F.elu(mixed)
+        return out
+
+
 class BAGNNConv(nn.Module):
     def __init__(
         self,
@@ -83,7 +129,7 @@ class BAGNNConv(nn.Module):
         self.rel_emb = nn.Embedding(n_relations, out_dim)
         self.beh_emb = nn.Embedding(4, out_dim)
         self.a_att   = nn.Parameter(torch.empty(4 * out_dim))
-        self.norm    = nn.LayerNorm(out_dim)
+        self.behavior_agg = BehaviorNormalizedAgg(out_dim)
         nn.init.xavier_uniform_(self.a_att.unsqueeze(0))
 
     def forward(
@@ -95,7 +141,9 @@ class BAGNNConv(nn.Module):
         all_r_emb = self.rel_emb.weight
         all_b_emb = self.beh_emb.weight
 
-        agg: Dict[str, Optional[Tensor]] = {t: None for t in NODE_TYPES}
+        agg_pb: Dict[str, Dict[str, Optional[Tensor]]] = {
+            t: {b: None for b in BEH_BUCKETS} for t in NODE_TYPES
+        }
 
         n_users = x_dict["user"].size(0) if "user" in x_dict else 0
         ref = next(iter(x_dict.values()))
@@ -160,9 +208,12 @@ class BAGNNConv(nn.Module):
 
             weighted = alpha.unsqueeze(-1) * msg
             N_dst = x_dict[dst_type].size(0)
-            if agg[dst_type] is None:
-                agg[dst_type] = weighted.new_zeros(N_dst, self.out_dim)
-            agg[dst_type].scatter_add_(0, dst_idx.unsqueeze(-1).expand_as(weighted), weighted)
+            bucket = BEH_BUCKETS[_BEH_IDX[edge_name]]
+            if agg_pb[dst_type][bucket] is None:
+                agg_pb[dst_type][bucket] = weighted.new_zeros(N_dst, self.out_dim)
+            agg_pb[dst_type][bucket].scatter_add_(
+                0, dst_idx.unsqueeze(-1).expand_as(weighted), weighted
+            )
 
             beh_key = _REV_BEH_KEYS.get(edge_name)
             if beh_key is not None and n_users > 0:
@@ -170,15 +221,7 @@ class BAGNNConv(nn.Module):
                     0, dst_idx.unsqueeze(-1).expand_as(weighted), weighted
                 )
 
-        out_dict: Dict[str, Tensor] = {}
-        for t in NODE_TYPES:
-            if agg[t] is not None:
-                h = self.norm(agg[t])
-                if t in x_dict and x_dict[t].shape == h.shape:
-                    h = h + x_dict[t]
-                out_dict[t] = F.elu(h)
-            elif t in x_dict:
-                out_dict[t] = x_dict[t]
+        out_dict = self.behavior_agg(agg_pb, x_dict)
 
         return out_dict, beh_user_agg
 
@@ -238,6 +281,39 @@ class BAGNNLayer(nn.Module):
         return h, beh_user_agg
 
 
+class IntentCodebook(nn.Module):
+    """Shared low-rank intent codebook. Per-node attention over a small set
+    of E intent embeddings; weighted-sum is added back as a residual.
+
+    Decoupled from behavior on purpose: a user's intent is the SAME across
+    view/cart/purchase. Counter-position vs MixRec's H^(u)_k which decouples
+    intents per behavior — sharing the codebook gives cross-behavior intent
+    sharing for free.
+    """
+    def __init__(self, n_intents: int = 32, dim: int = EMBED_DIM):
+        super().__init__()
+        self.n_intents = n_intents
+        self.dim = dim
+        self.user_intents = nn.Parameter(torch.empty(n_intents, dim))
+        self.item_intents = nn.Parameter(torch.empty(n_intents, dim))
+        nn.init.xavier_uniform_(self.user_intents)
+        nn.init.xavier_uniform_(self.item_intents)
+        self._scale = dim ** -0.5
+
+    def _attend(self, x: Tensor, codebook: Tensor) -> Tensor:
+        attn = (x @ codebook.T) * self._scale
+        attn = torch.softmax(attn, dim=-1)
+        return attn @ codebook
+
+    def forward(self, x_dict: Dict[str, Tensor]) -> Dict[str, Tensor]:
+        out = dict(x_dict)
+        if "user" in out:
+            out["user"] = out["user"] + self._attend(out["user"], self.user_intents)
+        if "product" in out:
+            out["product"] = out["product"] + self._attend(out["product"], self.item_intents)
+        return out
+
+
 class BAGNNModel(nn.Module):
     def __init__(
         self,
@@ -248,6 +324,7 @@ class BAGNNModel(nn.Module):
         rank:      int   = 16,
         dropout:   float = 0.1,
         use_grad_checkpoint: bool = True,
+        n_intents: int   = 32,
     ) -> None:
         super().__init__()
         self.embed_dim = embed_dim
@@ -259,6 +336,11 @@ class BAGNNModel(nn.Module):
             else:
                 n = n_nodes[t] if n_nodes and t in n_nodes else 1000
                 self.input_proj[t] = nn.Embedding(n, embed_dim)
+
+        self.intent_codebook = (
+            IntentCodebook(n_intents=n_intents, dim=embed_dim)
+            if n_intents > 0 else None
+        )
 
         self.bagnn = BAGNNLayer(
             in_dim=embed_dim, hid_dim=embed_dim, out_dim=embed_dim,
@@ -287,6 +369,9 @@ class BAGNNModel(nn.Module):
                 x_dict[t] = proj(ids)
             else:
                 x_dict[t] = proj(node_x.to(device=device, dtype=torch.float))
+
+        if self.intent_codebook is not None:
+            x_dict = self.intent_codebook(x_dict)
 
         valid = set(ALL_EDGE_TYPES)
         edge_index_dict = {et: data[et].edge_index for et in data.edge_types if et in valid}
