@@ -1,5 +1,5 @@
+"""Khởi tạo SparkSession, schema REES46 và nạp YAML cấu hình pipeline."""
 from __future__ import annotations
-
 import logging
 import os
 import shutil
@@ -19,7 +19,7 @@ from pyspark.sql.types import (
 
 logger = logging.getLogger(__name__)
 
-_CONFIG_CACHE: dict | None = None
+_CONFIG_CACHE: dict[str, dict] = {}
 _PROJECT_ROOT = os.path.abspath(
     os.path.join(os.path.dirname(__file__), "..", "..")
 )
@@ -30,17 +30,26 @@ def get_project_root() -> str:
 
 
 def load_config(config_path: str | None = None) -> dict:
-    global _CONFIG_CACHE
-    if _CONFIG_CACHE is not None:
-        return _CONFIG_CACHE
-
+    """Nạp YAML; cache theo đường dẫn tuyệt đối để --spark-profile / --spark-config không lẫn file."""
     if config_path is None:
         config_path = os.path.join(_PROJECT_ROOT, "config", "spark_config.yaml")
+    config_path = os.path.abspath(os.path.expanduser(config_path))
+    cached = _CONFIG_CACHE.get(config_path)
+    if cached is not None:
+        return cached
 
     with open(config_path) as f:
-        _CONFIG_CACHE = yaml.safe_load(f)
+        cfg = yaml.safe_load(f)
+    _CONFIG_CACHE[config_path] = cfg
+    return cfg
 
-    return _CONFIG_CACHE
+
+def _mkdir_spark_local_dirs(local_dir: str) -> None:
+    """Spark cho phép spark.local.dir phân tách bằng dấu phẩy."""
+    for part in local_dir.split(","):
+        p = part.strip()
+        if p:
+            os.makedirs(p, exist_ok=True)
 
 
 def ensure_dirs(cfg: dict) -> None:
@@ -62,94 +71,110 @@ def create_spark_session(
     sc = cfg["spark"]
     app_name = sc["app_name"] + (f"_{app_name_suffix}" if app_name_suffix else "")
 
+    local_dir = sc["local_dir"]
+    _mkdir_spark_local_dirs(local_dir)
+
+    shuffle_spill = str(sc.get("shuffle_spill_enabled", True)).lower()
+
     spark = (
         SparkSession.builder
         .appName(app_name)
         .master(sc["master"])
-        # Memory
-        .config("spark.driver.memory",               sc["driver_memory"])
-        .config("spark.executor.memory",             sc["executor_memory"])
-        .config("spark.driver.maxResultSize",        sc["driver_max_result_size"])
-        # Local temp / checkpoint dirs
-        .config("spark.local.dir",                   sc["local_dir"])
-        # Parallelism
-        .config("spark.sql.shuffle.partitions",      sc["shuffle_partitions"])
-        .config("spark.default.parallelism",         sc["default_parallelism"])
-        # Adaptive Query Execution (AQE) — critical for skewed e-commerce data
-        .config("spark.sql.adaptive.enabled",
-                str(sc["aqe_enabled"]).lower())
-        .config("spark.sql.adaptive.coalescePartitions.enabled",
-                str(sc.get("adaptive_coalesce_enabled", True)).lower())
-        .config("spark.sql.adaptive.skewJoin.enabled",
-                str(sc.get("adaptive_skew_join_enabled", True)).lower())
+        # Bộ nhớ
+        .config("spark.driver.memory", sc["driver_memory"])
+        .config("spark.executor.memory", sc["executor_memory"])
+        .config("spark.driver.maxResultSize", sc["driver_max_result_size"])
+        # Thư mục tạm / checkpoint cục bộ (Colab: thường trỏ /dev/shm để spill ít đụng SSD)
+        .config("spark.local.dir", local_dir)
+        # Song song
+        .config("spark.sql.shuffle.partitions", sc["shuffle_partitions"])
+        .config("spark.default.parallelism", sc["default_parallelism"])
+        # Adaptive Query Execution (AQE)
+        .config("spark.sql.adaptive.enabled", str(sc["aqe_enabled"]).lower())
+        .config(
+            "spark.sql.adaptive.coalescePartitions.enabled",
+            str(sc.get("adaptive_coalesce_enabled", True)).lower(),
+        )
+        .config(
+            "spark.sql.adaptive.skewJoin.enabled",
+            str(sc.get("adaptive_skew_join_enabled", True)).lower(),
+        )
         .config("spark.sql.autoBroadcastJoinThreshold", sc["broadcast_threshold"])
         # I/O
-        .config("spark.sql.parquet.compression.codec",  sc["parquet_compression"])
-        .config("spark.sql.files.maxPartitionBytes",    sc["max_partition_bytes"])
-        # Shuffle spill to disk (prevents OOM on large group-bys)
-        .config("spark.sql.shuffle.spill.enabled",      "true")
-        # Memory management
-        .config("spark.memory.fraction",               sc["memory_fraction"])
-        .config("spark.memory.storageFraction",        sc["storage_fraction"])
-        # Arrow-based toPandas() — up to 10× faster than row-serialised fallback
-        .config("spark.sql.execution.arrow.pyspark.enabled",
-                str(sc.get("arrow_enabled", True)).lower())
+        .config("spark.sql.parquet.compression.codec", sc["parquet_compression"])
+        .config("spark.sql.files.maxPartitionBytes", sc["max_partition_bytes"])
+        # Spill: false có thể giữ shuffle trong heap nhưng dễ OOM; profile Colab giữ true + tmpfs
+        .config("spark.sql.shuffle.spill.enabled", shuffle_spill)
+        .config("spark.shuffle.compress", str(sc.get("shuffle_compress", True)).lower())
+        .config("spark.shuffle.spill.compress", str(sc.get("shuffle_spill_compress", True)).lower())
+        # Quản lý bộ nhớ
+        .config("spark.memory.fraction", sc["memory_fraction"])
+        .config("spark.memory.storageFraction", sc["storage_fraction"])
+        .config(
+            "spark.sql.execution.arrow.pyspark.enabled",
+            str(sc.get("arrow_enabled", True)).lower(),
+        )
         .config("spark.sql.execution.arrow.pyspark.fallback.enabled", "true")
-        # Network stability for long-running local jobs
         .config("spark.executor.heartbeatInterval", sc.get("heartbeat_interval", "120s"))
-        .config("spark.network.timeout",            sc.get("network_timeout",    "600s"))
+        .config("spark.network.timeout", sc.get("network_timeout", "600s"))
+        # Cố định múi giờ session SQL để cast/parse timestamp lặp được
+        .config("spark.sql.session.timeZone", sc.get("session_timezone", "UTC"))
         .getOrCreate()
     )
 
     spark.sparkContext.setLogLevel("WARN")
 
-    checkpoint_dir = sc.get("checkpoint_dir", "/tmp/spark_checkpoints")
-    # Clean up stale checkpoints from previous runs before starting a new one.
-    # Checkpoints are transient (only needed within the same Spark session), so
-    # accumulation across runs causes disk exhaustion (observed: 390GB after ~N runs).
+    checkpoint_dir = os.path.abspath(os.path.expanduser(sc.get("checkpoint_dir", "/tmp/spark_checkpoints")))
+    # Xóa checkpoint cũ từ các lần chạy trước khi bật phiên Spark mới.
     if os.path.exists(checkpoint_dir):
         shutil.rmtree(checkpoint_dir)
-        logger.info("Cleaned up stale checkpoint dir: %s", checkpoint_dir)
+        logger.info("Đã dọn checkpoint cũ: %s", checkpoint_dir)
     os.makedirs(checkpoint_dir, exist_ok=True)
     spark.sparkContext.setCheckpointDir(checkpoint_dir)
 
     logger.info(
-        "SparkSession ready — master=%s  driver_mem=%s  shuffle_parts=%s  AQE=on",
-        sc["master"], sc["driver_memory"], sc["shuffle_partitions"],
+        "SparkSession sẵn sàng — master=%s driver_mem=%s shuffle_parts=%s "
+        "local_dir=%s checkpoint_dir=%s spill=%s AQE=bật",
+        sc["master"],
+        sc["driver_memory"],
+        sc["shuffle_partitions"],
+        local_dir,
+        checkpoint_dir,
+        shuffle_spill,
     )
     return spark
 
 
 def get_rees46_schema() -> StructType:
     return StructType([
-        StructField("event_time",    TimestampType(), True),
-        StructField("event_type",    StringType(),    True),
-        StructField("product_id",    LongType(),      True),
-        StructField("category_id",   LongType(),      True),
-        StructField("category_code", StringType(),    True),
-        StructField("brand",         StringType(),    True),
-        StructField("price",         DoubleType(),    True),
-        StructField("user_id",       LongType(),      True),
-        StructField("user_session",  StringType(),    True),
+        StructField("event_time", TimestampType(), True),
+        StructField("event_type", StringType(), True),
+        StructField("product_id", LongType(), True),
+        StructField("category_id", LongType(), True),
+        StructField("category_code", StringType(), True),
+        StructField("brand", StringType(), True),
+        StructField("price", DoubleType(), True),
+        StructField("user_id", LongType(), True),
+        StructField("user_session", StringType(), True),
     ])
 
 
 def log_step(step_name: str):
-    """Decorator that logs entry/exit and wall-clock time of a pipeline step."""
+    """Decorator: ghi log lúc vào/ra và thời gian thực thi của một bước pipeline."""
     def decorator(func):
         @wraps(func)
         def wrapper(*args, **kwargs):
             logger.info(">>> %s", step_name)
             t0 = time.time()
             result = func(*args, **kwargs)
-            logger.info("<<< %s  done in %.1fs", step_name, time.time() - t0)
+            logger.info("<<< %s hoàn thành sau %.1f giây", step_name, time.time() - t0)
             return result
         return wrapper
     return decorator
 
 
 def count_and_log(df: DataFrame, label: str) -> int:
-    """Trigger a count action and print the result. Kept with print() for test compatibility."""
+    """Kích hoạt action count và in kết quả (giữ print() để test tương thích)."""
     n = df.count()
     print(f"{label}: {n:,}")
     return n
