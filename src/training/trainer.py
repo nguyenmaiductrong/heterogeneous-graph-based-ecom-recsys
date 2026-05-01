@@ -11,9 +11,17 @@ from torch.utils.data import Dataset, DataLoader
 from tqdm import tqdm
 
 from src.model.bagnn import BAGNNModel
-from src.core.contracts import BEHAVIOR_TYPES
+from src.core.contracts import BEHAVIOR_TYPES, SVDFactors
 from src.graph.neighbor_sampler import BehaviorAwareNeighborSampler
-from src.training.losses import bpr_loss, MultiTaskBPRLoss, ContrastiveLearning
+from src.graph.contrastive import SvdGnnContrastive
+from src.training.losses import (
+    bpr_loss,
+    MultiTaskBPRLoss,
+    ContrastiveLearning,
+    HierarchicalMBCL,
+    build_user_history_csr,
+    sample_aligned_negatives_local,
+)
 from src.core.contracts import EvalInput
 from src.core.evaluator import TemporalSplitEvaluator
 
@@ -42,11 +50,18 @@ class TrainConfig:
     wandb_save_every: int = 5
     cl_weight: float = 0.1
     use_bf16: bool = True
+    max_view_triplets: int = -1
+    cl_g_weight: float = 0.0
+    svd_path: str = ""
+    svd_global_tau: float = 0.2
+    eval_subsample: int = 10000
+    eval_seed: int = 42
 
     @classmethod
     def from_yaml(cls, cfg: dict) -> "TrainConfig":
         t = cfg.get("training", {})
         w = cfg.get("wandb", {})
+        c = cfg.get("contrastive", {})
         return cls(
             epochs=t.get("epochs", cls.epochs),
             batch_size=t.get("batch_size", cls.batch_size),
@@ -69,6 +84,12 @@ class TrainConfig:
             wandb_save_every=w.get("save_every", cls.wandb_save_every),
             cl_weight=t.get("cl_weight", cls.cl_weight),
             use_bf16=t.get("use_bf16", cls.use_bf16),
+            max_view_triplets=t.get("max_view_triplets", cls.max_view_triplets),
+            cl_g_weight=t.get("cl_g_weight", cls.cl_g_weight),
+            svd_path=c.get("svd_path", cls.svd_path),
+            svd_global_tau=c.get("global_tau", cls.svd_global_tau),
+            eval_subsample=t.get("eval_subsample", cls.eval_subsample),
+            eval_seed=t.get("eval_seed", cls.eval_seed),
         )
 
 def load_yaml_config(path: str) -> dict:
@@ -138,16 +159,22 @@ def train_epoch(
     loss_fn: MultiTaskBPRLoss,
     scaler: torch.amp.GradScaler,
     device: torch.device,
-    cl_fn: ContrastiveLearning,
+    cl_fn: HierarchicalMBCL,
+    cl_g_fn: SvdGnnContrastive | None = None,
     num_neg: int = 1,
     max_grad_norm: float = 1.0,
     amp: bool = True,
     cl_weight: float = 0.1,
+    cl_g_weight: float = 0.0,
     use_bf16: bool = True,
+    history_ptr: torch.Tensor | None = None,
+    history_item: torch.Tensor | None = None,
+    pop_dist: torch.Tensor | None = None,
 ) -> dict[str, float]:
     model.train()
     total_loss = 0.0
     total_cl_loss = 0.0
+    total_cl_g_loss = 0.0
     n_steps = 0
 
     pbar = tqdm(dataloader, desc="train", leave=False, dynamic_ncols=True)
@@ -163,6 +190,7 @@ def train_epoch(
         optimizer.zero_grad(set_to_none=True)
 
         l_cl = torch.zeros(1, device=device).squeeze()
+        l_cl_g = torch.zeros(1, device=device).squeeze()
 
         _amp_dtype = torch.bfloat16 if use_bf16 else torch.float16
         with torch.amp.autocast("cuda", dtype=_amp_dtype, enabled=amp and device.type == "cuda"):
@@ -183,6 +211,8 @@ def train_epoch(
             u_loc = u_loc[found_p]
             pp_loc = pp_loc[found_p]
             bev = beh_ids[found_p]
+            users_g_kept = users_g[found_p]
+            items_g_kept = items_g[found_p]
 
             N_items = item_emb.size(0)
             behavior_losses: dict[str, torch.Tensor] = {}
@@ -195,35 +225,60 @@ def train_epoch(
                 u_b = u_loc[mask]
                 pp_b = pp_loc[mask]
                 B_b = u_b.size(0)
-
                 if N_items <= 1:
                     continue
-                neg_loc = torch.randint(0, N_items - 1, (B_b, num_neg), device=device)
-                neg_loc[neg_loc >= pp_b.unsqueeze(-1)] += 1
 
                 u_emb_b = user_emb[u_b]
                 pos_emb_b = item_emb[pp_b]
-                neg_emb_b = item_emb[neg_loc]
 
+                if (history_ptr is not None and history_item is not None
+                        and pop_dist is not None):
+                    neg_loc = sample_aligned_negatives_local(
+                        pp_b=pp_b,
+                        user_b_global=users_g_kept[mask],
+                        pos_b_global=items_g_kept[mask],
+                        N_items=N_items,
+                        num_neg=num_neg,
+                        prod_x=subgraph["product"].x,
+                        pop_dist_global=pop_dist,
+                        history_ptr=history_ptr,
+                        history_item=history_item,
+                        user_emb_b=u_emb_b.detach(),
+                        item_emb_local=item_emb.detach(),
+                    )
+                else:
+                    neg_loc = torch.randint(0, N_items - 1, (B_b, num_neg), device=device)
+                    neg_loc[neg_loc >= pp_b.unsqueeze(-1)] += 1
+
+                neg_emb_b = item_emb[neg_loc]
                 pos_s = (u_emb_b * pos_emb_b).sum(-1, keepdim=True)
                 neg_s = torch.bmm(neg_emb_b, u_emb_b.unsqueeze(-1)).squeeze(-1)
-
                 behavior_losses[beh_name] = bpr_loss(pos_s, neg_s)
 
-            view_u = u_loc[bev == 0].unique()
-            purch_u = u_loc[bev == 2].unique()
-            if view_u.numel() >= 2 and purch_u.numel() >= 2:
-                common = sorted(set(view_u.tolist()) & set(purch_u.tolist()))
-                if len(common) >= 2:
-                    ct = torch.tensor(common, device=device)
-                    l_cl = cl_fn(beh_embs["view"][ct].float(), beh_embs["purchase"][ct].float())
+            users_per_beh = {
+                b: u_loc[bev == bid].unique() for bid, b in enumerate(BEHAVIOR_TYPES)
+            }
+            l_cl = cl_fn(
+                {b: beh_embs[b].float() for b in BEHAVIOR_TYPES},
+                users_per_beh=users_per_beh,
+            )
+
+            if cl_g_fn is not None and cl_g_weight > 0.0:
+                u_global = subgraph["user"].x.long()
+                i_global = subgraph["product"].x.long()
+                l_cl_g = cl_g_fn(
+                    {b: beh_embs[b].float() for b in BEHAVIOR_TYPES},
+                    user_global=u_global,
+                    item_emb=item_emb.float(),
+                    item_global=i_global,
+                )
 
         if not behavior_losses:
             continue
 
         l2 = model.embedding_l2_norm()
         loss, log = loss_fn(behavior_losses, l2)
-        loss = loss + cl_weight * l_cl.float()
+        loss = loss + cl_weight * l_cl.float() + cl_g_weight * l_cl_g.float()
 
         if amp:
             scaler.scale(loss).backward()
@@ -237,13 +292,19 @@ def train_epoch(
             optimizer.step()
 
         total_loss += log["loss/total"]
-        total_cl_loss += l_cl.item()
+        total_cl_loss += float(l_cl.detach())
+        total_cl_g_loss += float(l_cl_g.detach())
         n_steps += 1
-        pbar.set_postfix(loss=f"{log['loss/total']:.4f}", cl=f"{l_cl.item():.4f}")
+        pbar.set_postfix(
+            loss=f"{log['loss/total']:.4f}",
+            cl=f"{float(l_cl.detach()):.4f}",
+            clg=f"{float(l_cl_g.detach()):.4f}",
+        )
 
     return {
         "train/loss": total_loss / max(n_steps, 1),
         "train/cl_loss": total_cl_loss / max(n_steps, 1),
+        "train/cl_g_loss": total_cl_g_loss / max(n_steps, 1),
     }
 
 @torch.no_grad()
@@ -292,23 +353,33 @@ def eval_epoch(
     device: torch.device,
     batch_size: int = 512,
     use_bf16: bool = True,
+    subsample: int = 0,
+    seed: int = 42,
 ) -> dict[str, float]:
     valid_users = list(ground_truth.keys())
+
+    if 0 < subsample < len(valid_users):
+        gen = torch.Generator().manual_seed(seed)
+        idx = torch.randperm(len(valid_users), generator=gen)[:subsample].tolist()
+        valid_users = [valid_users[i] for i in idx]
+        ground_truth = {u: ground_truth[u] for u in valid_users}
+        exclude_items = {u: exclude_items.get(u, []) for u in valid_users}
+
     eval_user_ids_filtered = torch.tensor(valid_users, dtype=torch.long, device=eval_user_ids.device)
 
     user_emb, item_emb = export_embeddings(
         model, sampler, eval_user_ids_filtered, n_items, device, batch_size, use_bf16=use_bf16
     )
-    
+
     eval_input = EvalInput(
         user_embeddings=user_emb,
         item_embeddings=item_emb,
-        eval_user_ids=eval_user_ids_filtered, 
+        eval_user_ids=eval_user_ids_filtered,
         ground_truth=ground_truth,
         exclude_items=exclude_items,
     )
-    
-    return evaluator.evaluate(eval_input, batch_size=batch_size, mode="full")
+
+    return evaluator.evaluate(eval_input, batch_size=batch_size, mode="full_tiled")
 
 def train(
     model: BAGNNModel,
@@ -318,6 +389,7 @@ def train(
     ground_truth: dict[int, int],
     exclude_items: dict[int, list[int]],
     n_items: int,
+    n_users: int,
     behavior_counts: dict[str, int],
     cfg: TrainConfig,
     device: torch.device,
@@ -336,7 +408,36 @@ def train(
     )
 
     loss_fn = MultiTaskBPRLoss(behavior_counts, l2_lambda=cfg.l2_lambda).to(device)
-    cl_fn = ContrastiveLearning(temperature=0.1).to(device)
+    cl_fn = HierarchicalMBCL(tau=0.1, hard_k=32, min_pair_overlap=4).to(device)
+
+    cl_g_fn: SvdGnnContrastive | None = None
+    if cfg.cl_g_weight > 0.0 and cfg.svd_path:
+        svd_path = Path(cfg.svd_path)
+        if svd_path.exists():
+            svd_obj: SVDFactors = torch.load(
+                svd_path, map_location=device, weights_only=False,
+            )
+            cl_g_fn = SvdGnnContrastive(
+                svd_factors=svd_obj,
+                behaviors=list(BEHAVIOR_TYPES),
+                tau=cfg.svd_global_tau,
+            ).to(device)
+            logger.info("SVD↔GNN CL enabled: factors loaded from %s", svd_path)
+        else:
+            logger.warning(
+                "cl_g_weight=%.4f but svd_path=%s does not exist; "
+                "global CL disabled.", cfg.cl_g_weight, svd_path,
+            )
+
+    history_ptr, history_item = build_user_history_csr(train_triplets, n_users=n_users)
+    history_ptr = history_ptr.to(device)
+    history_item = history_item.to(device)
+
+    item_pop_counts = torch.bincount(
+        train_triplets[:, 1].long(), minlength=n_items
+    ).float()
+    pop_dist = (item_pop_counts + 1.0).pow(0.75)
+    pop_dist = (pop_dist / pop_dist.sum()).to(device)
     emb_params = list(model.input_proj.parameters()) + list(model.beh_proj.parameters())
     emb_ids = {id(p) for p in emb_params}
     other_params = [p for p in model.parameters() if id(p) not in emb_ids]
@@ -394,8 +495,16 @@ def train(
         train_log = train_epoch(
             model, sampler, loader, optimizer, loss_fn, scaler, device,
             cl_fn=cl_fn,
-            num_neg=cfg.num_neg, max_grad_norm=cfg.max_grad_norm, amp=cfg.amp,
-            cl_weight=cfg.cl_weight, use_bf16=cfg.use_bf16,
+            cl_g_fn=cl_g_fn,
+            num_neg=cfg.num_neg,
+            max_grad_norm=cfg.max_grad_norm,
+            amp=cfg.amp,
+            cl_weight=cfg.cl_weight,
+            cl_g_weight=cfg.cl_g_weight,
+            use_bf16=cfg.use_bf16,
+            history_ptr=history_ptr,
+            history_item=history_item,
+            pop_dist=pop_dist,
         )
         train_loss = train_log["train/loss"]
 
@@ -408,6 +517,7 @@ def train(
                 model, sampler,
                 eval_user_ids, ground_truth, exclude_items, n_items,
                 evaluator, device, cfg.eval_batch_size, use_bf16=cfg.use_bf16,
+                subsample=cfg.eval_subsample, seed=cfg.eval_seed,
             )
             row += " | " + " | ".join(f"{k}={v:.4f}" for k, v in metrics.items())
 
@@ -453,10 +563,30 @@ def train(
             logger.info("Early stopping at epoch %d. Best NDCG@20=%.4f", epoch, best_ndcg)
             break
 
+    best_path = save_dir / "best.pt"
+    if best_path.exists():
+        logger.info("Loading best.pt for final FULL-rank evaluation on all val users...")
+        best_ckpt = torch.load(best_path, map_location=device, weights_only=False)
+        model.load_state_dict(best_ckpt["model_state_dict"])
+        final_metrics = eval_epoch(
+            model, sampler,
+            eval_user_ids, ground_truth, exclude_items, n_items,
+            evaluator, device, cfg.eval_batch_size, use_bf16=cfg.use_bf16,
+            subsample=0,
+        )
+        logger.info(
+            "FINAL full-rank eval on best.pt: %s",
+            " | ".join(f"{k}={v:.4f}" for k, v in final_metrics.items()),
+        )
+        with open(save_dir / "final_metrics.json", "w") as f:
+            json.dump(final_metrics, f, indent=2)
+        if wandb_run is not None:
+            wandb_run.log({f"final/{k}": v for k, v in final_metrics.items()})
+
     if wandb_run is not None:
         wandb_run.finish()
 
-    logger.info("Training complete. Best NDCG@20=%.4f", best_ndcg)
+    logger.info("Training complete. Best NDCG@20 (subsample)=%.4f", best_ndcg)
 
 if __name__ == "__main__":
     import argparse
@@ -536,10 +666,18 @@ if __name__ == "__main__":
         n_v = view_ei.size(1)
         n_c = cart_ei.size(1)
         n_p = purchase_ei.size(1)
+
+        view_train_ei = view_ei
+        n_v_train = n_v
+        if 0 < train_cfg.max_view_triplets < n_v:
+            perm = torch.randperm(n_v)[:train_cfg.max_view_triplets]
+            view_train_ei = view_ei[:, perm]
+            n_v_train = train_cfg.max_view_triplets
+
         train_triplets = torch.cat([
-            torch.stack([view_ei[0],     view_ei[1],     torch.full((n_v,), 0, dtype=torch.long)], dim=1),
-            torch.stack([cart_ei[0],     cart_ei[1],     torch.full((n_c,), 1, dtype=torch.long)], dim=1),
-            torch.stack([purchase_ei[0], purchase_ei[1], torch.full((n_p,), 2, dtype=torch.long)], dim=1),
+            torch.stack([view_train_ei[0], view_train_ei[1], torch.full((n_v_train,), 0, dtype=torch.long)], dim=1),
+            torch.stack([cart_ei[0],       cart_ei[1],       torch.full((n_c,),       1, dtype=torch.long)], dim=1),
+            torch.stack([purchase_ei[0],   purchase_ei[1],   torch.full((n_p,),       2, dtype=torch.long)], dim=1),
         ], dim=0)
 
         val_users = torch.from_numpy(np.load(f"{_DATA}/val_user_idx.npy")).long()
@@ -551,7 +689,7 @@ if __name__ == "__main__":
         exclude_items = {int(k): list(int(x) for x in v) for k, v in raw_mask.items()}
 
         behavior_counts = {
-            "view": int(view_ei.size(1)),
+            "view": n_v_train,
             "cart": int(cart_ei.size(1)),
             "purchase": n_p,
         }
@@ -569,6 +707,7 @@ if __name__ == "__main__":
         config=NeighborSamplerConfig(
             hop1_budget=s_cfg.get("hop1_budget", 10),
             hop2_budget=s_cfg.get("hop2_budget", 5),
+            hop1_sample_replace=s_cfg.get("hop1_sample_replace", False),
         ),
         device=device,
     )
@@ -580,6 +719,7 @@ if __name__ == "__main__":
         rank=m_cfg.get("rank", 16),
         dropout=m_cfg.get("dropout", 0.4),
         use_grad_checkpoint=m_cfg.get("use_grad_checkpoint", True),
+        n_intents=m_cfg.get("n_intents", 32),
     ).to(device)
 
     train(
@@ -590,6 +730,7 @@ if __name__ == "__main__":
         ground_truth=ground_truth,
         exclude_items=exclude_items,
         n_items=NODE_COUNTS["product"],
+        n_users=NODE_COUNTS["user"],
         behavior_counts=behavior_counts,
         cfg=train_cfg,
         device=device,

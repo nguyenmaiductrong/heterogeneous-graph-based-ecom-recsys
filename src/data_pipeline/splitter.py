@@ -21,13 +21,14 @@ class SplitResult:
     num_users: int
     num_items: int
     stats: dict = field(default_factory=dict)
-    # Populated by temporal_split_by_dates. prepare_data.py uses this as the
-    # global auxiliary cutoff: any aux row with timestamp >= train_end_ts is
-    # dropped from the training graph to prevent future-signal leakage.
     train_end_ts: int | None = None
+    val_end_ts: int | None = None
+    protocol_name: str = "warm_new_purchase_full_ranking"
+    candidate_item_idx: np.ndarray | None = None
 
     def summary(self) -> str:
         lines = [
+            f"protocol               : {self.protocol_name}",
             f"num_users              : {self.num_users:>10,}",
             f"num_items              : {self.num_items:>10,}",
             f"train rows             : {len(self.train):>10,}",
@@ -36,31 +37,23 @@ class SplitResult:
         ]
         if self.train_end_ts is not None:
             lines.append(f"train_end_ts           : {self.train_end_ts:>10,}")
+        if self.val_end_ts is not None:
+            lines.append(f"val_end_ts             : {self.val_end_ts:>10,}")
         for k, v in self.stats.items():
             lines.append(f"{k:<30s}: {v}")
         return "\n".join(lines)
 
 
 class DataSplitter:
-    """Global Temporal Split with cold-start item support.
+    """Warm-new-purchase temporal split.
 
-    Only ``temporal_split_by_dates`` is supported — the LOO and ratio-based
-    protocols have been removed.
-
-    Cold-start items (first purchased after the training cutoff) are included
-    in the global item vocabulary so BAGNN can represent them via the structural
-    (category / brand) graph. Excluding them would cause out-of-index errors
-    during evaluation when the scorer accesses ``item_embs[cand_t]``.
-
-    Cold-start users (never active during the training window) are dropped from
-    val / test because they have no purchase graph edges and their GNN embeddings
-    would be random noise.
-
-    Parameters
-    ----------
-    df:
-        Interaction DataFrame. Must contain ``user_id``, ``item_id``,
-        and ``timestamp``. ``event_type`` is optional.
+    Primary protocol:
+      - user2idx, item2idx are built from the train window only.
+      - val/test rows with cold users or cold items are dropped.
+      - val/test (user, item) pairs that already appear in train purchases are
+        dropped from the eval ground truth (new-purchase target).
+      - Train rows are never mutated using val/test membership.
+      - Multi-positive ground truth is preserved.
     """
 
     _REQUIRED = {"user_id", "item_id", "timestamp"}
@@ -72,31 +65,15 @@ class DataSplitter:
         self._df = df.copy()
         self._has_event_type = "event_type" in df.columns
 
-    # ------------------------------------------------------------------
-    # Public split method
-    # ------------------------------------------------------------------
-
     def temporal_split_by_dates(
         self,
         train_end: str,
         val_end: str,
+        *,
+        transductive_item_vocab: bool = False,
+        drop_repeated_train_purchases_from_eval: bool = True,
+        protocol_name: str = "warm_new_purchase_full_ranking",
     ) -> SplitResult:
-        """Date-based global chronological split using explicit ISO 8601 cutoffs.
-
-        Dates are interpreted as inclusive end-of-day boundaries in UTC:
-
-        - Training   : timestamp <  midnight of (train_end + 1 day)
-        - Validation : timestamp in [midnight of (train_end+1 day),
-                                     midnight of (val_end+1 day))
-        - Test        : timestamp >= midnight of (val_end + 1 day)
-
-        This matches the REES46 convention defined in ``spark_config.yaml``:
-        ``split.train_end`` / ``split.val_end``.
-
-        Cold-start items (only purchased after train_end) receive valid contiguous
-        indices and BAGNN embeds them via category / brand structural edges.
-        Cold-start users (not in the training window) are dropped from val / test.
-        """
         train_end_ts = int(
             (pd.Timestamp(train_end, tz="UTC") + pd.Timedelta(days=1)).timestamp()
         )
@@ -128,38 +105,39 @@ class DataSplitter:
         )
 
         stats = {
-            "split_protocol":  "temporal_dates",
-            "train_end_date":  train_end,
-            "val_end_date":    val_end,
-            "train_cutoff_ts": train_end_ts,
-            "val_cutoff_ts":   val_end_ts,
-            "train_pct":       f"{len(train_raw) / max(n, 1) * 100:.1f}%",
-            "val_pct":         f"{len(val_raw)   / max(n, 1) * 100:.1f}%",
-            "test_pct":        f"{len(test_raw)  / max(n, 1) * 100:.1f}%",
+            "split_protocol":           protocol_name,
+            "train_end_date":           train_end,
+            "val_end_date":             val_end,
+            "train_cutoff_ts":          train_end_ts,
+            "val_cutoff_ts":            val_end_ts,
+            "transductive_item_vocab":  transductive_item_vocab,
+            "raw_rows_train":           len(train_raw),
+            "raw_rows_val":             len(val_raw),
+            "raw_rows_test":            len(test_raw),
+            "train_pct":                f"{len(train_raw) / max(n, 1) * 100:.1f}%",
+            "val_pct":                  f"{len(val_raw)   / max(n, 1) * 100:.1f}%",
+            "test_pct":                 f"{len(test_raw)  / max(n, 1) * 100:.1f}%",
         }
         return self._finalize(
-            train_raw, val_raw, test_raw, stats, train_end_ts=train_end_ts
+            train_raw, val_raw, test_raw, stats,
+            train_end_ts=train_end_ts,
+            val_end_ts=val_end_ts,
+            transductive_item_vocab=transductive_item_vocab,
+            drop_repeated_train_purchases_from_eval=drop_repeated_train_purchases_from_eval,
+            protocol_name=protocol_name,
         )
 
-    # ------------------------------------------------------------------
-    # Internal helpers
-    # ------------------------------------------------------------------
-
-    def _build_mappings(self, train_df: pd.DataFrame) -> tuple[dict, dict]:
-        """Build contiguous index mappings for users and items.
-
-        user2idx — training users only.
-            Cold-start users (absent from training) are excluded; they have no
-            purchase graph edges and produce random-noise GNN embeddings.
-
-        item2idx — ALL items across every split (self._df).
-            Cold-start items (only purchased after the training cutoff) receive
-            valid contiguous indices. BAGNN embeds them via the structural graph
-            (category / brand edges). Excluding them would cause out-of-index
-            CUDA errors when the evaluator accesses ``item_embs[cand_t]``.
-        """
+    def _build_mappings(
+        self,
+        train_df: pd.DataFrame,
+        all_df: pd.DataFrame | None = None,
+        transductive_item_vocab: bool = False,
+    ) -> tuple[dict, dict]:
         user2idx = {u: i for i, u in enumerate(sorted(train_df["user_id"].unique()))}
-        item2idx = {it: i for i, it in enumerate(sorted(self._df["item_id"].unique()))}
+        if transductive_item_vocab and all_df is not None:
+            item2idx = {it: i for i, it in enumerate(sorted(all_df["item_id"].unique()))}
+        else:
+            item2idx = {it: i for i, it in enumerate(sorted(train_df["item_id"].unique()))}
         return user2idx, item2idx
 
     def _apply_mapping(
@@ -167,40 +145,40 @@ class DataSplitter:
         df: pd.DataFrame,
         user2idx: dict,
         item2idx: dict,
-        drop_cold_users: bool,
-    ) -> pd.DataFrame:
+        drop_unknown: bool,
+    ) -> tuple[pd.DataFrame, int, int]:
         out = df.copy()
+        cold_users_dropped = 0
+        cold_items_dropped = 0
 
-        if drop_cold_users:
-            mask = out["user_id"].isin(user2idx)
-            n_dropped = int((~mask).sum())
-            if n_dropped > 0:
-                logger.warning(
-                    "Dropped %d rows for cold-start users (not in train vocabulary).",
-                    n_dropped,
-                )
-            out = out.loc[mask].copy()
+        if drop_unknown:
+            user_mask = out["user_id"].isin(user2idx)
+            cold_users_dropped = int((~user_mask).sum())
+            out = out.loc[user_mask].copy()
+
+            item_mask = out["item_id"].isin(item2idx)
+            cold_items_dropped = int((~item_mask).sum())
+            out = out.loc[item_mask].copy()
 
         out["user_idx"] = out["user_id"].map(user2idx)
         out["item_idx"] = out["item_id"].map(item2idx)
 
-        # NaN after .map() is a hard bug:
-        # - user NaN: impossible — cold-start users were filtered above, and
-        #   training users are always in user2idx by construction.
-        # - item NaN: impossible — item2idx is built from self._df (all data),
-        #   so every item in any split is guaranteed a valid mapping.
         if not out.empty and (out["user_idx"].isna().any() or out["item_idx"].isna().any()):
             raise RuntimeError(
                 "NaN in mapped indices after vocabulary lookup — this is a bug."
             )
 
-        out["user_idx"] = out["user_idx"].astype(np.int64)
-        out["item_idx"] = out["item_idx"].astype(np.int64)
+        if not out.empty:
+            out["user_idx"] = out["user_idx"].astype(np.int64)
+            out["item_idx"] = out["item_idx"].astype(np.int64)
+        else:
+            out["user_idx"] = pd.Series([], dtype=np.int64)
+            out["item_idx"] = pd.Series([], dtype=np.int64)
 
         keep = ["user_idx", "item_idx", "timestamp"]
         if self._has_event_type:
             keep.append("event_type")
-        return out[keep].reset_index(drop=True)
+        return out[keep].reset_index(drop=True), cold_users_dropped, cold_items_dropped
 
     def _finalize(
         self,
@@ -208,98 +186,91 @@ class DataSplitter:
         val_raw: pd.DataFrame,
         test_raw: pd.DataFrame,
         stats: dict,
-        train_end_ts: int | None = None,
+        *,
+        train_end_ts: int,
+        val_end_ts: int,
+        transductive_item_vocab: bool,
+        drop_repeated_train_purchases_from_eval: bool,
+        protocol_name: str,
     ) -> SplitResult:
-        user2idx, item2idx = self._build_mappings(train_raw)
+        all_df = self._df if transductive_item_vocab else None
+        user2idx, item2idx = self._build_mappings(
+            train_raw, all_df=all_df,
+            transductive_item_vocab=transductive_item_vocab,
+        )
 
-        train = self._apply_mapping(train_raw, user2idx, item2idx, drop_cold_users=False)
+        train, _, _ = self._apply_mapping(train_raw, user2idx, item2idx, drop_unknown=False)
 
         val_n_in = len(val_raw)
-        val = self._apply_mapping(val_raw, user2idx, item2idx, drop_cold_users=True)
+        val, val_cold_users, val_cold_items = self._apply_mapping(
+            val_raw, user2idx, item2idx, drop_unknown=True
+        )
 
         test_n_in = len(test_raw)
-        test = self._apply_mapping(test_raw, user2idx, item2idx, drop_cold_users=True)
+        test, test_cold_users, test_cold_items = self._apply_mapping(
+            test_raw, user2idx, item2idx, drop_unknown=True
+        )
 
         num_users = len(user2idx)
         num_items = len(item2idx)
 
-        # Hard bounds check — any failure here indicates a bug in this module.
         for name, split_df in (("train", train), ("val", val), ("test", test)):
             if split_df.empty:
                 continue
-            if split_df["user_idx"].max() >= num_users:
+            if int(split_df["user_idx"].max()) >= num_users:
                 raise RuntimeError(
-                    f"{name} user_idx {split_df['user_idx'].max()} >= num_users {num_users}"
+                    f"{name} user_idx out of range: max={int(split_df['user_idx'].max())} num_users={num_users}"
                 )
-            if split_df["item_idx"].max() >= num_items:
+            if int(split_df["item_idx"].max()) >= num_items:
                 raise RuntimeError(
-                    f"{name} item_idx {split_df['item_idx'].max()} >= num_items {num_items}"
+                    f"{name} item_idx out of range: max={int(split_df['item_idx'].max())} num_items={num_items}"
                 )
-            if split_df["user_idx"].min() < 0 or split_df["item_idx"].min() < 0:
+            if int(split_df["user_idx"].min()) < 0 or int(split_df["item_idx"].min()) < 0:
                 raise RuntimeError(f"{name} contains a negative index.")
 
-        # De-leakage: remove from train any (user_idx, item_idx) pair that also
-        # appears in test. A user can legitimately purchase the same item in both
-        # the training and test windows; keeping it in the training purchase graph
-        # inflates eval metrics (the GNN already has that edge), so we drop it.
-        n_train_leaked = 0
-        if not test.empty:
-            test_keys = test[["user_idx", "item_idx"]].drop_duplicates().assign(_leak=True)
-            merged = train[["user_idx", "item_idx"]].merge(
-                test_keys, on=["user_idx", "item_idx"], how="left"
+        val_repeated_dropped = 0
+        test_repeated_dropped = 0
+        if drop_repeated_train_purchases_from_eval and not train.empty:
+            train_pairs = set(
+                zip(train["user_idx"].tolist(), train["item_idx"].tolist())
             )
-            leak_mask = merged["_leak"].notna().to_numpy()
-            n_train_leaked = int(leak_mask.sum())
-            if n_train_leaked > 0:
-                logger.warning(
-                    "De-leaked %d train purchase rows whose (user_idx, item_idx) "
-                    "pair also appears in the test set (temporal train/test overlap).",
-                    n_train_leaked,
-                )
-                train = train.loc[~leak_mask].reset_index(drop=True)
-
-        # After de-leakage some users may have lost ALL their training interactions
-        # (i.e. their only purchase pair was the same as their test pair and got
-        # removed above). Their GNN embeddings would be random noise, so drop
-        # them from val/test now — before artifacts are written to disk.
-        if not train.empty:
-            train_user_set = set(train["user_idx"].unique().tolist())
-            n_val_before = len(val)
-            n_test_before = len(test)
             if not val.empty:
-                val = val.loc[val["user_idx"].isin(train_user_set)].reset_index(drop=True)
+                val_keys = list(zip(val["user_idx"].tolist(), val["item_idx"].tolist()))
+                val_keep = np.array([k not in train_pairs for k in val_keys])
+                val_repeated_dropped = int((~val_keep).sum())
+                val = val.loc[val_keep].reset_index(drop=True)
             if not test.empty:
-                test = test.loc[test["user_idx"].isin(train_user_set)].reset_index(drop=True)
-            n_val_dropped  = n_val_before  - len(val)
-            n_test_dropped = n_test_before - len(test)
-            if n_val_dropped > 0 or n_test_dropped > 0:
-                logger.warning(
-                    "Post-de-leakage: dropped %d val and %d test rows for users "
-                    "who lost all training interactions after de-leakage.",
-                    n_val_dropped, n_test_dropped,
+                test_keys = list(zip(test["user_idx"].tolist(), test["item_idx"].tolist()))
+                test_keep = np.array([k not in train_pairs for k in test_keys])
+                test_repeated_dropped = int((~test_keep).sum())
+                test = test.loc[test_keep].reset_index(drop=True)
+            if val_repeated_dropped or test_repeated_dropped:
+                logger.info(
+                    "Dropped repeated train-purchase pairs from eval: val=%d test=%d",
+                    val_repeated_dropped, test_repeated_dropped,
                 )
 
-        # Count cold-start items retained in val/test (in vocab but not in training
-        # purchases). These are handled by BAGNN via structural graph edges.
         train_item_set = set(train["item_idx"].unique().tolist()) if not train.empty else set()
-        val_cold_items  = int((~val["item_idx"].isin(train_item_set)).sum())  if not val.empty  else 0
-        test_cold_items = int((~test["item_idx"].isin(train_item_set)).sum()) if not test.empty else 0
+        val_warm_cold_items  = int((~val["item_idx"].isin(train_item_set)).sum())  if not val.empty  else 0
+        test_warm_cold_items = int((~test["item_idx"].isin(train_item_set)).sum()) if not test.empty else 0
 
-        if val_cold_items > 0 or test_cold_items > 0:
-            logger.info(
-                "Cold-start items retained: val=%d  test=%d  "
-                "(embeddings via structural graph).",
-                val_cold_items, test_cold_items,
-            )
+        candidate_item_idx = np.arange(num_items, dtype=np.int64)
 
         stats.update({
-            "val_cold_users_dropped":   val_n_in - len(val),
-            "test_cold_users_dropped":  test_n_in - len(test),
-            "val_cold_items_retained":  val_cold_items,
-            "test_cold_items_retained": test_cold_items,
-            "val_rows_final":           len(val),
-            "test_rows_final":          len(test),
-            "train_leaked_pairs_removed": n_train_leaked,
+            "val_cold_users_dropped":            val_cold_users,
+            "val_cold_items_dropped":            val_cold_items,
+            "test_cold_users_dropped":           test_cold_users,
+            "test_cold_items_dropped":           test_cold_items,
+            "val_repeated_train_purchase_dropped":  val_repeated_dropped,
+            "test_repeated_train_purchase_dropped": test_repeated_dropped,
+            "val_rows_in":                       val_n_in,
+            "test_rows_in":                      test_n_in,
+            "val_rows_final":                    len(val),
+            "test_rows_final":                   len(test),
+            "val_items_unseen_in_train":         val_warm_cold_items,
+            "test_items_unseen_in_train":        test_warm_cold_items,
+            "num_users_train_vocab":             num_users,
+            "num_items_train_vocab":             num_items,
         })
 
         return SplitResult(
@@ -312,4 +283,7 @@ class DataSplitter:
             num_items=num_items,
             stats=stats,
             train_end_ts=train_end_ts,
+            val_end_ts=val_end_ts,
+            protocol_name=protocol_name,
+            candidate_item_idx=candidate_item_idx,
         )

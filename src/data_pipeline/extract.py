@@ -30,14 +30,20 @@ def clean(df: DataFrame, cfg: dict | None = None) -> DataFrame:
         cfg = load_config()
 
     fc = cfg["filter"]
-    unknown_brand = fc.get("unknown_brand", "unknown")
-    unknown_cat   = fc.get("unknown_category", "unknown")
-    level         = fc.get("category_level", "top")
+    unknown_brand   = fc.get("unknown_brand",   "__UNKNOWN_BRAND__")
+    unknown_cat     = fc.get("unknown_category", "__UNKNOWN_CATEGORY__")
+    unknown_session = fc.get("unknown_session", "__UNKNOWN_SESSION__")
+    level           = fc.get("category_level", "top")
 
     df = df.dropna(subset=["user_id", "product_id", "event_type", "event_time"])
+
+    if logger.isEnabledFor(logging.INFO):
+        logger.info("clean: filtering event_type to %s", _VALID_BEHAVIORS)
+
     df = df.filter(F.col("event_type").isin(list(_VALID_BEHAVIORS)))
     df = df.dropDuplicates(["user_id", "product_id", "event_type", "event_time"])
     df = df.withColumn("timestamp", F.col("event_time").cast("long"))
+    df = df.filter(F.col("timestamp").isNotNull())
 
     brand_clean = F.lower(F.trim(F.col("brand")))
     df = df.withColumn(
@@ -65,4 +71,14 @@ def clean(df: DataFrame, cfg: dict | None = None) -> DataFrame:
 
     df = df.withColumn("category", cat_expr)
 
-    return df.select("user_id", "product_id", "event_type", "event_time", "timestamp", "category", "brand", "price")
+    cols = ["user_id", "product_id", "event_type", "event_time", "timestamp",
+            "category", "brand", "price"]
+    if "user_session" in df.columns:
+        df = df.withColumn(
+            "user_session",
+            F.when(F.col("user_session").isNotNull() & (F.col("user_session") != ""),
+                   F.col("user_session")).otherwise(F.lit(unknown_session)),
+        )
+        cols.append("user_session")
+
+    return df.select(*cols)
