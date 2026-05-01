@@ -11,18 +11,15 @@ from torch.utils.data import Dataset, DataLoader
 from tqdm import tqdm
 
 from src.model.bagnn import BAGNNModel
-from src.core.contracts import BEHAVIOR_TYPES, SVDFactors
+from src.core.contracts import BEHAVIOR_TYPES, EvalInput
 from src.graph.neighbor_sampler import BehaviorAwareNeighborSampler
-from src.graph.contrastive import SvdGnnContrastive
 from src.training.losses import (
-    bpr_loss,
-    MultiTaskBPRLoss,
-    ContrastiveLearning,
     HierarchicalMBCL,
+    MultiTaskBPRLoss,
+    bpr_loss,
     build_user_history_csr,
     sample_aligned_negatives_local,
 )
-from src.core.contracts import EvalInput
 from src.core.evaluator import TemporalSplitEvaluator
 
 logger = logging.getLogger(__name__)
@@ -51,17 +48,18 @@ class TrainConfig:
     cl_weight: float = 0.1
     use_bf16: bool = True
     max_view_triplets: int = -1
-    cl_g_weight: float = 0.0
-    svd_path: str = ""
-    svd_global_tau: float = 0.2
     eval_subsample: int = 10000
     eval_seed: int = 42
+    eval_ks: list[int] = field(default_factory=lambda: [10, 20, 50])
+    primary_metric: str = "NDCG@20"
 
     @classmethod
     def from_yaml(cls, cfg: dict) -> "TrainConfig":
         t = cfg.get("training", {})
         w = cfg.get("wandb", {})
-        c = cfg.get("contrastive", {})
+        e = cfg.get("evaluation", {})
+        eval_ks = e.get("ks", [10, 20, 50])
+        primary_metric = str(e.get("primary_metric", cls.primary_metric))
         return cls(
             epochs=t.get("epochs", cls.epochs),
             batch_size=t.get("batch_size", cls.batch_size),
@@ -85,11 +83,10 @@ class TrainConfig:
             cl_weight=t.get("cl_weight", cls.cl_weight),
             use_bf16=t.get("use_bf16", cls.use_bf16),
             max_view_triplets=t.get("max_view_triplets", cls.max_view_triplets),
-            cl_g_weight=t.get("cl_g_weight", cls.cl_g_weight),
-            svd_path=c.get("svd_path", cls.svd_path),
-            svd_global_tau=c.get("global_tau", cls.svd_global_tau),
             eval_subsample=t.get("eval_subsample", cls.eval_subsample),
             eval_seed=t.get("eval_seed", cls.eval_seed),
+            eval_ks=list(eval_ks),
+            primary_metric=primary_metric,
         )
 
 def load_yaml_config(path: str) -> dict:
@@ -160,12 +157,10 @@ def train_epoch(
     scaler: torch.amp.GradScaler,
     device: torch.device,
     cl_fn: HierarchicalMBCL,
-    cl_g_fn: SvdGnnContrastive | None = None,
     num_neg: int = 1,
     max_grad_norm: float = 1.0,
     amp: bool = True,
     cl_weight: float = 0.1,
-    cl_g_weight: float = 0.0,
     use_bf16: bool = True,
     history_ptr: torch.Tensor | None = None,
     history_item: torch.Tensor | None = None,
@@ -174,7 +169,6 @@ def train_epoch(
     model.train()
     total_loss = 0.0
     total_cl_loss = 0.0
-    total_cl_g_loss = 0.0
     n_steps = 0
 
     pbar = tqdm(dataloader, desc="train", leave=False, dynamic_ncols=True)
@@ -190,7 +184,6 @@ def train_epoch(
         optimizer.zero_grad(set_to_none=True)
 
         l_cl = torch.zeros(1, device=device).squeeze()
-        l_cl_g = torch.zeros(1, device=device).squeeze()
 
         _amp_dtype = torch.bfloat16 if use_bf16 else torch.float16
         with torch.amp.autocast("cuda", dtype=_amp_dtype, enabled=amp and device.type == "cuda"):
@@ -263,22 +256,12 @@ def train_epoch(
                 users_per_beh=users_per_beh,
             )
 
-            if cl_g_fn is not None and cl_g_weight > 0.0:
-                u_global = subgraph["user"].x.long()
-                i_global = subgraph["product"].x.long()
-                l_cl_g = cl_g_fn(
-                    {b: beh_embs[b].float() for b in BEHAVIOR_TYPES},
-                    user_global=u_global,
-                    item_emb=item_emb.float(),
-                    item_global=i_global,
-                )
-
         if not behavior_losses:
             continue
 
         l2 = model.embedding_l2_norm()
         loss, log = loss_fn(behavior_losses, l2)
-        loss = loss + cl_weight * l_cl.float() + cl_g_weight * l_cl_g.float()
+        loss = loss + cl_weight * l_cl.float()
 
         if amp:
             scaler.scale(loss).backward()
@@ -293,18 +276,15 @@ def train_epoch(
 
         total_loss += log["loss/total"]
         total_cl_loss += float(l_cl.detach())
-        total_cl_g_loss += float(l_cl_g.detach())
         n_steps += 1
         pbar.set_postfix(
             loss=f"{log['loss/total']:.4f}",
             cl=f"{float(l_cl.detach()):.4f}",
-            clg=f"{float(l_cl_g.detach()):.4f}",
         )
 
     return {
         "train/loss": total_loss / max(n_steps, 1),
         "train/cl_loss": total_cl_loss / max(n_steps, 1),
-        "train/cl_g_loss": total_cl_g_loss / max(n_steps, 1),
     }
 
 @torch.no_grad()
@@ -410,25 +390,6 @@ def train(
     loss_fn = MultiTaskBPRLoss(behavior_counts, l2_lambda=cfg.l2_lambda).to(device)
     cl_fn = HierarchicalMBCL(tau=0.1, hard_k=32, min_pair_overlap=4).to(device)
 
-    cl_g_fn: SvdGnnContrastive | None = None
-    if cfg.cl_g_weight > 0.0 and cfg.svd_path:
-        svd_path = Path(cfg.svd_path)
-        if svd_path.exists():
-            svd_obj: SVDFactors = torch.load(
-                svd_path, map_location=device, weights_only=False,
-            )
-            cl_g_fn = SvdGnnContrastive(
-                svd_factors=svd_obj,
-                behaviors=list(BEHAVIOR_TYPES),
-                tau=cfg.svd_global_tau,
-            ).to(device)
-            logger.info("SVD↔GNN CL enabled: factors loaded from %s", svd_path)
-        else:
-            logger.warning(
-                "cl_g_weight=%.4f but svd_path=%s does not exist; "
-                "global CL disabled.", cfg.cl_g_weight, svd_path,
-            )
-
     history_ptr, history_item = build_user_history_csr(train_triplets, n_users=n_users)
     history_ptr = history_ptr.to(device)
     history_item = history_item.to(device)
@@ -446,7 +407,7 @@ def train(
         {"params": emb_params,    "weight_decay": 0.0},
     ], lr=cfg.lr)
     scaler = torch.amp.GradScaler("cuda", enabled=cfg.amp and not cfg.use_bf16 and device.type == "cuda")
-    evaluator = TemporalSplitEvaluator(ks=[10, 20, 50], device=str(device))
+    evaluator = TemporalSplitEvaluator(ks=list(cfg.eval_ks), device=str(device))
 
     save_dir = Path(cfg.save_dir)
     save_dir.mkdir(parents=True, exist_ok=True)
@@ -486,7 +447,8 @@ def train(
         if latest_ckpt is not None:
             start_epoch = _load_checkpoint(latest_ckpt, model, optimizer, scaler, device)
 
-    best_ndcg = -1.0
+    pm = cfg.primary_metric
+    best_primary = -1.0
     no_improve = 0
     metrics = {}
     
@@ -495,12 +457,10 @@ def train(
         train_log = train_epoch(
             model, sampler, loader, optimizer, loss_fn, scaler, device,
             cl_fn=cl_fn,
-            cl_g_fn=cl_g_fn,
             num_neg=cfg.num_neg,
             max_grad_norm=cfg.max_grad_norm,
             amp=cfg.amp,
             cl_weight=cfg.cl_weight,
-            cl_g_weight=cfg.cl_g_weight,
             use_bf16=cfg.use_bf16,
             history_ptr=history_ptr,
             history_item=history_item,
@@ -521,12 +481,12 @@ def train(
             )
             row += " | " + " | ".join(f"{k}={v:.4f}" for k, v in metrics.items())
 
-            ndcg20 = metrics.get("NDCG@20", 0.0)
-            postfix["ndcg20"] = f"{ndcg20:.4f}"
-            postfix["best"] = f"{max(best_ndcg, ndcg20):.4f}"
+            primary_val = metrics.get(pm, -1.0)
+            postfix[pm.replace("@", "_")] = f"{primary_val:.4f}"
+            postfix["best_primary"] = f"{max(best_primary, primary_val):.4f}"
 
-            if ndcg20 > best_ndcg:
-                best_ndcg = ndcg20
+            if primary_val > best_primary:
+                best_primary = primary_val
                 no_improve = 0
                 torch.save(
                     {"epoch": epoch, "model_state_dict": model.state_dict(),
@@ -560,7 +520,9 @@ def train(
         logger.info(row)
 
         if no_improve >= cfg.patience:
-            logger.info("Early stopping at epoch %d. Best NDCG@20=%.4f", epoch, best_ndcg)
+            logger.info(
+                "Early stopping at epoch %d. Best %s=%.4f", epoch, pm, best_primary,
+            )
             break
 
     best_path = save_dir / "best.pt"
@@ -586,7 +548,9 @@ def train(
     if wandb_run is not None:
         wandb_run.finish()
 
-    logger.info("Training complete. Best NDCG@20 (subsample)=%.4f", best_ndcg)
+    logger.info(
+        "Training complete. Best %s (subsample)=%.4f", pm, best_primary,
+    )
 
 if __name__ == "__main__":
     import argparse

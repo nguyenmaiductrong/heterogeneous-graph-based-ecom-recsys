@@ -42,9 +42,12 @@ training:
   save_dir: checkpoints-v4
   weight_decay: 1.0e-03
 
-contrastive:
-  svd_path: ./data/temporal/svd_factors.pt
-  global_tau: 0.2
+# Đồng bộ với spark_config evaluation và TemporalSplitEvaluator (HR@K, NDCG@K).
+evaluation:
+  full_ranking: true
+  primary_metric: "NDCG@20"
+  ks: [10, 20, 50]
+  metrics: ["HR@10", "HR@20", "HR@50", "NDCG@10", "NDCG@20", "NDCG@50"]
 
 wandb:
   artifact_name: bagnn-checkpoint-v4
