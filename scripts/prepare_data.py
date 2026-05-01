@@ -40,6 +40,26 @@ logger = logging.getLogger(__name__)
 _VALID_BEHAVIORS = ("view", "cart", "purchase")
 
 
+def _resolve_and_prepare_output_dirs(
+    data_dir: str,
+    struct_dir: str,
+    graph_dir: str,
+) -> tuple[str, str, str]:
+    """Chuẩn hóa đường dẫn output (abs) và tạo thư mục — fail sớm nếu cwd/symlink/đĩa lỗi."""
+    d = os.path.abspath(os.path.expanduser(data_dir))
+    s = os.path.abspath(os.path.expanduser(struct_dir))
+    g = os.path.abspath(os.path.expanduser(graph_dir))
+    for label, p in (("data_dir", d), ("struct_dir", s), ("graph_dir", g)):
+        try:
+            os.makedirs(p, exist_ok=True)
+        except OSError as e:
+            raise OSError(
+                f"Không tạo được {label}={p!r}. "
+                "Kiểm tra: cwd đúng chưa, 'data' có phải symlink hỏng/tệp tin, đĩa còn trống không."
+            ) from e
+    return d, s, g
+
+
 def _log_phase(step: int, total: int, title: str) -> None:
     logger.info("%s Giai đoạn %d/%d — %s %s", "=" * 12, step, total, title, "=" * 12)
 
@@ -102,6 +122,17 @@ def main() -> None:
     logger.info("=" * 60)
     logger.info("REES46 BPATMP — Chuẩn bị dữ liệu")
     logger.info("=" * 60)
+
+    args.data_dir, args.struct_dir, args.graph_dir = _resolve_and_prepare_output_dirs(
+        args.data_dir, args.struct_dir, args.graph_dir,
+    )
+    logger.info(
+        "Thư mục output (absolute): data=%s struct=%s graph=%s | cwd=%s",
+        args.data_dir,
+        args.struct_dir,
+        args.graph_dir,
+        os.getcwd(),
+    )
 
     cfg = load_config(args.spark_config)
     proto_cfg = cfg.get("protocol", {})

@@ -12,22 +12,22 @@ paths:
 spark:
   app_name: "REES46_HetGraph_Pipeline"
   master: "local[*]"
-  driver_memory: "36g"
-  executor_memory: "36g"
-  local_dir: "data/spark-temp"
-  checkpoint_dir: "data/spark-checkpoints"
-  shuffle_partitions: 128
-  default_parallelism: 16
+  driver_memory: "40g"
+  executor_memory: "40g"
+  local_dir: "/dev/shm/spark-local"
+  checkpoint_dir: "/dev/shm/spark-checkpoints"
+  shuffle_partitions: 64
+  default_parallelism: 12
   aqe_enabled: true
   adaptive_coalesce_enabled: true
   adaptive_skew_join_enabled: true
-  broadcast_threshold: "512m"
+  broadcast_threshold: "1024m"
   parquet_compression: "snappy"
-  max_partition_bytes: "256m"
-  memory_fraction: 0.6
-  storage_fraction: 0.2
+  max_partition_bytes: "512m"
+  memory_fraction: 0.78
+  storage_fraction: 0.12
 
-  driver_max_result_size: "6g"
+  driver_max_result_size: "12g"
   arrow_enabled: true
   heartbeat_interval: "120s"
   network_timeout: "600s"

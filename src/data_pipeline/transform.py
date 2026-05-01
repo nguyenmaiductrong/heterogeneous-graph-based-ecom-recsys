@@ -64,8 +64,11 @@ def filter_by_train_only_counts(
             )
             df = df.join(F.broadcast(valid_users), on="user_id", how="inner")
 
-        df = df.checkpoint(eager=False)
         logger.info("filter_by_train_only_counts: vòng %d/%d xong.", r + 1, rounds)
+
+    # Một checkpoint cuối (thay vì mỗi vòng) để cắt lineage nhưng tránh ghi đĩa ~3× trên Colab.
+    df = df.checkpoint(eager=False)
+    logger.info("filter_by_train_only_counts: đã queue checkpoint cuối.")
 
     return df
 

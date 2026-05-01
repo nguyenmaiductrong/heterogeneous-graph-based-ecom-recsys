@@ -19,7 +19,7 @@ from pyspark.sql.types import (
 
 logger = logging.getLogger(__name__)
 
-_CONFIG_CACHE: dict | None = None
+_CONFIG_CACHE: dict[str, dict] = {}
 _PROJECT_ROOT = os.path.abspath(
     os.path.join(os.path.dirname(__file__), "..", "..")
 )
@@ -30,17 +30,26 @@ def get_project_root() -> str:
 
 
 def load_config(config_path: str | None = None) -> dict:
-    global _CONFIG_CACHE
-    if _CONFIG_CACHE is not None:
-        return _CONFIG_CACHE
-
+    """Nạp YAML; cache theo đường dẫn tuyệt đối để --spark-profile / --spark-config không lẫn file."""
     if config_path is None:
         config_path = os.path.join(_PROJECT_ROOT, "config", "spark_config.yaml")
+    config_path = os.path.abspath(os.path.expanduser(config_path))
+    cached = _CONFIG_CACHE.get(config_path)
+    if cached is not None:
+        return cached
 
     with open(config_path) as f:
-        _CONFIG_CACHE = yaml.safe_load(f)
+        cfg = yaml.safe_load(f)
+    _CONFIG_CACHE[config_path] = cfg
+    return cfg
 
-    return _CONFIG_CACHE
+
+def _mkdir_spark_local_dirs(local_dir: str) -> None:
+    """Spark cho phép spark.local.dir phân tách bằng dấu phẩy."""
+    for part in local_dir.split(","):
+        p = part.strip()
+        if p:
+            os.makedirs(p, exist_ok=True)
 
 
 def ensure_dirs(cfg: dict) -> None:
@@ -62,6 +71,11 @@ def create_spark_session(
     sc = cfg["spark"]
     app_name = sc["app_name"] + (f"_{app_name_suffix}" if app_name_suffix else "")
 
+    local_dir = sc["local_dir"]
+    _mkdir_spark_local_dirs(local_dir)
+
+    shuffle_spill = str(sc.get("shuffle_spill_enabled", True)).lower()
+
     spark = (
         SparkSession.builder
         .appName(app_name)
@@ -70,8 +84,8 @@ def create_spark_session(
         .config("spark.driver.memory", sc["driver_memory"])
         .config("spark.executor.memory", sc["executor_memory"])
         .config("spark.driver.maxResultSize", sc["driver_max_result_size"])
-        # Thư mục tạm / checkpoint cục bộ
-        .config("spark.local.dir", sc["local_dir"])
+        # Thư mục tạm / checkpoint cục bộ (Colab: thường trỏ /dev/shm để spill ít đụng SSD)
+        .config("spark.local.dir", local_dir)
         # Song song
         .config("spark.sql.shuffle.partitions", sc["shuffle_partitions"])
         .config("spark.default.parallelism", sc["default_parallelism"])
@@ -89,8 +103,10 @@ def create_spark_session(
         # I/O
         .config("spark.sql.parquet.compression.codec", sc["parquet_compression"])
         .config("spark.sql.files.maxPartitionBytes", sc["max_partition_bytes"])
-        # Tràn shuffle ra đĩa (giảm OOM khi group-by lớn)
-        .config("spark.sql.shuffle.spill.enabled", "true")
+        # Spill: false có thể giữ shuffle trong heap nhưng dễ OOM; profile Colab giữ true + tmpfs
+        .config("spark.sql.shuffle.spill.enabled", shuffle_spill)
+        .config("spark.shuffle.compress", str(sc.get("shuffle_compress", True)).lower())
+        .config("spark.shuffle.spill.compress", str(sc.get("shuffle_spill_compress", True)).lower())
         # Quản lý bộ nhớ
         .config("spark.memory.fraction", sc["memory_fraction"])
         .config("spark.memory.storageFraction", sc["storage_fraction"])
@@ -108,7 +124,7 @@ def create_spark_session(
 
     spark.sparkContext.setLogLevel("WARN")
 
-    checkpoint_dir = sc.get("checkpoint_dir", "/tmp/spark_checkpoints")
+    checkpoint_dir = os.path.abspath(os.path.expanduser(sc.get("checkpoint_dir", "/tmp/spark_checkpoints")))
     # Xóa checkpoint cũ từ các lần chạy trước khi bật phiên Spark mới.
     if os.path.exists(checkpoint_dir):
         shutil.rmtree(checkpoint_dir)
@@ -117,8 +133,14 @@ def create_spark_session(
     spark.sparkContext.setCheckpointDir(checkpoint_dir)
 
     logger.info(
-        "SparkSession sẵn sàng — master=%s driver_mem=%s shuffle_parts=%s AQE=bật",
-        sc["master"], sc["driver_memory"], sc["shuffle_partitions"],
+        "SparkSession sẵn sàng — master=%s driver_mem=%s shuffle_parts=%s "
+        "local_dir=%s checkpoint_dir=%s spill=%s AQE=bật",
+        sc["master"],
+        sc["driver_memory"],
+        sc["shuffle_partitions"],
+        local_dir,
+        checkpoint_dir,
+        shuffle_spill,
     )
     return spark
 
