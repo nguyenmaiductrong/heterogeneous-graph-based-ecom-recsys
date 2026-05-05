@@ -13,9 +13,9 @@ logger = logging.getLogger(__name__)
 class TemporalSplitEvaluator:
     """Strict full-rank evaluator. No sampled-negatives mode.
 
-    Metrics (LOO single-positive ground truth):
-        HR@k    — 1 if positive in top-k after train-mask exclusion
-        NDCG@k  — 1/log2(rank+1) if positive in top-k, else 0
+    Metrics (multi-positive ground truth):
+        HR@k    — 1 if any positive is in top-k after train-mask exclusion
+        NDCG@k  — DCG over all positives in top-k, normalized by ideal DCG
     """
 
     def __init__(
@@ -57,14 +57,18 @@ class TemporalSplitEvaluator:
         excl_rows_t = torch.as_tensor(excl_rows, dtype=torch.long, device=device)
         excl_cols_t = torch.as_tensor(excl_cols, dtype=torch.long, device=device)
 
-        gt_t = torch.tensor(
-            [eval_input.ground_truth[int(u)] for u in eval_input.eval_user_ids.tolist()],
-            dtype=torch.long, device=device,
-        )
+        gt_lists = [
+            EvalInput._as_item_list(eval_input.ground_truth[int(u)])
+            for u in eval_input.eval_user_ids.tolist()
+        ]
+        max_pos = max(len(items) for items in gt_lists)
+        gt_padded = torch.full((n_eval, max_pos), -1, dtype=torch.long, device=device)
+        gt_counts = torch.empty(n_eval, dtype=torch.long, device=device)
+        for row, items in enumerate(gt_lists):
+            gt_counts[row] = len(items)
+            gt_padded[row, : len(items)] = torch.tensor(items, dtype=torch.long, device=device)
 
-        ndcg_w = 1.0 / torch.log2(
-            torch.arange(1, self.max_k + 1, device=device).float() + 1.0
-        )
+        ndcg_w = 1.0 / torch.log2(torch.arange(1, self.max_k + 1, device=device).float() + 1.0)
         sums: dict[str, float] = {}
         for k in self.ks:
             sums[f"HR@{k}"] = 0.0
@@ -73,16 +77,10 @@ class TemporalSplitEvaluator:
         for u_start in range(0, n_eval, user_batch):
             u_end = min(u_start + user_batch, n_eval)
             B = u_end - u_start
-            u_emb = eval_input.user_embeddings[u_start:u_end].to(
-                device=device, dtype=dtype
-            )
+            u_emb = eval_input.user_embeddings[u_start:u_end].to(device=device, dtype=dtype)
 
-            top_vals = torch.full(
-                (B, self.max_k), float("-inf"), device=device, dtype=dtype
-            )
-            top_idx = torch.full(
-                (B, self.max_k), -1, device=device, dtype=torch.long
-            )
+            top_vals = torch.full((B, self.max_k), float("-inf"), device=device, dtype=dtype)
+            top_idx = torch.full((B, self.max_k), -1, device=device, dtype=torch.long)
 
             in_batch = (excl_rows_t >= u_start) & (excl_rows_t < u_end)
             sub_rows = excl_rows_t[in_batch] - u_start
@@ -107,10 +105,22 @@ class TemporalSplitEvaluator:
                 top_vals = merged_v.gather(1, sel)
                 top_idx = merged_i.gather(1, sel)
 
-            hits = top_idx == gt_t[u_start:u_end].unsqueeze(1)
+            batch_gt = gt_padded[u_start:u_end]
+            batch_counts = gt_counts[u_start:u_end]
+            hits = (top_idx.unsqueeze(-1) == batch_gt.unsqueeze(1)).any(dim=-1)
             for k in self.ks:
                 sums[f"HR@{k}"] += hits[:, :k].any(dim=-1).float().sum().item()
-                sums[f"NDCG@{k}"] += (hits[:, :k].float() * ndcg_w[:k]).sum().item()
+                dcg = (hits[:, :k].float() * ndcg_w[:k]).sum(dim=-1)
+                ideal_len = torch.minimum(
+                    batch_counts,
+                    torch.full_like(batch_counts, k),
+                )
+                idcg = torch.zeros_like(dcg)
+                for ideal_k in ideal_len.unique():
+                    mask = ideal_len == ideal_k
+                    if int(ideal_k.item()) > 0:
+                        idcg[mask] = ndcg_w[: int(ideal_k.item())].sum()
+                sums[f"NDCG@{k}"] += (dcg / idcg.clamp_min(1e-12)).sum().item()
 
             del u_emb, top_vals, top_idx, hits
 
@@ -149,10 +159,7 @@ def run_testpass() -> None:
         item_embeddings=torch.randn(n_items, EMBED_DIM),
         eval_user_ids=torch.arange(n_eval),
         ground_truth={i: i % n_items for i in range(n_eval)},
-        exclude_items={
-            i: [(i + 1) % n_items, (i + 2) % n_items]
-            for i in range(n_eval)
-        },
+        exclude_items={i: [(i + 1) % n_items, (i + 2) % n_items] for i in range(n_eval)},
     )
 
     evaluator = TemporalSplitEvaluator(ks=[10, 20, 50], device="cpu")
@@ -166,6 +173,7 @@ def run_testpass() -> None:
 
 if __name__ == "__main__":
     import argparse
+
     logging.basicConfig(level=logging.INFO)
     parser = argparse.ArgumentParser()
     parser.add_argument("--testpass", action="store_true")
