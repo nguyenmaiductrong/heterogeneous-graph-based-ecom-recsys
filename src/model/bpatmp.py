@@ -90,3 +90,87 @@ class BehaviorAwareWeight(nn.Module):
         # A_ρ · diag(z_β) = A_ρ * z_β (element-wise broadcast on last dim)
         A_scaled = self.A_rho[rho] * self.z_beta[b_idx]  # [out_dim, rank]
         return self.W_rho[rho] + A_scaled @ self.B_rho[rho].T
+
+class TemporalPurchaseIntentDecoder(nn.Module):
+    """Bo giai ma y dinh mua hang theo thoi gian (TPID).
+
+    Ket hop 3 expert:
+    - s_graph: diem user-item tu graph
+    - s_seq: diem tu chuoi L su kien gan nhat
+    - s_pop: diem popularity co time decay
+
+    Trong so fusion tinh qua MLP tren user features.
+    """
+
+    def __init__(
+        self,
+        dim: int,
+        n_items: int,
+        seq_len: int = 20,
+        n_behaviors: int = 3,
+        n_freqs: int = 16,
+        tau_pop: float = 30.0,
+    ) -> None:
+        super().__init__()
+        self.dim = dim
+        self.n_items = n_items
+        self.seq_len = seq_len
+        self.tau_pop = tau_pop
+
+        self.beh_emb = nn.Embedding(n_behaviors + 1, dim)
+        self.pos_emb = nn.Embedding(seq_len, dim)
+        self.time_enc = FourierTimeEncoding(n_freqs)
+        self.time_proj = nn.Linear(n_freqs * 2, dim)
+
+        self.seq_encoder = nn.GRU(dim, dim, batch_first=True)
+
+        self.item_bias = nn.Embedding(n_items, 1)
+
+        self.raw_eta = nn.Parameter(torch.zeros(n_behaviors))
+        self.raw_kappa = nn.Parameter(torch.zeros(n_behaviors))
+
+        self.fusion_mlp = nn.Sequential(
+            nn.Linear(3, 16),
+            nn.ReLU(),
+            nn.Linear(16, 3),
+        )
+
+    def encode_sequence(
+        self,
+        item_seq: Tensor,
+        beh_seq: Tensor,
+        ts_seq: Tensor,
+        ref_time: float,
+        item_emb: Tensor,
+    ) -> Tensor:
+        """Encode user sequence into a single vector.
+
+        Args:
+            item_seq: [B, L] item indices
+            beh_seq: [B, L] behavior indices
+            ts_seq: [B, L] timestamps
+            ref_time: reference time T
+            item_emb: [N, dim] item embeddings
+
+        Returns:
+            z_u: [B, dim] user sequence embedding
+        """
+        B, L = item_seq.shape
+        device = item_seq.device
+
+        e_item = item_emb[item_seq.clamp(0, item_emb.size(0) - 1)]
+        e_beh = self.beh_emb(beh_seq.clamp(0, 3))
+        e_pos = self.pos_emb(torch.arange(L, device=device).unsqueeze(0).expand(B, -1))
+
+        delta_t = (ref_time - ts_seq.float()) / 86400.0
+        delta_t = delta_t.clamp(min=0)
+        phi = self.time_enc(delta_t.view(-1)).view(B, L, -1)
+        e_time = self.time_proj(phi)
+
+        x = e_item + e_beh + e_pos + e_time
+
+        mask = item_seq >= 0
+        x = x * mask.unsqueeze(-1).float()
+
+        _, h_n = self.seq_encoder(x)
+        return h_n.squeeze(0)
