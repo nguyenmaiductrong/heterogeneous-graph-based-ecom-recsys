@@ -413,3 +413,36 @@ class BPATMPLayer(nn.Module):
                 h = {t: self.dropout(v) for t, v in h.items()}
 
         return h, beh_user_agg
+    
+class IntentCodebook(nn.Module):
+    """Shared low-rank intent codebook. Per-node attention over a small set
+    of E intent embeddings; weighted-sum is added back as a residual.
+
+    Decoupled from behavior on purpose: a user's intent is the SAME across
+    view/cart/purchase. Counter-position vs MixRec's H^(u)_k which decouples
+    intents per behavior — sharing the codebook gives cross-behavior intent
+    sharing for free.
+    """
+
+    def __init__(self, n_intents: int = 32, dim: int = EMBED_DIM):
+        super().__init__()
+        self.n_intents = n_intents
+        self.dim = dim
+        self.user_intents = nn.Parameter(torch.empty(n_intents, dim))
+        self.item_intents = nn.Parameter(torch.empty(n_intents, dim))
+        nn.init.xavier_uniform_(self.user_intents)
+        nn.init.xavier_uniform_(self.item_intents)
+        self._scale = dim**-0.5
+
+    def _attend(self, x: Tensor, codebook: Tensor) -> Tensor:
+        attn = (x @ codebook.T) * self._scale
+        attn = torch.softmax(attn, dim=-1)
+        return attn @ codebook
+
+    def forward(self, x_dict: Dict[str, Tensor]) -> Dict[str, Tensor]:
+        out = dict(x_dict)
+        if "user" in out:
+            out["user"] = out["user"] + self._attend(out["user"], self.user_intents)
+        if "product" in out:
+            out["product"] = out["product"] + self._attend(out["product"], self.item_intents)
+        return out
