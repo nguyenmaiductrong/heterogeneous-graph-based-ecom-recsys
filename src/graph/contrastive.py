@@ -131,4 +131,54 @@ class BoundedBAGraphAug(nn.Module):
         h_aug2 = self.augment(h, eps)
 
         return h_aug1, h_aug2, eps
+    
+def contrastive_loss(
+        self,
+        h_aug1: Tensor,
+        h_aug2: Tensor,
+    ) -> Tensor:
+        """Compute InfoNCE contrastive loss.
+
+        L_CL = -sum_v log[ exp(sim(h1_v, h2_v)/tau) / sum_v' exp(sim(h1_v, h2_v')/tau) ]
+
+        Args:
+            h_aug1: [N, dim] first view (L2 normalized)
+            h_aug2: [N, dim] second view (L2 normalized)
+
+        Returns:
+            loss: scalar contrastive loss
+        """
+        sim = h_aug1 @ h_aug2.T / self.tau_cl
+        labels = torch.arange(sim.size(0), device=sim.device)
+        loss = F.cross_entropy(sim, labels)
+        return loss
+
+
+def compute_ba_graphaug_loss(
+    model: BoundedBAGraphAug,
+    h: Tensor,
+    n_purchase: Optional[Tensor] = None,
+    degree: Optional[Tensor] = None,
+    n_tilde: Optional[Tensor] = None,
+) -> tuple[Tensor, Dict[str, float]]:
+    """Compute BA-GraphAug contrastive loss.
+
+    Returns:
+        loss: scalar loss
+        log_dict: logging metrics
+    """
+    h_aug1, h_aug2, eps = model(h, n_purchase, degree, n_tilde)
+    loss = model.contrastive_loss(h_aug1, h_aug2)
+
+    log_dict = {
+        "cl/loss": loss.item(),
+        "cl/eps_mean": eps.mean().item(),
+        "cl/eps_min": eps.min().item(),
+        "cl/eps_max": eps.max().item(),
+    }
+
+    return loss, log_dict
+
+
+__all__ = ["BoundedBAGraphAug", "compute_ba_graphaug_loss"]
 
