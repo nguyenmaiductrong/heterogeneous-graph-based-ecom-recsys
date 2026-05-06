@@ -10,7 +10,7 @@ import torch
 from torch.utils.data import Dataset, DataLoader
 from tqdm import tqdm
 
-from src.model.bagnn import BAGNNModel
+from src.model.bpatmp import BPATMPModel
 from src.core.contracts import BEHAVIOR_TYPES, EvalInput
 from src.graph.neighbor_sampler import BehaviorAwareNeighborSampler
 from src.training.losses import (
@@ -24,8 +24,10 @@ from src.core.evaluator import TemporalSplitEvaluator
 
 logger = logging.getLogger(__name__)
 
+
 @dataclass
 class TrainConfig:
+    # Basic training
     epochs: int = 30
     batch_size: int = 512
     lr: float = 3e-4
@@ -39,28 +41,64 @@ class TrainConfig:
     eval_batch_size: int = 512
     num_workers: int = 4
     save_dir: str = "checkpoints/rees46"
+
+    # W&B
     use_wandb: bool = False
-    wandb_project: str = "bagnn-recsys"
+    wandb_project: str = "bpatmp-recsys"
     wandb_entity: str = "nguyenmaiductrong37"
-    wandb_run_name: str = "bagnn-training"
-    wandb_artifact_name: str = "bagnn-checkpoint"
+    wandb_run_name: str = "bpatmp-training"
+    wandb_artifact_name: str = "bpatmp-checkpoint"
     wandb_save_every: int = 5
+
+    # Loss
     cl_weight: float = 0.1
     use_bf16: bool = True
     max_view_triplets: int = -1
+
+    # Evaluation
     eval_subsample: int = 10000
     eval_seed: int = 42
     eval_ks: list[int] = field(default_factory=lambda: [10, 20, 50])
     primary_metric: str = "NDCG@20"
 
+    # Hierarchical CL
+    hierarchy_cl_enabled: bool = True
+    hierarchy_cl_tau: float = 0.1
+    hierarchy_cl_hard_k: int = 32
+    hierarchy_cl_min_pair_overlap: int = 4
+    hierarchy_cl_pair_weights: list[tuple[str, str, float]] | None = None
+
+    # A100 Optimizations
+    gradient_accumulation: int = 1
+    warmup_epochs: int = 0
+    min_lr: float = 1e-6
+    use_fused_adamw: bool = True
+    compile_model: bool = False
+    allow_tf32: bool = True
+    cudnn_benchmark: bool = True
+    pin_memory: bool = True
+    persistent_workers: bool = True
+    prefetch_factor: int = 2
+    log_every: int = 50
+    empty_cache_freq: int = 0
+
     @classmethod
     def from_yaml(cls, cfg: dict) -> "TrainConfig":
         t = cfg.get("training", {})
+        loss = cfg.get("loss", {})
         w = cfg.get("wandb", {})
         e = cfg.get("evaluation", {})
+        hcl = cfg.get("hierarchy_cl", {})
+        a100 = cfg.get("a100", {})
+
         eval_ks = e.get("ks", [10, 20, 50])
         primary_metric = str(e.get("primary_metric", cls.primary_metric))
+        pair_weights = hcl.get("pair_weights", None)
+        if pair_weights is not None:
+            pair_weights = [(str(a), str(b), float(c)) for a, b, c in pair_weights]
+
         return cls(
+            # Basic training
             epochs=t.get("epochs", cls.epochs),
             batch_size=t.get("batch_size", cls.batch_size),
             lr=t.get("lr", cls.lr),
@@ -74,34 +112,67 @@ class TrainConfig:
             eval_batch_size=t.get("eval_batch_size", cls.eval_batch_size),
             num_workers=t.get("num_workers", cls.num_workers),
             save_dir=t.get("save_dir", cls.save_dir),
+
+            # W&B
             use_wandb=w.get("enabled", cls.use_wandb),
             wandb_project=w.get("project", cls.wandb_project),
             wandb_entity=w.get("entity", cls.wandb_entity),
             wandb_run_name=w.get("run_name", cls.wandb_run_name),
             wandb_artifact_name=w.get("artifact_name", cls.wandb_artifact_name),
             wandb_save_every=w.get("save_every", cls.wandb_save_every),
-            cl_weight=t.get("cl_weight", cls.cl_weight),
+
+            # Loss
+            cl_weight=t.get("cl_weight", loss.get("lambda_cl", cls.cl_weight)),
             use_bf16=t.get("use_bf16", cls.use_bf16),
             max_view_triplets=t.get("max_view_triplets", cls.max_view_triplets),
+
+            # Evaluation
             eval_subsample=t.get("eval_subsample", cls.eval_subsample),
             eval_seed=t.get("eval_seed", cls.eval_seed),
             eval_ks=list(eval_ks),
             primary_metric=primary_metric,
+
+            # Hierarchical CL
+            hierarchy_cl_enabled=bool(hcl.get("enabled", cls.hierarchy_cl_enabled)),
+            hierarchy_cl_tau=float(hcl.get("tau", cls.hierarchy_cl_tau)),
+            hierarchy_cl_hard_k=int(hcl.get("hard_k", cls.hierarchy_cl_hard_k)),
+            hierarchy_cl_min_pair_overlap=int(
+                hcl.get("min_pair_overlap", cls.hierarchy_cl_min_pair_overlap)
+            ),
+            hierarchy_cl_pair_weights=pair_weights,
+
+            # A100 Optimizations
+            gradient_accumulation=t.get("gradient_accumulation", cls.gradient_accumulation),
+            warmup_epochs=t.get("warmup_epochs", cls.warmup_epochs),
+            min_lr=t.get("min_lr", cls.min_lr),
+            use_fused_adamw=a100.get("use_fused_adamw", t.get("optimizer", "") == "adamw_fused"),
+            compile_model=a100.get("compile_model", cls.compile_model),
+            allow_tf32=a100.get("allow_tf32", cls.allow_tf32),
+            cudnn_benchmark=a100.get("cudnn_benchmark", cls.cudnn_benchmark),
+            pin_memory=t.get("pin_memory", cls.pin_memory),
+            persistent_workers=t.get("persistent_workers", cls.persistent_workers),
+            prefetch_factor=t.get("prefetch_factor", cls.prefetch_factor),
+            log_every=w.get("log_every", cls.log_every),
+            empty_cache_freq=a100.get("empty_cache_freq", cls.empty_cache_freq),
         )
+
 
 def load_yaml_config(path: str) -> dict:
     import yaml
+
     with open(path) as f:
         return yaml.safe_load(f)
+
 
 def _find_latest_checkpoint(save_dir: Path) -> Path | None:
     ckpts = sorted(save_dir.glob("epoch_*.pt"))
     return ckpts[-1] if ckpts else None
 
+
 def _save_checkpoint(
     save_dir: Path,
     epoch: int,
-    model: BAGNNModel,
+    model: BPATMPModel,
     optimizer: torch.optim.Optimizer,
     scaler: torch.amp.GradScaler,
     loss: float,
@@ -119,9 +190,10 @@ def _save_checkpoint(
         save_dir / f"epoch_{epoch:03d}.pt",
     )
 
+
 def _load_checkpoint(
     ckpt_path: Path,
-    model: BAGNNModel,
+    model: BPATMPModel,
     optimizer: torch.optim.Optimizer,
     scaler: torch.amp.GradScaler,
     device: torch.device,
@@ -132,14 +204,22 @@ def _load_checkpoint(
         optimizer.load_state_dict(ckpt["optimizer_state_dict"])
         scaler.load_state_dict(ckpt["scaler_state_dict"])
     except (ValueError, KeyError, RuntimeError):
-        logger.warning("Optimizer/scaler state incompatible with checkpoint — starting with fresh optimizer state.")
+        logger.warning(
+            "Optimizer/scaler state incompatible with checkpoint — starting with fresh optimizer state."
+        )
     resumed_epoch = int(ckpt["epoch"])
-    logger.info("Resumed from %s (epoch %d, loss=%.4f)", ckpt_path, resumed_epoch, ckpt.get("loss", float("nan")))
+    logger.info(
+        "Resumed from %s (epoch %d, loss=%.4f)",
+        ckpt_path,
+        resumed_epoch,
+        ckpt.get("loss", float("nan")),
+    )
     return resumed_epoch + 1
+
 
 class InteractionDataset(Dataset):
     def __init__(self, triplets: torch.Tensor) -> None:
-        assert triplets.ndim == 2 and triplets.size(1) == 3
+        assert triplets.ndim == 2 and triplets.size(1) in (3, 4)
         self.triplets = triplets
 
     def __len__(self) -> int:
@@ -148,15 +228,16 @@ class InteractionDataset(Dataset):
     def __getitem__(self, idx: int) -> torch.Tensor:
         return self.triplets[idx]
 
+
 def train_epoch(
-    model: BAGNNModel,
+    model: BPATMPModel,
     sampler: BehaviorAwareNeighborSampler,
     dataloader: DataLoader,
     optimizer: torch.optim.Optimizer,
     loss_fn: MultiTaskBPRLoss,
     scaler: torch.amp.GradScaler,
     device: torch.device,
-    cl_fn: HierarchicalMBCL,
+    cl_fn: HierarchicalMBCL | None,
     num_neg: int = 1,
     max_grad_norm: float = 1.0,
     amp: bool = True,
@@ -177,6 +258,7 @@ def train_epoch(
         users_g = raw_batch[:, 0]
         items_g = raw_batch[:, 1]
         beh_ids = raw_batch[:, 2]
+        ref_time = float(raw_batch[:, 3].min().item()) if raw_batch.size(1) >= 4 else None
 
         unique_users = users_g.unique()
         subgraph = sampler.sample(unique_users, seed_type="user").to(device)
@@ -187,14 +269,20 @@ def train_epoch(
 
         _amp_dtype = torch.bfloat16 if use_bf16 else torch.float16
         with torch.amp.autocast("cuda", dtype=_amp_dtype, enabled=amp and device.type == "cuda"):
-            user_emb, item_emb, beh_embs = model(subgraph, return_beh_embs=True)
+            user_emb, item_emb, beh_embs = model(
+                subgraph,
+                return_beh_embs=True,
+                ref_time=ref_time,
+            )
 
             user_x = subgraph["user"].x.contiguous()
             u_loc = torch.searchsorted(user_x, users_g.contiguous())
 
             prod_x = subgraph["product"].x
             sorted_px, sort_ord = prod_x.sort()
-            pos_p = torch.searchsorted(sorted_px, items_g.contiguous()).clamp(max=sorted_px.size(0) - 1)
+            pos_p = torch.searchsorted(sorted_px, items_g.contiguous()).clamp(
+                max=sorted_px.size(0) - 1
+            )
             found_p = sorted_px[pos_p] == items_g
             pp_loc = sort_ord[pos_p]
 
@@ -224,8 +312,7 @@ def train_epoch(
                 u_emb_b = user_emb[u_b]
                 pos_emb_b = item_emb[pp_b]
 
-                if (history_ptr is not None and history_item is not None
-                        and pop_dist is not None):
+                if history_ptr is not None and history_item is not None and pop_dist is not None:
                     neg_loc = sample_aligned_negatives_local(
                         pp_b=pp_b,
                         user_b_global=users_g_kept[mask],
@@ -248,13 +335,12 @@ def train_epoch(
                 neg_s = torch.bmm(neg_emb_b, u_emb_b.unsqueeze(-1)).squeeze(-1)
                 behavior_losses[beh_name] = bpr_loss(pos_s, neg_s)
 
-            users_per_beh = {
-                b: u_loc[bev == bid].unique() for bid, b in enumerate(BEHAVIOR_TYPES)
-            }
-            l_cl = cl_fn(
-                {b: beh_embs[b].float() for b in BEHAVIOR_TYPES},
-                users_per_beh=users_per_beh,
-            )
+            users_per_beh = {b: u_loc[bev == bid].unique() for bid, b in enumerate(BEHAVIOR_TYPES)}
+            if cl_fn is not None and cl_weight > 0:
+                l_cl = cl_fn(
+                    {b: beh_embs[b].float() for b in BEHAVIOR_TYPES},
+                    users_per_beh=users_per_beh,
+                )
 
         if not behavior_losses:
             continue
