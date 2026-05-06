@@ -373,15 +373,17 @@ def train_epoch(
         "train/cl_loss": total_cl_loss / max(n_steps, 1),
     }
 
+
 @torch.no_grad()
 def export_embeddings(
-    model: BAGNNModel,
+    model: BPATMPModel,
     sampler: BehaviorAwareNeighborSampler,
     user_ids: torch.Tensor,
     n_items: int,
     device: torch.device,
     batch_size: int = 512,
     use_bf16: bool = True,
+    ref_time: float | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     model.eval()
     d = model.embed_dim
@@ -393,7 +395,7 @@ def export_embeddings(
         seeds = torch.arange(start, end, device=device)
         sub = sampler.sample(seeds, seed_type="product").to(device)
         with torch.amp.autocast("cuda", dtype=_amp_dtype, enabled=device.type == "cuda"):
-            _, item_local = model(sub)
+            _, item_local = model(sub, ref_time=ref_time)
         item_emb[start:end] = item_local.float().cpu()
 
     user_emb = torch.zeros(len(user_ids), d)
@@ -402,17 +404,18 @@ def export_embeddings(
         seeds = user_ids[start:end].to(device)
         sub = sampler.sample(seeds, seed_type="user").to(device)
         with torch.amp.autocast("cuda", dtype=_amp_dtype, enabled=device.type == "cuda"):
-            u_local, _ = model(sub)
+            u_local, _ = model(sub, ref_time=ref_time)
         user_emb[start:end] = u_local.float().cpu()
 
     return user_emb, item_emb
 
+
 @torch.no_grad()
 def eval_epoch(
-    model: BAGNNModel,
+    model: BPATMPModel,
     sampler: BehaviorAwareNeighborSampler,
     eval_user_ids: torch.Tensor,
-    ground_truth: dict[int, int],
+    ground_truth: dict[int, int | list[int]],
     exclude_items: dict[int, list[int]],
     n_items: int,
     evaluator: TemporalSplitEvaluator,
@@ -421,6 +424,7 @@ def eval_epoch(
     use_bf16: bool = True,
     subsample: int = 0,
     seed: int = 42,
+    ref_time: float | None = None,
 ) -> dict[str, float]:
     valid_users = list(ground_truth.keys())
 
@@ -431,10 +435,19 @@ def eval_epoch(
         ground_truth = {u: ground_truth[u] for u in valid_users}
         exclude_items = {u: exclude_items.get(u, []) for u in valid_users}
 
-    eval_user_ids_filtered = torch.tensor(valid_users, dtype=torch.long, device=eval_user_ids.device)
+    eval_user_ids_filtered = torch.tensor(
+        valid_users, dtype=torch.long, device=eval_user_ids.device
+    )
 
     user_emb, item_emb = export_embeddings(
-        model, sampler, eval_user_ids_filtered, n_items, device, batch_size, use_bf16=use_bf16
+        model,
+        sampler,
+        eval_user_ids_filtered,
+        n_items,
+        device,
+        batch_size,
+        use_bf16=use_bf16,
+        ref_time=ref_time,
     )
 
     eval_input = EvalInput(
@@ -447,20 +460,72 @@ def eval_epoch(
 
     return evaluator.evaluate(eval_input, batch_size=batch_size, mode="full_tiled")
 
+
+def _setup_a100_optimizations(cfg: TrainConfig, device: torch.device) -> None:
+    """Apply A100-specific optimizations."""
+    if device.type != "cuda":
+        return
+
+    # TF32 for faster matmul on A100/H100
+    if cfg.allow_tf32:
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
+        logger.info("TF32 enabled for matmul operations")
+
+    # cuDNN benchmark for faster convolutions
+    if cfg.cudnn_benchmark:
+        torch.backends.cudnn.benchmark = True
+        logger.info("cuDNN benchmark enabled")
+
+    # Log GPU info
+    gpu_name = torch.cuda.get_device_name(device)
+    gpu_mem = torch.cuda.get_device_properties(device).total_memory / 1e9
+    logger.info(f"GPU: {gpu_name} ({gpu_mem:.1f} GB)")
+
+
+def _get_cosine_schedule_with_warmup(
+    optimizer: torch.optim.Optimizer,
+    num_warmup_steps: int,
+    num_training_steps: int,
+    min_lr: float = 1e-6,
+):
+    """Cosine schedule with linear warmup."""
+    import math
+
+    def lr_lambda(current_step: int) -> float:
+        if current_step < num_warmup_steps:
+            return float(current_step) / float(max(1, num_warmup_steps))
+        progress = float(current_step - num_warmup_steps) / float(
+            max(1, num_training_steps - num_warmup_steps)
+        )
+        return max(min_lr, 0.5 * (1.0 + math.cos(math.pi * progress)))
+
+    return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
+
+
 def train(
-    model: BAGNNModel,
+    model: BPATMPModel,
     sampler: BehaviorAwareNeighborSampler,
     train_triplets: torch.Tensor,
     eval_user_ids: torch.Tensor,
-    ground_truth: dict[int, int],
+    ground_truth: dict[int, int | list[int]],
     exclude_items: dict[int, list[int]],
     n_items: int,
     n_users: int,
     behavior_counts: dict[str, int],
     cfg: TrainConfig,
     device: torch.device,
+    eval_ref_time: float | None = None,
 ) -> None:
+    # Apply A100 optimizations
+    _setup_a100_optimizations(cfg, device)
+
     model.to(device)
+
+    # Compile model with torch.compile (PyTorch 2.0+)
+    if cfg.compile_model and hasattr(torch, "compile"):
+        logger.info("Compiling model with torch.compile...")
+        model = torch.compile(model, mode="reduce-overhead")
 
     dataset = InteractionDataset(train_triplets)
     loader = DataLoader(
@@ -468,31 +533,42 @@ def train(
         batch_size=cfg.batch_size,
         shuffle=True,
         num_workers=cfg.num_workers,
-        pin_memory=device.type == "cuda",
+        pin_memory=cfg.pin_memory and device.type == "cuda",
         drop_last=True,
-        persistent_workers=cfg.num_workers > 0,
+        persistent_workers=cfg.persistent_workers and cfg.num_workers > 0,
+        prefetch_factor=cfg.prefetch_factor if cfg.num_workers > 0 else None,
     )
 
     loss_fn = MultiTaskBPRLoss(behavior_counts, l2_lambda=cfg.l2_lambda).to(device)
-    cl_fn = HierarchicalMBCL(tau=0.1, hard_k=32, min_pair_overlap=4).to(device)
+    cl_fn = None
+    if cfg.hierarchy_cl_enabled and cfg.cl_weight > 0:
+        cl_fn = HierarchicalMBCL(
+            tau=cfg.hierarchy_cl_tau,
+            pair_weights=cfg.hierarchy_cl_pair_weights,
+            hard_k=cfg.hierarchy_cl_hard_k,
+            min_pair_overlap=cfg.hierarchy_cl_min_pair_overlap,
+        ).to(device)
 
     history_ptr, history_item = build_user_history_csr(train_triplets, n_users=n_users)
     history_ptr = history_ptr.to(device)
     history_item = history_item.to(device)
 
-    item_pop_counts = torch.bincount(
-        train_triplets[:, 1].long(), minlength=n_items
-    ).float()
+    item_pop_counts = torch.bincount(train_triplets[:, 1].long(), minlength=n_items).float()
     pop_dist = (item_pop_counts + 1.0).pow(0.75)
     pop_dist = (pop_dist / pop_dist.sum()).to(device)
     emb_params = list(model.input_proj.parameters()) + list(model.beh_proj.parameters())
     emb_ids = {id(p) for p in emb_params}
     other_params = [p for p in model.parameters() if id(p) not in emb_ids]
-    optimizer = torch.optim.Adam([
-        {"params": other_params,  "weight_decay": cfg.weight_decay},
-        {"params": emb_params,    "weight_decay": 0.0},
-    ], lr=cfg.lr)
-    scaler = torch.amp.GradScaler("cuda", enabled=cfg.amp and not cfg.use_bf16 and device.type == "cuda")
+    optimizer = torch.optim.Adam(
+        [
+            {"params": other_params, "weight_decay": cfg.weight_decay},
+            {"params": emb_params, "weight_decay": 0.0},
+        ],
+        lr=cfg.lr,
+    )
+    scaler = torch.amp.GradScaler(
+        "cuda", enabled=cfg.amp and not cfg.use_bf16 and device.type == "cuda"
+    )
     evaluator = TemporalSplitEvaluator(ks=list(cfg.eval_ks), device=str(device))
 
     save_dir = Path(cfg.save_dir)
@@ -512,16 +588,18 @@ def train(
             save_every_n_epochs=cfg.wandb_save_every,
             local_dir=str(save_dir),
         )
-        wandb_run = wandb_manager.init_wandb(config={
-            "epochs": cfg.epochs,
-            "batch_size": cfg.batch_size,
-            "lr": cfg.lr,
-            "weight_decay": cfg.weight_decay,
-            "l2_lambda": cfg.l2_lambda,
-            "num_neg": cfg.num_neg,
-            "amp": cfg.amp,
-            "cl_weight": cfg.cl_weight,
-        })
+        wandb_run = wandb_manager.init_wandb(
+            config={
+                "epochs": cfg.epochs,
+                "batch_size": cfg.batch_size,
+                "lr": cfg.lr,
+                "weight_decay": cfg.weight_decay,
+                "l2_lambda": cfg.l2_lambda,
+                "num_neg": cfg.num_neg,
+                "amp": cfg.amp,
+                "cl_weight": cfg.cl_weight,
+            }
+        )
         logger.info("W&B enabled — project=%s run=%s", cfg.wandb_project, wandb_run.id)
 
     start_epoch = 0
@@ -537,11 +615,17 @@ def train(
     best_primary = -1.0
     no_improve = 0
     metrics = {}
-    
+
     epoch_pbar = tqdm(range(start_epoch, cfg.epochs), desc="epochs", dynamic_ncols=True)
     for epoch in epoch_pbar:
         train_log = train_epoch(
-            model, sampler, loader, optimizer, loss_fn, scaler, device,
+            model,
+            sampler,
+            loader,
+            optimizer,
+            loss_fn,
+            scaler,
+            device,
             cl_fn=cl_fn,
             num_neg=cfg.num_neg,
             max_grad_norm=cfg.max_grad_norm,
@@ -560,10 +644,19 @@ def train(
 
         if (epoch + 1) % cfg.eval_every == 0:
             metrics = eval_epoch(
-                model, sampler,
-                eval_user_ids, ground_truth, exclude_items, n_items,
-                evaluator, device, cfg.eval_batch_size, use_bf16=cfg.use_bf16,
-                subsample=cfg.eval_subsample, seed=cfg.eval_seed,
+                model,
+                sampler,
+                eval_user_ids,
+                ground_truth,
+                exclude_items,
+                n_items,
+                evaluator,
+                device,
+                cfg.eval_batch_size,
+                use_bf16=cfg.use_bf16,
+                subsample=cfg.eval_subsample,
+                seed=cfg.eval_seed,
+                ref_time=eval_ref_time,
             )
             row += " | " + " | ".join(f"{k}={v:.4f}" for k, v in metrics.items())
 
@@ -575,10 +668,13 @@ def train(
                 best_primary = primary_val
                 no_improve = 0
                 torch.save(
-                    {"epoch": epoch, "model_state_dict": model.state_dict(),
-                     "optimizer_state_dict": optimizer.state_dict(),
-                     "scaler_state_dict": scaler.state_dict(),
-                     "metrics": metrics},
+                    {
+                        "epoch": epoch,
+                        "model_state_dict": model.state_dict(),
+                        "optimizer_state_dict": optimizer.state_dict(),
+                        "scaler_state_dict": scaler.state_dict(),
+                        "metrics": metrics,
+                    },
                     save_dir / "best.pt",
                 )
                 row += "  <- best"
@@ -591,7 +687,9 @@ def train(
         if wandb_manager is not None:
             wandb_run.log({**train_log, **metrics, "epoch": epoch})
             cloud_ok = wandb_manager.save_checkpoint(
-                model, optimizer, epoch,
+                model,
+                optimizer,
+                epoch,
                 scaler=scaler,
                 loss=train_loss,
                 metrics=metrics,
@@ -607,7 +705,10 @@ def train(
 
         if no_improve >= cfg.patience:
             logger.info(
-                "Early stopping at epoch %d. Best %s=%.4f", epoch, pm, best_primary,
+                "Early stopping at epoch %d. Best %s=%.4f",
+                epoch,
+                pm,
+                best_primary,
             )
             break
 
@@ -616,172 +717,39 @@ def train(
         logger.info("Loading best.pt for final FULL-rank evaluation on all val users...")
         best_ckpt = torch.load(best_path, map_location=device, weights_only=False)
         model.load_state_dict(best_ckpt["model_state_dict"])
-        final_metrics = eval_epoch(
-            model, sampler,
-            eval_user_ids, ground_truth, exclude_items, n_items,
-            evaluator, device, cfg.eval_batch_size, use_bf16=cfg.use_bf16,
+        final_val_metrics = eval_epoch(
+            model,
+            sampler,
+            eval_user_ids,
+            ground_truth,
+            exclude_items,
+            n_items,
+            evaluator,
+            device,
+            cfg.eval_batch_size,
+            use_bf16=cfg.use_bf16,
             subsample=0,
+            ref_time=eval_ref_time,
         )
         logger.info(
-            "FINAL full-rank eval on best.pt: %s",
-            " | ".join(f"{k}={v:.4f}" for k, v in final_metrics.items()),
+            "FINAL VAL full-rank eval on best.pt: %s",
+            " | ".join(f"{k}={v:.4f}" for k, v in final_val_metrics.items()),
         )
-        with open(save_dir / "final_metrics.json", "w") as f:
-            json.dump(final_metrics, f, indent=2)
+        with open(save_dir / "final_val_metrics.json", "w") as f:
+            json.dump(final_val_metrics, f, indent=2)
         if wandb_run is not None:
-            wandb_run.log({f"final/{k}": v for k, v in final_metrics.items()})
+            wandb_run.log(
+                {f"final/val/{k}": v for k, v in final_val_metrics.items()}
+            )
 
     if wandb_run is not None:
         wandb_run.finish()
 
     logger.info(
-        "Training complete. Best %s (subsample)=%.4f", pm, best_primary,
+        "Training complete. Best %s (subsample)=%.4f. "
+        "Run test eval: python scripts/evaluate.py --checkpoint %s --split test",
+        pm,
+        best_primary,
+        save_dir / "best.pt",
     )
 
-if __name__ == "__main__":
-    import argparse
-    import pickle
-    import numpy as np
-    import pandas as pd
-    from torch_geometric.data import HeteroData
-    from src.graph.neighbor_sampler import BehaviorAwareNeighborSampler, NeighborSamplerConfig
-
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s  %(levelname)-7s  %(message)s",
-        datefmt="%H:%M:%S",
-    )
-
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--config", default="config/training.yaml")
-    parser.add_argument("--device", default=None)
-    args = parser.parse_args()
-
-    cfg_dict = load_yaml_config(args.config)
-    train_cfg = TrainConfig.from_yaml(cfg_dict)
-
-    _device_str = args.device or cfg_dict.get("training", {}).get("device", "cuda")
-    device = torch.device(_device_str if torch.cuda.is_available() or _device_str == "cpu" else "cpu")
-    logger.info("Device: %s", device)
-
-    if device.type == "cuda":
-        torch.backends.cudnn.benchmark = True
-
-    _DATA = cfg_dict["data"]["data_dir"]
-    _STRUCT = cfg_dict["data"]["struct_dir"]
-
-    _nc_path = os.path.join(_DATA, "node_counts.json")
-    if os.path.exists(_nc_path):
-        with open(_nc_path) as _f:
-            NODE_COUNTS: dict[str, int] = json.load(_f)
-        logger.info("Node counts loaded from %s: %s", _nc_path, NODE_COUNTS)
-    else:
-        NODE_COUNTS = cfg_dict["data"]["node_counts"]
-        logger.warning(
-            "node_counts.json not found in %s; using YAML values %s. ",
-            _DATA, NODE_COUNTS,
-        )
-
-    def load_data():
-        def npy_ei(src_f, dst_f):
-            src = np.load(f"{_DATA}/{src_f}")
-            dst = np.load(f"{_DATA}/{dst_f}")
-            return torch.from_numpy(np.stack([src, dst])).long()
-
-        view_ei = npy_ei("view_train_src.npy", "view_train_dst.npy")
-        cart_ei = npy_ei("cart_train_src.npy", "cart_train_dst.npy")
-        purchase_ei = npy_ei("purchase_train_src.npy", "purchase_train_dst.npy")
-
-        pb = pd.read_parquet(f"{_STRUCT}/product_brand.parquet")
-        pc = pd.read_parquet(f"{_STRUCT}/product_category.parquet")
-        brand_ei = torch.from_numpy(pb[["product_idx", "brand_idx"]].values.T.copy()).long()
-        category_ei = torch.from_numpy(pc[["product_idx", "category_idx"]].values.T.copy()).long()
-
-        hetero = HeteroData()
-        for ntype, n in NODE_COUNTS.items():
-            hetero[ntype].x = torch.arange(n)
-            hetero[ntype].num_nodes = n
-
-        hetero[("user", "view", "product")].edge_index     = view_ei.contiguous()
-        hetero[("user", "cart", "product")].edge_index     = cart_ei.contiguous()
-        hetero[("user", "purchase", "product")].edge_index = purchase_ei.contiguous()
-        hetero[("product", "rev_view", "user")].edge_index     = view_ei.flip(0).contiguous()
-        hetero[("product", "rev_cart", "user")].edge_index     = cart_ei.flip(0).contiguous()
-        hetero[("product", "rev_purchase", "user")].edge_index = purchase_ei.flip(0).contiguous()
-        hetero[("product", "belongs_to", "category")].edge_index = category_ei.contiguous()
-        hetero[("category", "contains", "product")].edge_index   = category_ei.flip(0).contiguous()
-        hetero[("product", "producedBy", "brand")].edge_index    = brand_ei.contiguous()
-        hetero[("brand", "brands", "product")].edge_index        = brand_ei.flip(0).contiguous()
-
-        n_v = view_ei.size(1)
-        n_c = cart_ei.size(1)
-        n_p = purchase_ei.size(1)
-
-        view_train_ei = view_ei
-        n_v_train = n_v
-        if 0 < train_cfg.max_view_triplets < n_v:
-            perm = torch.randperm(n_v)[:train_cfg.max_view_triplets]
-            view_train_ei = view_ei[:, perm]
-            n_v_train = train_cfg.max_view_triplets
-
-        train_triplets = torch.cat([
-            torch.stack([view_train_ei[0], view_train_ei[1], torch.full((n_v_train,), 0, dtype=torch.long)], dim=1),
-            torch.stack([cart_ei[0],       cart_ei[1],       torch.full((n_c,),       1, dtype=torch.long)], dim=1),
-            torch.stack([purchase_ei[0],   purchase_ei[1],   torch.full((n_p,),       2, dtype=torch.long)], dim=1),
-        ], dim=0)
-
-        val_users = torch.from_numpy(np.load(f"{_DATA}/val_user_idx.npy")).long()
-        val_items = np.load(f"{_DATA}/val_product_idx.npy")
-        ground_truth = {int(u): int(i) for u, i in zip(val_users.tolist(), val_items.tolist())}
-
-        with open(f"{_DATA}/train_mask.pkl", "rb") as f:
-            raw_mask = pickle.load(f)
-        exclude_items = {int(k): list(int(x) for x in v) for k, v in raw_mask.items()}
-
-        behavior_counts = {
-            "view": n_v_train,
-            "cart": int(cart_ei.size(1)),
-            "purchase": n_p,
-        }
-
-        return hetero, train_triplets, val_users, ground_truth, exclude_items, behavior_counts
-
-    hetero, train_triplets, eval_user_ids, ground_truth, exclude_items, behavior_counts = load_data()
-    
-    m_cfg = cfg_dict.get("model", {})
-    s_cfg = cfg_dict.get("sampler", {})
-
-    sampler = BehaviorAwareNeighborSampler(
-        data=hetero,
-        num_nodes_dict=NODE_COUNTS,
-        config=NeighborSamplerConfig(
-            hop1_budget=s_cfg.get("hop1_budget", 10),
-            hop2_budget=s_cfg.get("hop2_budget", 5),
-            hop1_sample_replace=s_cfg.get("hop1_sample_replace", False),
-        ),
-        device=device,
-    )
-
-    model = BAGNNModel(
-        n_nodes=NODE_COUNTS,
-        embed_dim=m_cfg.get("embed_dim", 64),
-        n_layers=m_cfg.get("n_layers", 2),
-        rank=m_cfg.get("rank", 16),
-        dropout=m_cfg.get("dropout", 0.4),
-        use_grad_checkpoint=m_cfg.get("use_grad_checkpoint", True),
-        n_intents=m_cfg.get("n_intents", 32),
-    ).to(device)
-
-    train(
-        model=model,
-        sampler=sampler,
-        train_triplets=train_triplets,
-        eval_user_ids=eval_user_ids,
-        ground_truth=ground_truth,
-        exclude_items=exclude_items,
-        n_items=NODE_COUNTS["product"],
-        n_users=NODE_COUNTS["user"],
-        behavior_counts=behavior_counts,
-        cfg=train_cfg,
-        device=device,
-    )
