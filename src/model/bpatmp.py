@@ -91,6 +91,137 @@ class BehaviorAwareWeight(nn.Module):
         A_scaled = self.A_rho[rho] * self.z_beta[b_idx]  # [out_dim, rank]
         return self.W_rho[rho] + A_scaled @ self.B_rho[rho].T
 
+class FourierTimeEncoding(nn.Module):
+    """Bien doi thoi gian delta_t thanh vector Fourier features.
+
+    Su dung tan so hoc duoc (learnable frequencies) de model tu tim
+    cac chu ky thoi gian quan trong tu data.
+
+    Input:  delta_t  [*]         (khoang thoi gian, don vi ngay)
+    Output: phi      [*, 2*n_freqs]  (cos/sin features)
+
+    Cong thuc:
+        omega_k = softplus(raw_omega_k)          -- dam bao omega > 0
+        t'      = log(1 + delta_t)               -- nen scale thoi gian
+        phi     = [cos(t' * omega), sin(t' * omega)]
+    """
+
+    def __init__(self, n_freqs: int = 16) -> None:
+        super().__init__()
+        self.n_freqs = n_freqs
+        self.raw_omega = nn.Parameter(torch.randn(n_freqs))
+
+    def forward(self, delta_t: Tensor) -> Tensor:
+        """
+        Args:
+            delta_t: [*] arbitrary-shape tensor of time deltas (in days).
+
+        Returns:
+            [*, 2 * n_freqs] Fourier time features.
+        """
+        omega = F.softplus(self.raw_omega)
+        t = torch.log1p(delta_t).unsqueeze(-1)
+        phase = t * omega
+        return torch.cat([torch.cos(phase), torch.sin(phase)], dim=-1)
+
+
+class TemporalAttention(nn.Module):
+    """Temporal attention voi decay-in-logit va value gate.
+
+    Cong thuc:
+        logit = Q·K/√d + b_ρ + time_bias − λ_β · log(1 + Δt/τ)
+        alpha = scatter_softmax(logit, dst_idx)
+        gate  = σ(W_gate · [h_src ‖ time_feat])
+
+    Thanh phan:
+        - Q·K/√d:     content match giua src va dst
+        - b_ρ:         bias theo loai relation
+        - time_bias:   Fourier features cua Δt project ve scalar
+        - λ_β·log():   decay term, λ khac nhau theo behavior
+                       (purchase decay cham hon view)
+        - gate:        kiem soat luong thong tin tu src di qua
+    """
+
+    def __init__(
+        self,
+        dim: int,
+        n_relations: int = len(ALL_EDGE_TYPES),
+        n_beta: int = 4,
+        n_freqs: int = 16,
+        tau: float = 7.0,
+    ) -> None:
+        super().__init__()
+        self.dim = dim
+        self.scale = dim ** -0.5
+        self.tau = tau
+
+        self.W_q = nn.Linear(dim, dim, bias=False)
+        self.W_k = nn.Linear(dim, dim, bias=False)
+
+        self.b_rho = nn.Parameter(torch.zeros(n_relations))
+
+        self.time_enc = FourierTimeEncoding(n_freqs)
+        self.time_bias_proj = nn.Linear(n_freqs * 2, 1, bias=False)
+
+        self.raw_lambda = nn.Parameter(torch.zeros(n_beta))
+
+        self.gate_proj = nn.Linear(dim + n_freqs * 2, 1)
+
+    def forward(
+        self,
+        h_src: Tensor,
+        h_dst: Tensor,
+        delta_t: Tensor,
+        rho: int,
+        beta: Tensor,
+        dst_idx: Tensor,
+    ) -> Tuple[Tensor, Tensor]:
+        """
+        Args:
+            h_src:   [E, dim]  source node embeddings
+            h_dst:   [E, dim]  destination node embeddings
+            delta_t: [E]       time deltas in days
+            rho:     int       relation index
+            beta:    [E]       behavior index per edge (0-3)
+            dst_idx: [E]       destination node indices
+
+        Returns:
+            alpha: [E]  attention weights (scatter-softmax normalised per dst)
+            gate:  [E]  value gate (sigmoid)
+        """
+        q = self.W_q(h_dst)
+        k = self.W_k(h_src)
+        qk = (q * k).sum(dim=-1) * self.scale
+
+        bias = self.b_rho[rho]
+
+        phi = self.time_enc(delta_t)
+        time_bias = self.time_bias_proj(phi).squeeze(-1)
+
+        lam = F.softplus(self.raw_lambda)
+        decay = lam[beta] * torch.log1p(delta_t / self.tau)
+
+        logit = qk + bias + time_bias - decay
+        alpha = self._scatter_softmax(logit, dst_idx)
+
+        gate_in = torch.cat([h_src, phi], dim=-1) 
+        gate = torch.sigmoid(self.gate_proj(gate_in).squeeze(-1))
+
+        return alpha, gate
+
+    @staticmethod
+    def _scatter_softmax(logit: Tensor, index: Tensor) -> Tensor:
+        """Numerically stable softmax grouped by destination node."""
+        N = int(index.max().item()) + 1
+        max_val = logit.new_full((N,), torch.finfo(logit.dtype).min)
+        max_val.scatter_reduce_(0, index, logit.detach(), reduce="amax", include_self=True)
+        exp_logit = (logit - max_val[index]).exp()
+
+        sum_exp = logit.new_zeros(N)
+        sum_exp.scatter_add_(0, index, exp_logit)
+        return exp_logit / (sum_exp[index] + 1e-12)
+
+
 class TemporalPurchaseIntentDecoder(nn.Module):
     """Bo giai ma y dinh mua hang theo thoi gian (TPID).
 
