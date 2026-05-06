@@ -464,7 +464,9 @@ class BPATMPTotalLoss(nn.Module):
 
         # 1. BPR (main ranking loss)
         l_bpr, bpr_log = self.bpr(behavior_losses, model_params=None)
+        bpr_log.pop("loss/total", None)
         log_dict.update(bpr_log)
+        log_dict["loss/bpr"] = l_bpr.item()
 
         total = l_bpr
 
