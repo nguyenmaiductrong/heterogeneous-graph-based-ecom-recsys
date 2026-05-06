@@ -174,7 +174,86 @@ class TemporalPurchaseIntentDecoder(nn.Module):
 
         _, h_n = self.seq_encoder(x)
         return h_n.squeeze(0)
+    
+    def compute_popularity_score(
+        self,
+        item_idx: Tensor,
+        item_counts: Tensor,
+        item_decay_sum: Tensor,
+    ) -> Tensor:
+        """Compute time-decayed popularity score.
 
+        Args:
+            item_idx: [B] item indices
+            item_counts: [N, 3] per-behavior counts
+            item_decay_sum: [N, 3] sum of time-decayed weights
+
+        Returns:
+            s_pop: [B] popularity scores
+        """
+        eta = F.softplus(self.raw_eta)
+        counts = item_counts[item_idx]
+        decay_sum = item_decay_sum[item_idx]
+        weighted = (eta * decay_sum).sum(dim=-1)
+        return torch.log1p(weighted)
+
+    def forward(
+        self,
+        user_emb: Tensor,
+        item_emb: Tensor,
+        user_idx: Tensor,
+        item_idx: Tensor,
+        item_seq: Optional[Tensor] = None,
+        beh_seq: Optional[Tensor] = None,
+        ts_seq: Optional[Tensor] = None,
+        ref_time: Optional[float] = None,
+        user_n_events: Optional[Tensor] = None,
+        user_last_dt: Optional[Tensor] = None,
+        item_pop_decay: Optional[Tensor] = None,
+    ) -> Tensor:
+        """Compute final score with expert fusion.
+
+        Returns:
+            score: [B] final scores
+        """
+        h_u = user_emb[user_idx]
+        h_i = item_emb[item_idx]
+        s_graph = (h_u * h_i).sum(dim=-1) + self.item_bias(item_idx).squeeze(-1)
+
+        B = user_idx.size(0)
+        device = user_idx.device
+
+        if item_seq is not None and ref_time is not None:
+            z_u = self.encode_sequence(item_seq, beh_seq, ts_seq, ref_time, item_emb)
+            e_i = item_emb[item_idx]
+            s_seq = (z_u * e_i).sum(dim=-1)
+        else:
+            s_seq = torch.zeros(B, device=device)
+
+        if item_pop_decay is not None:
+            s_pop = self.compute_popularity_score(item_idx, item_pop_decay, item_pop_decay)
+        else:
+            s_pop = torch.zeros(B, device=device)
+
+        if user_n_events is None:
+            user_n_events = torch.ones(B, device=device)
+        if user_last_dt is None:
+            user_last_dt = torch.ones(B, device=device)
+
+        feat = torch.stack(
+            [
+                torch.log1p(user_n_events[user_idx].float()),
+                torch.log1p(user_last_dt[user_idx].float()),
+                (h_u * h_u).sum(dim=-1).sqrt(),
+            ],
+            dim=-1,
+        )
+
+        omega = F.softmax(self.fusion_mlp(feat), dim=-1)
+        score = omega[:, 0] * s_graph + omega[:, 1] * s_seq + omega[:, 2] * s_pop
+
+        return score
+    
 BEH_BUCKETS: Tuple[str, str, str, str] = ("view", "cart", "purchase", "struct")
 _BEH_W_INIT = torch.tensor([0.30, 0.50, 1.00, 0.40])
 
@@ -413,3 +492,4 @@ class BPATMPLayer(nn.Module):
                 h = {t: self.dropout(v) for t, v in h.items()}
 
         return h, beh_user_agg
+    
