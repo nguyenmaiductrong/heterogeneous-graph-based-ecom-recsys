@@ -13,9 +13,9 @@ logger = logging.getLogger(__name__)
 class TemporalSplitEvaluator:
     """Strict full-rank evaluator. No sampled-negatives mode.
 
-    Metrics (LOO single-positive ground truth):
-        HR@k    — 1 if positive in top-k after train-mask exclusion
-        NDCG@k  — 1/log2(rank+1) if positive in top-k, else 0
+    Metrics (multi-positive ground truth):
+        HR@k    — 1 if any positive is in top-k after train-mask exclusion
+        NDCG@k  — DCG over all positives in top-k, normalized by ideal DCG
     """
 
     def __init__(
@@ -57,14 +57,18 @@ class TemporalSplitEvaluator:
         excl_rows_t = torch.as_tensor(excl_rows, dtype=torch.long, device=device)
         excl_cols_t = torch.as_tensor(excl_cols, dtype=torch.long, device=device)
 
-        gt_t = torch.tensor(
-            [eval_input.ground_truth[int(u)] for u in eval_input.eval_user_ids.tolist()],
-            dtype=torch.long, device=device,
-        )
+        gt_lists = [
+            EvalInput._as_item_list(eval_input.ground_truth[int(u)])
+            for u in eval_input.eval_user_ids.tolist()
+        ]
+        max_pos = max(len(items) for items in gt_lists)
+        gt_padded = torch.full((n_eval, max_pos), -1, dtype=torch.long, device=device)
+        gt_counts = torch.empty(n_eval, dtype=torch.long, device=device)
+        for row, items in enumerate(gt_lists):
+            gt_counts[row] = len(items)
+            gt_padded[row, : len(items)] = torch.tensor(items, dtype=torch.long, device=device)
 
-        ndcg_w = 1.0 / torch.log2(
-            torch.arange(1, self.max_k + 1, device=device).float() + 1.0
-        )
+        ndcg_w = 1.0 / torch.log2(torch.arange(1, self.max_k + 1, device=device).float() + 1.0)
         sums: dict[str, float] = {}
         for k in self.ks:
             sums[f"HR@{k}"] = 0.0
