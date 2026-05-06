@@ -10,6 +10,7 @@ class HierarchyGate(nn.Module):
     Args:
         dim : embedding dimension (phải match HeteroEmbedding.dim)
     """
+
     def __init__(self, dim: int = 128):
         super().__init__()
         self.dim = dim
@@ -30,9 +31,9 @@ class HierarchyGate(nn.Module):
 
     def forward(
         self,
-        emb_view:     torch.Tensor,   # [B, dim]
-        emb_cart:     torch.Tensor,   # [B, dim]
-        emb_purchase: torch.Tensor,   # [B, dim]
+        emb_view: torch.Tensor,  # [B, dim]
+        emb_cart: torch.Tensor,  # [B, dim]
+        emb_purchase: torch.Tensor,  # [B, dim]
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Returns:
@@ -43,13 +44,13 @@ class HierarchyGate(nn.Module):
         concat = torch.cat([emb_view, emb_cart, emb_purchase], dim=-1)  # [B, dim*3]
 
         # 2. MLP → raw scores → softmax
-        scores       = self.gate_mlp(concat)               # [B, 3]
-        gate_weights = torch.softmax(scores, dim=-1)       # [B, 3], sum=1
+        scores = self.gate_mlp(concat)  # [B, 3]
+        gate_weights = torch.softmax(scores, dim=-1)  # [B, 3], sum=1
 
         # 3. Weighted sum — purchase bias được học qua data
-        w_v = gate_weights[:, 0:1]   # [B, 1]
-        w_c = gate_weights[:, 1:2]   # [B, 1]
-        w_p = gate_weights[:, 2:3]   # [B, 1]
+        w_v = gate_weights[:, 0:1]  # [B, 1]
+        w_c = gate_weights[:, 1:2]  # [B, 1]
+        w_p = gate_weights[:, 2:3]  # [B, 1]
 
         fused_emb = w_v * emb_view + w_c * emb_cart + w_p * emb_purchase  # [B, dim]
 
