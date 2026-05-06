@@ -174,3 +174,242 @@ class TemporalPurchaseIntentDecoder(nn.Module):
 
         _, h_n = self.seq_encoder(x)
         return h_n.squeeze(0)
+
+BEH_BUCKETS: Tuple[str, str, str, str] = ("view", "cart", "purchase", "struct")
+_BEH_W_INIT = torch.tensor([0.30, 0.50, 1.00, 0.40])
+
+
+class BehaviorNormalizedAgg(nn.Module):
+    def __init__(self, out_dim: int) -> None:
+        super().__init__()
+        self.beh_w = nn.ParameterDict({t: nn.Parameter(_BEH_W_INIT.clone()) for t in NODE_TYPES})
+        self.norms = nn.ModuleDict(
+            {f"{t}__{b}": nn.LayerNorm(out_dim) for t in NODE_TYPES for b in BEH_BUCKETS}
+        )
+
+    def forward(
+        self,
+        agg_pb: Dict[str, Dict[str, Optional[Tensor]]],
+        x_dict: Dict[str, Tensor],
+    ) -> Dict[str, Tensor]:
+        out: Dict[str, Tensor] = {}
+        for t in NODE_TYPES:
+            present = [(i, b) for i, b in enumerate(BEH_BUCKETS) if agg_pb[t][b] is not None]
+            if not present:
+                if t in x_dict:
+                    out[t] = x_dict[t]
+                continue
+            w = F.softmax(self.beh_w[t], dim=0)
+            mixed = sum(w[i] * self.norms[f"{t}__{b}"](agg_pb[t][b]) for i, b in present)
+            if t in x_dict and x_dict[t].shape == mixed.shape:
+                mixed = mixed + x_dict[t]
+            out[t] = F.elu(mixed)
+        return out
+
+class BPATMPConv(nn.Module):
+    def __init__(
+        self,
+        in_dim: int = EMBED_DIM,
+        out_dim: int = EMBED_DIM,
+        rank: int = 16,
+        n_relations: int = len(ALL_EDGE_TYPES),
+        n_freqs: int = 16,
+        tau: float = 7.0,
+    ) -> None:
+        super().__init__()
+        self.in_dim = in_dim
+        self.out_dim = out_dim
+
+        self.baw = BehaviorAwareWeight(in_dim, out_dim, rank, n_relations=n_relations)
+        self.temporal_attn = TemporalAttention(
+            dim=out_dim,
+            n_relations=n_relations,
+            n_beta=4,
+            n_freqs=n_freqs,
+            tau=tau,
+        )
+        self.behavior_agg = BehaviorNormalizedAgg(out_dim)
+
+    def forward(
+        self,
+        x_dict: Dict[str, Tensor],
+        edge_index_dict: Dict[Tuple, Tensor],
+        edge_attr_dict: Optional[Dict[Tuple, Tensor]] = None,
+        edge_ts_dict: Optional[Dict[Tuple, Tensor]] = None,
+        ref_time: Optional[float] = None,
+    ) -> Tuple[Dict[str, Tensor], Dict[str, Tensor]]:
+        """Forward pass with temporal attention.
+
+        Args:
+            x_dict: node embeddings per type
+            edge_index_dict: edge indices per edge type
+            edge_attr_dict: behavior origin for structural edges
+            edge_ts_dict: timestamps per edge type (Unix seconds)
+            ref_time: reference time T for computing delta_t
+        """
+        agg_pb: Dict[str, Dict[str, Optional[Tensor]]] = {
+            t: {b: None for b in BEH_BUCKETS} for t in NODE_TYPES
+        }
+
+        n_users = x_dict["user"].size(0) if "user" in x_dict else 0
+        ref = next(iter(x_dict.values()))
+        beh_user_agg: Dict[str, Tensor] = {
+            k: torch.zeros(n_users, self.out_dim, device=ref.device, dtype=ref.dtype)
+            for k in ("view", "cart", "purchase")
+        }
+
+        for edge_type, edge_index in edge_index_dict.items():
+            src_type, edge_name, dst_type = edge_type
+
+            if src_type not in x_dict or dst_type not in x_dict:
+                continue
+            if edge_index.numel() == 0:
+                continue
+
+            src_idx, dst_idx = edge_index
+            h_src = x_dict[src_type][src_idx]
+            h_dst = x_dict[dst_type][dst_idx]
+            E = h_src.size(0)
+
+            rho = _REL_IDX[edge_type]
+            beta_raw = BEHAVIOR_ORIGIN.get(edge_name.removeprefix("rev_"), -1)
+            attr = (edge_attr_dict or {}).get(edge_type)
+
+            edge_ts = (edge_ts_dict or {}).get(edge_type)
+            if edge_ts is not None:
+                edge_ts = edge_ts.to(device=ref.device)
+
+            attr = attr.to(device=ref.device) if attr is not None else None
+            if edge_ts is not None and ref_time is not None:
+                keep = edge_ts.float() < float(ref_time)
+                if not keep.any():
+                    continue
+                if not bool(keep.all()):
+                    src_idx = src_idx[keep]
+                    dst_idx = dst_idx[keep]
+                    h_src = h_src[keep]
+                    h_dst = h_dst[keep]
+                    edge_ts = edge_ts[keep]
+                    if attr is not None and attr.numel() > 0:
+                        attr = attr.view(-1)[keep].view(-1, 1)
+                    E = h_src.size(0)
+
+            if edge_ts is not None and ref_time is not None:
+                delta_t = (ref_time - edge_ts.float()) / 86400.0
+                delta_t = delta_t.clamp(min=0)
+            else:
+                delta_t = torch.zeros(E, device=ref.device)
+
+            if beta_raw < 0 and attr is not None and attr.numel() > 0:
+                origin = attr.view(-1).long().clamp(0, 2)
+                W_rho = self.baw.W_rho[rho]
+                A_rho = self.baw.A_rho[rho]
+                B_rho = self.baw.B_rho[rho]
+
+                base_msg = torch.einsum("oi,ei->eo", W_rho, h_src)
+                h_B = h_src @ B_rho
+                scaled = torch.zeros_like(h_B)
+                for b_idx in origin.unique():
+                    mask = origin == b_idx
+                    scaled[mask] = h_B[mask] * self.baw.z_beta[b_idx]
+                msg = base_msg + scaled @ A_rho.T
+                beta_tensor = origin
+            else:
+                beta_idx = beta_raw if beta_raw >= 0 else 3
+                W = self.baw(rho, beta_raw)
+                msg = torch.einsum("oi,ei->eo", W, h_src)
+                beta_tensor = torch.full((E,), beta_idx, device=ref.device, dtype=torch.long)
+
+            alpha, gate = self.temporal_attn(h_src, h_dst, delta_t, rho, beta_tensor, dst_idx)
+
+            weighted = (alpha * gate).unsqueeze(-1) * msg
+            N_dst = x_dict[dst_type].size(0)
+            bucket = BEH_BUCKETS[_BEH_IDX[edge_name]]
+            if agg_pb[dst_type][bucket] is None:
+                agg_pb[dst_type][bucket] = weighted.new_zeros(N_dst, self.out_dim)
+            agg_pb[dst_type][bucket].scatter_add_(
+                0, dst_idx.unsqueeze(-1).expand_as(weighted), weighted
+            )
+
+            beh_key = _REV_BEH_KEYS.get(edge_name)
+            if beh_key is not None and n_users > 0:
+                beh_user_agg[beh_key].scatter_add_(
+                    0, dst_idx.unsqueeze(-1).expand_as(weighted), weighted
+                )
+
+        out_dict = self.behavior_agg(agg_pb, x_dict)
+        return out_dict, beh_user_agg
+
+class BPATMPLayer(nn.Module):
+    def __init__(
+        self,
+        in_dim: int = EMBED_DIM,
+        hid_dim: int = EMBED_DIM,
+        out_dim: int = EMBED_DIM,
+        n_layers: int = 2,
+        rank: int = 16,
+        dropout: float = 0.1,
+        use_checkpoint: bool = True,
+        n_freqs: int = 16,
+        tau: float = 7.0,
+    ) -> None:
+        super().__init__()
+        assert n_layers >= 1
+        self.use_checkpoint = use_checkpoint
+        dims = [in_dim] + [hid_dim] * (n_layers - 1) + [out_dim]
+        self.convs = nn.ModuleList(
+            [
+                BPATMPConv(
+                    in_dim=dims[i],
+                    out_dim=dims[i + 1],
+                    rank=rank,
+                    n_freqs=n_freqs,
+                    tau=tau,
+                )
+                for i in range(n_layers)
+            ]
+        )
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(
+        self,
+        x_dict: Dict[str, Tensor],
+        edge_index_dict: Dict[Tuple, Tensor],
+        edge_attr_dict: Optional[Dict[Tuple, Tensor]] = None,
+        edge_ts_dict: Optional[Dict[Tuple, Tensor]] = None,
+        ref_time: Optional[float] = None,
+    ) -> Tuple[Dict[str, Tensor], Dict[str, Tensor]]:
+        BEH_KEYS = ["view", "cart", "purchase"]
+        h = x_dict
+        beh_user_agg: Dict[str, Tensor] = {}
+
+        for i, conv in enumerate(self.convs):
+            if self.training and self.use_checkpoint:
+                node_types = [t for t in NODE_TYPES if t in h]
+                node_vals = [h[t] for t in node_types]
+
+                def _conv(
+                    *vals,
+                    _conv=conv,
+                    _nt=node_types,
+                    _eid=edge_index_dict,
+                    _ead=edge_attr_dict,
+                    _ets=edge_ts_dict,
+                    _rt=ref_time,
+                    _bk=BEH_KEYS,
+                ):
+                    x = dict(zip(_nt, vals))
+                    out_dict, b_agg = _conv(x, _eid, _ead, _ets, _rt)
+                    return [out_dict[t] for t in _nt] + [b_agg[k] for k in _bk]
+
+                out_all = grad_checkpoint(_conv, *node_vals, use_reentrant=False)
+                n = len(node_types)
+                h = dict(zip(node_types, out_all[:n]))
+                beh_user_agg = {k: out_all[n + j] for j, k in enumerate(BEH_KEYS)}
+            else:
+                h, beh_user_agg = conv(h, edge_index_dict, edge_attr_dict, edge_ts_dict, ref_time)
+
+            if i < len(self.convs) - 1:
+                h = {t: self.dropout(v) for t, v in h.items()}
+
+        return h, beh_user_agg
