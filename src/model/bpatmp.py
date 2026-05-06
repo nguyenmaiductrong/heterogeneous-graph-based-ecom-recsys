@@ -149,14 +149,16 @@ class TemporalAttention(nn.Module):
         n_beta: int = 4,
         n_freqs: int = 16,
         tau: float = 7.0,
+        in_dim: int | None = None,
     ) -> None:
         super().__init__()
+        self.in_dim = in_dim if in_dim is not None else dim
         self.dim = dim
         self.scale = dim ** -0.5
         self.tau = tau
 
-        self.W_q = nn.Linear(dim, dim, bias=False)
-        self.W_k = nn.Linear(dim, dim, bias=False)
+        self.W_q = nn.Linear(self.in_dim, dim, bias=False)
+        self.W_k = nn.Linear(self.in_dim, dim, bias=False)
 
         self.b_rho = nn.Parameter(torch.zeros(n_relations))
 
@@ -165,7 +167,7 @@ class TemporalAttention(nn.Module):
 
         self.raw_lambda = nn.Parameter(torch.zeros(n_beta))
 
-        self.gate_proj = nn.Linear(dim + n_freqs * 2, 1)
+        self.gate_proj = nn.Linear(self.in_dim + n_freqs * 2, 1)
 
     def forward(
         self,
@@ -358,6 +360,7 @@ class BPATMPConv(nn.Module):
             n_beta=4,
             n_freqs=n_freqs,
             tau=tau,
+            in_dim=in_dim,
         )
         self.behavior_agg = BehaviorNormalizedAgg(out_dim)
 
