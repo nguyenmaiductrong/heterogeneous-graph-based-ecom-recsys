@@ -76,3 +76,59 @@ class BoundedBAGraphAug(nn.Module):
 
         eps = self.eps_min + (self.eps_max - self.eps_min) * torch.sigmoid(logit)
         return eps
+    
+    def augment(self, h: Tensor, eps: Tensor) -> Tensor:
+        """Apply bounded noise augmentation.
+
+        Args:
+            h: [N, dim] node embeddings
+            eps: [N] per-node noise magnitudes
+
+        Returns:
+            h_aug: [N, dim] augmented embeddings (L2 normalized)
+        """
+        xi = torch.randn_like(h)
+        xi = F.normalize(xi, dim=-1)
+        h_aug = h + eps.unsqueeze(-1) * xi
+        h_aug = F.normalize(h_aug, dim=-1)
+        return h_aug
+
+    def forward(
+        self,
+        h: Tensor,
+        n_purchase: Optional[Tensor] = None,
+        degree: Optional[Tensor] = None,
+        n_tilde: Optional[Tensor] = None,
+    ) -> tuple[Tensor, Tensor, Tensor]:
+        """Generate two augmented views and compute eps.
+
+        Args:
+            h: [N, dim] node embeddings
+            n_purchase: [N] purchase counts (default: zeros)
+            degree: [N] node degrees (default: ones)
+            n_tilde: [N] normalized recency (default: zeros)
+
+        Returns:
+            h_aug1: [N, dim] first augmented view
+            h_aug2: [N, dim] second augmented view
+            eps: [N] noise magnitudes used
+        """
+        N = h.size(0)
+        device = h.device
+
+        if n_purchase is None:
+            n_purchase = torch.zeros(N, device=device)
+        if degree is None:
+            degree = torch.ones(N, device=device)
+        if n_tilde is None:
+            n_tilde = torch.zeros(N, device=device)
+
+        h_norm = h.norm(dim=-1)
+
+        eps = self.compute_eps(n_purchase, degree, n_tilde, h_norm)
+
+        h_aug1 = self.augment(h, eps)
+        h_aug2 = self.augment(h, eps)
+
+        return h_aug1, h_aug2, eps
+
