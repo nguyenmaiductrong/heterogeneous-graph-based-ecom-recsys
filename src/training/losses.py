@@ -284,3 +284,228 @@ def sample_aligned_negatives_local(
         negs_local = torch.where(same, repl, negs_local)
 
     return negs_local
+
+
+class FunnelPriorLoss(nn.Module):
+    """Conversion-funnel score-ordering prior (Task 20, Step 1).
+
+    Enforces  s_strong ≥ s_weak + margin  for every consecutive pair
+    in the purchase funnel  (view → cart → purchase).
+
+        L_conv = mean( relu(s_weak - s_strong + margin)² )
+
+    If the ordering is already satisfied the loss is exactly zero.
+    """
+
+    FUNNEL_ORDER: list[str] = ["view", "cart", "purchase"]
+
+    def __init__(self, margin: float = 0.1) -> None:
+        super().__init__()
+        self.margin = margin
+        self.pairs: list[tuple[str, str]] = [
+            (self.FUNNEL_ORDER[i], self.FUNNEL_ORDER[i + 1])
+            for i in range(len(self.FUNNEL_ORDER) - 1)
+        ]
+
+    def forward(
+        self,
+        scores: dict[str, torch.Tensor],
+    ) -> torch.Tensor:
+        """Compute funnel prior loss.
+
+        Args:
+            scores: ``{behavior_name: (B,) score tensor}`` for the **same**
+                    set of users/items.  Only consecutive pairs present in
+                    *scores* contribute to the loss.
+
+        Returns:
+            Scalar loss (zero when all ordering constraints are satisfied).
+        """
+        device = next(iter(scores.values())).device
+        loss = torch.tensor(0.0, device=device)
+        n_pairs = 0
+
+        for weak, strong in self.pairs:
+            if weak not in scores or strong not in scores:
+                continue
+            s_weak = scores[weak].float()
+            s_strong = scores[strong].float()
+            violation = F.relu(s_weak - s_strong + self.margin)
+            loss = loss + (violation ** 2).mean()
+            n_pairs += 1
+
+        if n_pairs > 0:
+            loss = loss / n_pairs
+
+        return loss
+
+
+class MonotonicDecayPriorLoss(nn.Module):
+    """Monotonic temporal-decay ordering prior (Task 20, Step 2).
+
+    Enforces  λ_weak ≥ λ_strong  so that weaker signals (e.g. view)
+    fade faster than stronger ones (e.g. cart, purchase).
+
+        L_mono = mean( relu(λ_strong - λ_weak)² )
+
+    This works on the *per-behavior* decay rates (λ) used in
+    :class:`TemporalPurchaseIntentDecoder` or any temporal attention
+    where ``decay = λ · log(1 + Δt / τ)``.
+    """
+
+    DECAY_ORDER: list[str] = ["view", "cart", "purchase"]
+
+    def forward(
+        self,
+        lambdas: dict[str, torch.Tensor],
+    ) -> torch.Tensor:
+        """Compute monotonic-decay prior loss.
+
+        Args:
+            lambdas: ``{behavior_name: scalar or (B,) decay-rate tensor}``.
+                     Values should be *post-softplus* (positive).
+
+        Returns:
+            Scalar loss (zero when λ_view ≥ λ_cart ≥ λ_purchase).
+        """
+        device = next(iter(lambdas.values())).device
+        loss = torch.tensor(0.0, device=device)
+        n_pairs = 0
+
+        for i in range(len(self.DECAY_ORDER) - 1):
+            weak = self.DECAY_ORDER[i]
+            strong = self.DECAY_ORDER[i + 1]
+            if weak not in lambdas or strong not in lambdas:
+                continue
+            lam_weak = lambdas[weak].float()
+            lam_strong = lambdas[strong].float()
+            # weak signal must decay faster → λ_weak ≥ λ_strong
+            violation = F.relu(lam_strong - lam_weak)
+            loss = loss + (violation ** 2).mean()
+            n_pairs += 1
+
+        if n_pairs > 0:
+            loss = loss / n_pairs
+
+        return loss
+
+
+class BPATMPTotalLoss(nn.Module):
+    """Combined loss for the BPATMP model (Task 24).
+
+    Aggregates every training objective into a single call::
+
+        L = L_bpr + λ_CL · L_CL + λ_conv · L_conv + λ_mono · L_mono + λ_wd · ‖Θ‖²
+
+    Each sub-loss is optional: if the corresponding input is ``None`` or
+    empty, that term is silently skipped (and logged as 0).
+
+    Args:
+        behavior_counts: ``{"view": N, "cart": N, "purchase": N}`` for
+            :class:`MultiTaskBPRLoss` count-weighted normalisation.
+        lambda_cl:   coefficient for :class:`HierarchicalMBCL`.
+        lambda_conv: coefficient for :class:`FunnelPriorLoss`.
+        lambda_mono: coefficient for :class:`MonotonicDecayPriorLoss`.
+        lambda_wd:   L2 weight-decay coefficient on model parameters.
+        margin:      margin ``m`` for :class:`FunnelPriorLoss`.
+        tau:         temperature for :class:`HierarchicalMBCL`.
+    """
+
+    def __init__(
+        self,
+        behavior_counts: dict[str, int],
+        lambda_cl: float = 0.1,
+        lambda_conv: float = 0.01,
+        lambda_mono: float = 0.01,
+        lambda_wd: float = 1e-5,
+        margin: float = 0.1,
+        tau: float = 0.1,
+    ) -> None:
+        super().__init__()
+
+        self.lambda_cl = lambda_cl
+        self.lambda_conv = lambda_conv
+        self.lambda_mono = lambda_mono
+        self.lambda_wd = lambda_wd
+
+        # Sub-modules — L2 handled here, so BPR gets l2_lambda=0
+        self.bpr = MultiTaskBPRLoss(behavior_counts, l2_lambda=0.0)
+        self.cl = HierarchicalMBCL(tau=tau)
+        self.funnel = FunnelPriorLoss(margin=margin)
+        self.mono = MonotonicDecayPriorLoss()
+
+    @autocast("cuda", enabled=False)
+    def forward(
+        self,
+        behavior_losses: dict[str, torch.Tensor],
+        beh_embs: dict[str, torch.Tensor] | None = None,
+        users_per_beh: dict[str, torch.Tensor] | None = None,
+        scores: dict[str, torch.Tensor] | None = None,
+        lambdas: dict[str, torch.Tensor] | None = None,
+        model_params: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, dict[str, float]]:
+        """Compute the total BPATMP loss.
+
+        Args:
+            behavior_losses: per-behavior BPR losses ``{"view": ..., ...}``.
+            beh_embs: per-behavior user embeddings for contrastive learning.
+            users_per_beh: user-id tensors per behavior (for CL overlap).
+            scores: per-behavior prediction scores (for funnel prior).
+            lambdas: per-behavior decay rates (for monotonic prior).
+            model_params: pre-computed ``sum(p.pow(2).sum() for p in params)``
+                          i.e. the squared L2 norm of all model parameters.
+
+        Returns:
+            ``(total_loss, log_dict)`` where *log_dict* maps every
+            component name to its scalar value for W&B / TensorBoard.
+        """
+        device = next(iter(behavior_losses.values())).device
+        log_dict: dict[str, float] = {}
+
+        # 1. BPR (main ranking loss)
+        l_bpr, bpr_log = self.bpr(behavior_losses, model_params=None)
+        bpr_log.pop("loss/total", None)
+        log_dict.update(bpr_log)
+        log_dict["loss/bpr"] = l_bpr.item()
+
+        total = l_bpr
+
+        # 2. Contrastive learning
+        if (
+            self.lambda_cl > 0
+            and beh_embs is not None
+            and users_per_beh is not None
+            and len(beh_embs) > 0
+        ):
+            l_cl = self.cl(beh_embs, users_per_beh)
+            total = total + self.lambda_cl * l_cl
+            log_dict["loss/cl"] = l_cl.item()
+        else:
+            log_dict["loss/cl"] = 0.0
+
+        # 3. Funnel prior
+        if self.lambda_conv > 0 and scores is not None and len(scores) > 0:
+            l_conv = self.funnel(scores)
+            total = total + self.lambda_conv * l_conv
+            log_dict["loss/conv"] = l_conv.item()
+        else:
+            log_dict["loss/conv"] = 0.0
+
+        # 4. Monotonic decay prior
+        if self.lambda_mono > 0 and lambdas is not None and len(lambdas) > 0:
+            l_mono = self.mono(lambdas)
+            total = total + self.lambda_mono * l_mono
+            log_dict["loss/mono"] = l_mono.item()
+        else:
+            log_dict["loss/mono"] = 0.0
+
+        # 5. Weight decay (L2)
+        if self.lambda_wd > 0 and model_params is not None:
+            l_wd = self.lambda_wd * model_params.float()
+            total = total + l_wd
+            log_dict["loss/wd"] = l_wd.item()
+        else:
+            log_dict["loss/wd"] = 0.0
+
+        log_dict["loss/total"] = total.item()
+        return total, log_dict
