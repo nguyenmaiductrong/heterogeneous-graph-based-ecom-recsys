@@ -41,7 +41,7 @@ training:
   num_neg: 16           # Nhiều hard negatives cho long-tail (68% top 10%)
   num_workers: 8
   patience: 6
-  save_dir: checkpoints-v1
+  save_dir: checkpoints-v2
   weight_decay: 1.0e-03
   pin_memory: true
   persistent_workers: true
@@ -60,7 +60,7 @@ hierarchy_cl:
   enabled: true
   tau: 0.1              # Standard temperature
   hard_k: 32            # 32 hard negatives đủ cho 8192 batch
-  min_pair_overlap: 16  # Cần overlap lớn hơn vì 99% users có cả 3 behaviors
+  min_pair_overlap: 16  
   pair_weights:
     - ["view", "cart", 0.2]       # View noisy (15% convert)
     - ["cart", "purchase", 1.0]   # Cart->Purchase 74% - quan trọng nhất!
@@ -71,7 +71,7 @@ wandb:
   enabled: true
   entity: nguyenmaiductrong37-h-c-vi-n-c-ng-ngh-b-u-ch-nh-vi-n-th-ng
   project: bpatmp-recsys
-  run_name: bpatmp-v1-sota
+  run_name: bpatmp-v2
   save_every: 1
 
 a100:
