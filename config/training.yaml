@@ -18,14 +18,14 @@ model:
   tau: 5.0              # Faster decay - 32% repeat purchases cần decay nhanh hơn
 
 sampler:
-  hop1_budget: 10       # Đủ cho dataset dense (0.53% density)
-  hop2_budget: 4        # Structure đơn giản (1:1), ko cần nhiều
+  hop1_budget: 8        # Giảm để tăng tốc
+  hop2_budget: 3        # Giảm để tăng tốc
   hop1_sample_replace: false
 
 training:
   amp: true
   use_bf16: true
-  batch_size: 8192
+  batch_size: 16384
   device: cuda
   epochs: 40
   eval_batch_size: 8192

@@ -84,7 +84,7 @@ class CheckpointManager:
             logger.info("No checkpoint found on W&B — starting from epoch 0.")
             return 0
 
-        ckpt = torch.load(ckpt_path, map_location=device)
+        ckpt = torch.load(ckpt_path, map_location=device, weights_only=True)
         model.load_state_dict(ckpt["model_state_dict"])
         optimizer.load_state_dict(ckpt["optimizer_state_dict"])
         if scaler is not None and "scaler_state_dict" in ckpt:
