@@ -255,14 +255,14 @@ def train_epoch(
 
     pbar = tqdm(dataloader, desc="train", leave=False, dynamic_ncols=True)
     for raw_batch in pbar:
-        raw_batch = raw_batch.to(device)
+        raw_batch = raw_batch.to(device, non_blocking=True)
         users_g = raw_batch[:, 0]
         items_g = raw_batch[:, 1]
         beh_ids = raw_batch[:, 2]
         ref_time = float(raw_batch[:, 3].min().item()) if raw_batch.size(1) >= 4 else None
 
         unique_users = users_g.unique()
-        subgraph = sampler.sample(unique_users, seed_type="user").to(device)
+        subgraph = sampler.sample(unique_users, seed_type="user").to(device, non_blocking=True)
 
         optimizer.zero_grad(set_to_none=True)
 
@@ -637,7 +637,7 @@ def train(
     if wandb_manager is not None:
         start_epoch = wandb_manager.load_checkpoint(model, optimizer, scaler, device)
 
-    if start_epoch == 0:
+    if start_epoch == 0 and wandb_manager is None:
         latest_ckpt = _find_latest_checkpoint(save_dir)
         if latest_ckpt is not None:
             start_epoch = _load_checkpoint(latest_ckpt, model, optimizer, scaler, device)
