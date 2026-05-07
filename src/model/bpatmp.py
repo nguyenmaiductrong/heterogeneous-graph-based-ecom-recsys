@@ -675,4 +675,98 @@ class IntentCodebook(nn.Module):
         return out
 
 
-BPATMPModel = BPATMPLayer
+class BPATMPModel(nn.Module):
+    """Full BPATMP model for training with embeddings and message passing."""
+
+    def __init__(
+        self,
+        num_nodes_dict: Dict[str, int],
+        embed_dim: int = EMBED_DIM,
+        n_layers: int = 2,
+        dropout: float = 0.1,
+        n_intents: int = 32,
+        rank: int = 16,
+        use_grad_checkpoint: bool = True,
+        n_freqs: int = 16,
+        tau: float = 7.0,
+    ) -> None:
+        super().__init__()
+        self.embed_dim = embed_dim
+        self.num_nodes_dict = num_nodes_dict
+
+        self.input_proj = nn.ModuleDict({
+            ntype: nn.Embedding(num_nodes, embed_dim)
+            for ntype, num_nodes in num_nodes_dict.items()
+        })
+        for emb in self.input_proj.values():
+            nn.init.xavier_uniform_(emb.weight)
+
+        self.beh_proj = nn.ModuleDict({
+            beh: nn.Linear(embed_dim, embed_dim, bias=False)
+            for beh in ("view", "cart", "purchase")
+        })
+
+        self.encoder = BPATMPLayer(
+            in_dim=embed_dim,
+            hid_dim=embed_dim,
+            out_dim=embed_dim,
+            n_layers=n_layers,
+            rank=rank,
+            dropout=dropout,
+            use_checkpoint=use_grad_checkpoint,
+            n_freqs=n_freqs,
+            tau=tau,
+        )
+
+        self.intent_codebook = IntentCodebook(n_intents=n_intents, dim=embed_dim)
+
+    def embedding_l2_norm(self) -> Tensor:
+        total = torch.tensor(0.0, device=next(self.parameters()).device)
+        for emb in self.input_proj.values():
+            total = total + emb.weight.pow(2).sum()
+        return total
+
+    def forward(
+        self,
+        subgraph,
+        return_beh_embs: bool = False,
+        ref_time: Optional[float] = None,
+    ) -> Tuple[Tensor, Tensor, Optional[Dict[str, Tensor]]]:
+        x_dict = {}
+        for ntype, emb in self.input_proj.items():
+            if ntype in subgraph.node_types and hasattr(subgraph[ntype], "x"):
+                node_ids = subgraph[ntype].x
+                x_dict[ntype] = emb(node_ids)
+
+        edge_index_dict = {}
+        edge_ts_dict = {}
+        edge_attr_dict = {}
+        for edge_type in subgraph.edge_types:
+            store = subgraph[edge_type]
+            if hasattr(store, "edge_index") and store.edge_index.numel() > 0:
+                edge_index_dict[edge_type] = store.edge_index
+                if hasattr(store, "ts"):
+                    edge_ts_dict[edge_type] = store.ts
+                if hasattr(store, "edge_attr"):
+                    edge_attr_dict[edge_type] = store.edge_attr
+
+        h_dict, beh_user_agg = self.encoder(
+            x_dict,
+            edge_index_dict,
+            edge_attr_dict if edge_attr_dict else None,
+            edge_ts_dict if edge_ts_dict else None,
+            ref_time,
+        )
+        h_dict = self.intent_codebook(h_dict)
+
+        user_emb = h_dict.get("user", torch.zeros(0, self.embed_dim))
+        item_emb = h_dict.get("product", torch.zeros(0, self.embed_dim))
+
+        if return_beh_embs:
+            beh_embs = {
+                beh: self.beh_proj[beh](beh_user_agg.get(beh, torch.zeros_like(user_emb)))
+                for beh in ("view", "cart", "purchase")
+            }
+            return user_emb, item_emb, beh_embs
+
+        return user_emb, item_emb
