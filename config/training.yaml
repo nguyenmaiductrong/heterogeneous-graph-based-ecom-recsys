@@ -1,11 +1,11 @@
 data:
-  data_dir:  ./data/temporal #/content/data/temporal
+  data_dir:  /content/data/
   node_counts:
-    brand: 2734
+    brand: 1919
     category: 14
-    product: 60798
-    user: 267973
-  struct_dir: ./data/temporal/node_mappings #/content/data/temporal/node_mappings
+    product: 29892
+    user: 203063
+  struct_dir: /content/data/node_mappings
 
 model:
   dropout: 0.2
@@ -39,7 +39,7 @@ training:
   num_neg: 8
   num_workers: 4
   patience: 5
-  save_dir: checkpoints-v4
+  save_dir: checkpoints-v1
   weight_decay: 1.0e-03
 
 # Đồng bộ với spark_config evaluation và TemporalSplitEvaluator (HR@K, NDCG@K).
