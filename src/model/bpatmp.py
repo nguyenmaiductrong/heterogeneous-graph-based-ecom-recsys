@@ -673,3 +673,6 @@ class IntentCodebook(nn.Module):
         if "product" in out:
             out["product"] = out["product"] + self._attend(out["product"], self.item_intents)
         return out
+
+
+BPATMPModel = BPATMPLayer
