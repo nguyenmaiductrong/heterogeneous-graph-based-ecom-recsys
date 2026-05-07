@@ -176,11 +176,15 @@ def main():
     logger.info(f"Model parameters: {sum(p.numel() for p in model.parameters()):,}")
 
     sampler_cfg = cfg.get("sampler", {})
-    sampler = BehaviorAwareNeighborSampler(
-        hetero_data=hetero,
+    from src.graph.neighbor_sampler import NeighborSamplerConfig
+    sampler_config = NeighborSamplerConfig(
         hop1_budget=sampler_cfg.get("hop1_budget", 10),
         hop2_budget=sampler_cfg.get("hop2_budget", 5),
         hop1_sample_replace=sampler_cfg.get("hop1_sample_replace", True),
+    )
+    sampler = BehaviorAwareNeighborSampler(
+        data=hetero,
+        config=sampler_config,
     )
 
     train_cfg = TrainConfig.from_yaml(cfg)
