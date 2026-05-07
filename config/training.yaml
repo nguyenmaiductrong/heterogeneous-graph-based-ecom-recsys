@@ -12,20 +12,20 @@ model:
   embed_dim: 128
   n_layers: 2
   rank: 32
-  use_grad_checkpoint: false
+  use_grad_checkpoint: true 
   n_intents: 32
   n_freqs: 16
   tau: 5.0   
 
 sampler:
-  hop1_budget: 8      
-  hop2_budget: 3        
+  hop1_budget: 8
+  hop2_budget: 3
   hop1_sample_replace: false
 
 training:
   amp: true
   use_bf16: true
-  batch_size: 32768    
+  batch_size: 24576    
   device: cuda
   epochs: 40
   eval_batch_size: 8192
