@@ -610,6 +610,9 @@ class BPATMPLayer(nn.Module):
         h = x_dict
         beh_user_agg: Dict[str, Tensor] = {}
 
+        # LightGCN-style: collect embeddings from all layers
+        layer_outputs: Dict[str, list[Tensor]] = {t: [h[t]] for t in h.keys()}
+
         for i, conv in enumerate(self.convs):
             if self.training and self.use_checkpoint:
                 node_types = [t for t in NODE_TYPES if t in h]
@@ -636,10 +639,23 @@ class BPATMPLayer(nn.Module):
             else:
                 h, beh_user_agg = conv(h, edge_index_dict, edge_attr_dict, edge_ts_dict, ref_time)
 
+            # Collect layer output
+            for t in h.keys():
+                if t in layer_outputs:
+                    layer_outputs[t].append(h[t])
+
             if i < len(self.convs) - 1:
                 h = {t: self.dropout(v) for t, v in h.items()}
 
-        return h, beh_user_agg
+        # LightGCN-style aggregation: average all layer outputs
+        h_combined = {}
+        for t, layers in layer_outputs.items():
+            if len(layers) > 1:
+                h_combined[t] = torch.stack(layers, dim=0).mean(dim=0)
+            else:
+                h_combined[t] = layers[0]
+
+        return h_combined, beh_user_agg
     
 class IntentCodebook(nn.Module):
     """Shared low-rank intent codebook. Per-node attention over a small set

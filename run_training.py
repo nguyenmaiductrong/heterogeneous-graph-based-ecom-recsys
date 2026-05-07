@@ -172,6 +172,8 @@ def main():
         n_intents=model_cfg.get("n_intents", 32),
         rank=model_cfg.get("rank", 32),
         use_grad_checkpoint=model_cfg.get("use_grad_checkpoint", False),
+        n_freqs=model_cfg.get("n_freqs", 16),
+        tau=model_cfg.get("tau", 7.0),
     )
     logger.info(f"Model parameters: {sum(p.numel() for p in model.parameters()):,}")
 
@@ -185,7 +187,7 @@ def main():
     sampler = BehaviorAwareNeighborSampler(
         data=hetero,
         config=sampler_config,
-        device=device,  # Put CSR indices on GPU for faster sampling
+        device=device, 
     )
 
     train_cfg = TrainConfig.from_yaml(cfg)

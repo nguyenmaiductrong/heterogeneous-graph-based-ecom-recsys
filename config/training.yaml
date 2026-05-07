@@ -14,56 +14,69 @@ model:
   rank: 32
   use_grad_checkpoint: false
   n_intents: 32
+  n_freqs: 16
+  tau: 5.0              # Faster decay - 32% repeat purchases cần decay nhanh hơn
 
 sampler:
-  hop1_budget: 8
-  hop2_budget: 4
-  hop1_sample_replace: true
+  hop1_budget: 10       # Đủ cho dataset dense (0.53% density)
+  hop2_budget: 4        # Structure đơn giản (1:1), ko cần nhiều
+  hop1_sample_replace: false
 
 training:
   amp: true
   use_bf16: true
   batch_size: 8192
   device: cuda
-  epochs: 30
+  epochs: 40
   eval_batch_size: 8192
   eval_every: 1
-  eval_subsample: 10000   # 0 = full eval mỗi epoch
+  eval_subsample: 10000
   eval_seed: 42
-  l2_lambda: 1.0e-06
-  lr: 0.0003
+  l2_lambda: 1.0e-05
+  lr: 0.0005
   max_grad_norm: 1.0
-  cl_weight: 0.3
+  cl_weight: 0.2        # Moderate - CL giúp với sparse GT
   cl_g_weight: 1.0e-5
-  max_view_triplets: 4000000
-  num_neg: 8
+  max_view_triplets: 2000000  # Giảm view (chỉ 12.5% convert) để balance
+  num_neg: 16           # Nhiều hard negatives cho long-tail (68% top 10%)
   num_workers: 8
-  patience: 5
+  patience: 6
   save_dir: checkpoints-v1
   weight_decay: 1.0e-03
   pin_memory: true
   persistent_workers: true
   prefetch_factor: 4
+  warmup_epochs: 2
+  min_lr: 1.0e-5
+  gradient_accumulation: 1
 
-# Đồng bộ với spark_config evaluation và TemporalSplitEvaluator (HR@K, NDCG@K).
 evaluation:
   full_ranking: true
   primary_metric: "NDCG@20"
   ks: [10, 20, 50]
   metrics: ["HR@10", "HR@20", "HR@50", "NDCG@10", "NDCG@20", "NDCG@50"]
 
+hierarchy_cl:
+  enabled: true
+  tau: 0.1              # Standard temperature
+  hard_k: 32            # 32 hard negatives đủ cho 8192 batch
+  min_pair_overlap: 16  # Cần overlap lớn hơn vì 99% users có cả 3 behaviors
+  pair_weights:
+    - ["view", "cart", 0.2]       # View noisy (15% convert)
+    - ["cart", "purchase", 1.0]   # Cart->Purchase 74% - quan trọng nhất!
+    - ["view", "purchase", 0.3]   # View->Purchase chỉ 12.5%
+
 wandb:
   artifact_name: bpatmp-checkpoint-v1
   enabled: true
   entity: nguyenmaiductrong37-h-c-vi-n-c-ng-ngh-b-u-ch-nh-vi-n-th-ng
   project: bpatmp-recsys
-  run_name: bpatmp-v1
+  run_name: bpatmp-v1-sota
   save_every: 1
 
-# A100 optimizations
 a100:
   allow_tf32: true
   cudnn_benchmark: true
   use_fused_adamw: true
   compile_model: false
-  empty_cache_freq: 0
+  empty_cache_freq: 5
