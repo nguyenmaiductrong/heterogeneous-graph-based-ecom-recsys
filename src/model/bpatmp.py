@@ -91,6 +91,139 @@ class BehaviorAwareWeight(nn.Module):
         A_scaled = self.A_rho[rho] * self.z_beta[b_idx]  # [out_dim, rank]
         return self.W_rho[rho] + A_scaled @ self.B_rho[rho].T
 
+class FourierTimeEncoding(nn.Module):
+    """Bien doi thoi gian delta_t thanh vector Fourier features.
+
+    Su dung tan so hoc duoc (learnable frequencies) de model tu tim
+    cac chu ky thoi gian quan trong tu data.
+
+    Input:  delta_t  [*]         (khoang thoi gian, don vi ngay)
+    Output: phi      [*, 2*n_freqs]  (cos/sin features)
+
+    Cong thuc:
+        omega_k = softplus(raw_omega_k)          -- dam bao omega > 0
+        t'      = log(1 + delta_t)               -- nen scale thoi gian
+        phi     = [cos(t' * omega), sin(t' * omega)]
+    """
+
+    def __init__(self, n_freqs: int = 16) -> None:
+        super().__init__()
+        self.n_freqs = n_freqs
+        self.raw_omega = nn.Parameter(torch.randn(n_freqs))
+
+    def forward(self, delta_t: Tensor) -> Tensor:
+        """
+        Args:
+            delta_t: [*] arbitrary-shape tensor of time deltas (in days).
+
+        Returns:
+            [*, 2 * n_freqs] Fourier time features.
+        """
+        omega = F.softplus(self.raw_omega)
+        t = torch.log1p(delta_t).unsqueeze(-1)
+        phase = t * omega
+        return torch.cat([torch.cos(phase), torch.sin(phase)], dim=-1)
+
+
+class TemporalAttention(nn.Module):
+    """Temporal attention voi decay-in-logit va value gate.
+
+    Cong thuc:
+        logit = Q·K/√d + b_ρ + time_bias − λ_β · log(1 + Δt/τ)
+        alpha = scatter_softmax(logit, dst_idx)
+        gate  = σ(W_gate · [h_src ‖ time_feat])
+
+    Thanh phan:
+        - Q·K/√d:     content match giua src va dst
+        - b_ρ:         bias theo loai relation
+        - time_bias:   Fourier features cua Δt project ve scalar
+        - λ_β·log():   decay term, λ khac nhau theo behavior
+                       (purchase decay cham hon view)
+        - gate:        kiem soat luong thong tin tu src di qua
+    """
+
+    def __init__(
+        self,
+        dim: int,
+        n_relations: int = len(ALL_EDGE_TYPES),
+        n_beta: int = 4,
+        n_freqs: int = 16,
+        tau: float = 7.0,
+        in_dim: int | None = None,
+    ) -> None:
+        super().__init__()
+        self.in_dim = in_dim if in_dim is not None else dim
+        self.dim = dim
+        self.scale = dim ** -0.5
+        self.tau = tau
+
+        self.W_q = nn.Linear(self.in_dim, dim, bias=False)
+        self.W_k = nn.Linear(self.in_dim, dim, bias=False)
+
+        self.b_rho = nn.Parameter(torch.zeros(n_relations))
+
+        self.time_enc = FourierTimeEncoding(n_freqs)
+        self.time_bias_proj = nn.Linear(n_freqs * 2, 1, bias=False)
+
+        self.raw_lambda = nn.Parameter(torch.zeros(n_beta))
+
+        self.gate_proj = nn.Linear(self.in_dim + n_freqs * 2, 1)
+
+    def forward(
+        self,
+        h_src: Tensor,
+        h_dst: Tensor,
+        delta_t: Tensor,
+        rho: int,
+        beta: Tensor,
+        dst_idx: Tensor,
+    ) -> Tuple[Tensor, Tensor]:
+        """
+        Args:
+            h_src:   [E, dim]  source node embeddings
+            h_dst:   [E, dim]  destination node embeddings
+            delta_t: [E]       time deltas in days
+            rho:     int       relation index
+            beta:    [E]       behavior index per edge (0-3)
+            dst_idx: [E]       destination node indices
+
+        Returns:
+            alpha: [E]  attention weights (scatter-softmax normalised per dst)
+            gate:  [E]  value gate (sigmoid)
+        """
+        q = self.W_q(h_dst)
+        k = self.W_k(h_src)
+        qk = (q * k).sum(dim=-1) * self.scale
+
+        bias = self.b_rho[rho]
+
+        phi = self.time_enc(delta_t)
+        time_bias = self.time_bias_proj(phi).squeeze(-1)
+
+        lam = F.softplus(self.raw_lambda)
+        decay = lam[beta] * torch.log1p(delta_t / self.tau)
+
+        logit = qk + bias + time_bias - decay
+        alpha = self._scatter_softmax(logit, dst_idx)
+
+        gate_in = torch.cat([h_src, phi], dim=-1) 
+        gate = torch.sigmoid(self.gate_proj(gate_in).squeeze(-1))
+
+        return alpha, gate
+
+    @staticmethod
+    def _scatter_softmax(logit: Tensor, index: Tensor) -> Tensor:
+        """Numerically stable softmax grouped by destination node."""
+        N = int(index.max().item()) + 1
+        max_val = logit.new_full((N,), torch.finfo(logit.dtype).min)
+        max_val.scatter_reduce_(0, index, logit.detach(), reduce="amax", include_self=True)
+        exp_logit = (logit - max_val[index]).exp()
+
+        sum_exp = logit.new_zeros(N)
+        sum_exp.scatter_add_(0, index, exp_logit)
+        return exp_logit / (sum_exp[index] + 1e-12)
+
+
 class TemporalPurchaseIntentDecoder(nn.Module):
     """Bo giai ma y dinh mua hang theo thoi gian (TPID).
 
@@ -174,7 +307,86 @@ class TemporalPurchaseIntentDecoder(nn.Module):
 
         _, h_n = self.seq_encoder(x)
         return h_n.squeeze(0)
+    
+    def compute_popularity_score(
+        self,
+        item_idx: Tensor,
+        item_counts: Tensor,
+        item_decay_sum: Tensor,
+    ) -> Tensor:
+        """Compute time-decayed popularity score.
 
+        Args:
+            item_idx: [B] item indices
+            item_counts: [N, 3] per-behavior counts
+            item_decay_sum: [N, 3] sum of time-decayed weights
+
+        Returns:
+            s_pop: [B] popularity scores
+        """
+        eta = F.softplus(self.raw_eta)
+        counts = item_counts[item_idx]
+        decay_sum = item_decay_sum[item_idx]
+        weighted = (eta * decay_sum).sum(dim=-1)
+        return torch.log1p(weighted)
+
+    def forward(
+        self,
+        user_emb: Tensor,
+        item_emb: Tensor,
+        user_idx: Tensor,
+        item_idx: Tensor,
+        item_seq: Optional[Tensor] = None,
+        beh_seq: Optional[Tensor] = None,
+        ts_seq: Optional[Tensor] = None,
+        ref_time: Optional[float] = None,
+        user_n_events: Optional[Tensor] = None,
+        user_last_dt: Optional[Tensor] = None,
+        item_pop_decay: Optional[Tensor] = None,
+    ) -> Tensor:
+        """Compute final score with expert fusion.
+
+        Returns:
+            score: [B] final scores
+        """
+        h_u = user_emb[user_idx]
+        h_i = item_emb[item_idx]
+        s_graph = (h_u * h_i).sum(dim=-1) + self.item_bias(item_idx).squeeze(-1)
+
+        B = user_idx.size(0)
+        device = user_idx.device
+
+        if item_seq is not None and ref_time is not None:
+            z_u = self.encode_sequence(item_seq, beh_seq, ts_seq, ref_time, item_emb)
+            e_i = item_emb[item_idx]
+            s_seq = (z_u * e_i).sum(dim=-1)
+        else:
+            s_seq = torch.zeros(B, device=device)
+
+        if item_pop_decay is not None:
+            s_pop = self.compute_popularity_score(item_idx, item_pop_decay, item_pop_decay)
+        else:
+            s_pop = torch.zeros(B, device=device)
+
+        if user_n_events is None:
+            user_n_events = torch.ones(B, device=device)
+        if user_last_dt is None:
+            user_last_dt = torch.ones(B, device=device)
+
+        feat = torch.stack(
+            [
+                torch.log1p(user_n_events[user_idx].float()),
+                torch.log1p(user_last_dt[user_idx].float()),
+                (h_u * h_u).sum(dim=-1).sqrt(),
+            ],
+            dim=-1,
+        )
+
+        omega = F.softmax(self.fusion_mlp(feat), dim=-1)
+        score = omega[:, 0] * s_graph + omega[:, 1] * s_seq + omega[:, 2] * s_pop
+
+        return score
+    
 BEH_BUCKETS: Tuple[str, str, str, str] = ("view", "cart", "purchase", "struct")
 _BEH_W_INIT = torch.tensor([0.30, 0.50, 1.00, 0.40])
 
@@ -227,6 +439,7 @@ class BPATMPConv(nn.Module):
             n_beta=4,
             n_freqs=n_freqs,
             tau=tau,
+            in_dim=in_dim,
         )
         self.behavior_agg = BehaviorNormalizedAgg(out_dim)
 
