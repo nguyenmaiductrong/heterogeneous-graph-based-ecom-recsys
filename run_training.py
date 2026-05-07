@@ -185,6 +185,7 @@ def main():
     sampler = BehaviorAwareNeighborSampler(
         data=hetero,
         config=sampler_config,
+        device=device,  # Put CSR indices on GPU for faster sampling
     )
 
     train_cfg = TrainConfig.from_yaml(cfg)

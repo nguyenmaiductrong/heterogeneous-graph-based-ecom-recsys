@@ -16,8 +16,8 @@ model:
   n_intents: 32
 
 sampler:
-  hop1_budget: 10
-  hop2_budget: 5
+  hop1_budget: 8
+  hop2_budget: 4
   hop1_sample_replace: true
 
 training:
@@ -25,8 +25,8 @@ training:
   use_bf16: true
   batch_size: 8192
   device: cuda
-  epochs: 2 #30
-  eval_batch_size: 256 #16384
+  epochs: 30
+  eval_batch_size: 8192
   eval_every: 1
   eval_subsample: 10000   # 0 = full eval mỗi epoch
   eval_seed: 42
@@ -35,12 +35,15 @@ training:
   max_grad_norm: 1.0
   cl_weight: 0.3
   cl_g_weight: 1.0e-5
-  max_view_triplets: 20000 #4000000
+  max_view_triplets: 4000000
   num_neg: 8
-  num_workers: 4
+  num_workers: 8
   patience: 5
   save_dir: checkpoints-v1
   weight_decay: 1.0e-03
+  pin_memory: true
+  persistent_workers: true
+  prefetch_factor: 4
 
 # Đồng bộ với spark_config evaluation và TemporalSplitEvaluator (HR@K, NDCG@K).
 evaluation:
@@ -56,3 +59,11 @@ wandb:
   project: bpatmp-recsys
   run_name: bpatmp-v1
   save_every: 1
+
+# A100 optimizations
+a100:
+  allow_tf32: true
+  cudnn_benchmark: true
+  use_fused_adamw: true
+  compile_model: false
+  empty_cache_freq: 0
