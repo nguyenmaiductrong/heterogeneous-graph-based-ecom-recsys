@@ -246,6 +246,7 @@ def train_epoch(
     history_ptr: torch.Tensor | None = None,
     history_item: torch.Tensor | None = None,
     pop_dist: torch.Tensor | None = None,
+    scheduler: torch.optim.lr_scheduler.LRScheduler | None = None,
 ) -> dict[str, float]:
     model.train()
     total_loss = 0.0
@@ -359,6 +360,9 @@ def train_epoch(
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
             optimizer.step()
+
+        if scheduler is not None:
+            scheduler.step()
 
         total_loss += log["loss/total"]
         total_cl_loss += float(l_cl.detach())
@@ -559,16 +563,43 @@ def train(
     emb_params = list(model.input_proj.parameters()) + list(model.beh_proj.parameters())
     emb_ids = {id(p) for p in emb_params}
     other_params = [p for p in model.parameters() if id(p) not in emb_ids]
-    optimizer = torch.optim.Adam(
-        [
-            {"params": other_params, "weight_decay": cfg.weight_decay},
-            {"params": emb_params, "weight_decay": 0.0},
-        ],
-        lr=cfg.lr,
-    )
+
+    # Use fused AdamW on A100/H100 for better performance
+    use_fused = cfg.use_fused_adamw and device.type == "cuda"
+    try:
+        optimizer = torch.optim.AdamW(
+            [
+                {"params": other_params, "weight_decay": cfg.weight_decay},
+                {"params": emb_params, "weight_decay": 0.0},
+            ],
+            lr=cfg.lr,
+            fused=use_fused,
+        )
+        if use_fused:
+            logger.info("Using fused AdamW optimizer")
+    except TypeError:
+        optimizer = torch.optim.AdamW(
+            [
+                {"params": other_params, "weight_decay": cfg.weight_decay},
+                {"params": emb_params, "weight_decay": 0.0},
+            ],
+            lr=cfg.lr,
+        )
+        logger.info("Using standard AdamW optimizer")
     scaler = torch.amp.GradScaler(
         "cuda", enabled=cfg.amp and not cfg.use_bf16 and device.type == "cuda"
     )
+
+    # Learning rate scheduler with warmup
+    num_training_steps = cfg.epochs * len(loader)
+    num_warmup_steps = cfg.warmup_epochs * len(loader)
+    scheduler = None
+    if cfg.warmup_epochs > 0:
+        scheduler = _get_cosine_schedule_with_warmup(
+            optimizer, num_warmup_steps, num_training_steps, cfg.min_lr
+        )
+        logger.info(f"Using cosine LR schedule with {cfg.warmup_epochs} warmup epochs")
+
     evaluator = TemporalSplitEvaluator(ks=list(cfg.eval_ks), device=str(device))
 
     save_dir = Path(cfg.save_dir)
@@ -618,6 +649,11 @@ def train(
 
     epoch_pbar = tqdm(range(start_epoch, cfg.epochs), desc="epochs", dynamic_ncols=True)
     for epoch in epoch_pbar:
+        # Dynamic CL weight: start lower, ramp up after warmup
+        epoch_cl_weight = cfg.cl_weight
+        if cfg.warmup_epochs > 0 and epoch < cfg.warmup_epochs:
+            epoch_cl_weight = cfg.cl_weight * (epoch + 1) / cfg.warmup_epochs
+
         train_log = train_epoch(
             model,
             sampler,
@@ -630,11 +666,12 @@ def train(
             num_neg=cfg.num_neg,
             max_grad_norm=cfg.max_grad_norm,
             amp=cfg.amp,
-            cl_weight=cfg.cl_weight,
+            cl_weight=epoch_cl_weight,
             use_bf16=cfg.use_bf16,
             history_ptr=history_ptr,
             history_item=history_item,
             pop_dist=pop_dist,
+            scheduler=scheduler,
         )
         train_loss = train_log["train/loss"]
 
@@ -685,7 +722,8 @@ def train(
         _save_checkpoint(save_dir, epoch, model, optimizer, scaler, train_loss, metrics)
 
         if wandb_manager is not None:
-            wandb_run.log({**train_log, **metrics, "epoch": epoch})
+            current_lr = optimizer.param_groups[0]["lr"]
+            wandb_run.log({**train_log, **metrics, "epoch": epoch, "lr": current_lr, "cl_weight": epoch_cl_weight})
             cloud_ok = wandb_manager.save_checkpoint(
                 model,
                 optimizer,

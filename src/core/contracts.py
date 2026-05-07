@@ -30,8 +30,8 @@ RELATION_TYPES: list[tuple[str, str, str]] = [
 
 BEHAVIOR_LOSS_WEIGHTS: dict[str, float] = {
     "purchase": 1.0,
-    "cart": 0.3,
-    "view": 0.1,
+    "cart": 0.5,    # Cart->Purchase = 74%, strong signal
+    "view": 0.08,   # View->Purchase = 12.5%, noisy signal
 }
 
 BEHAVIOR_TO_ID: dict[str, int] = {"view": 0, "cart": 1, "purchase": 2}
