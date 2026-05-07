@@ -50,9 +50,9 @@ evaluation:
   metrics: ["HR@10", "HR@20", "HR@50", "NDCG@10", "NDCG@20", "NDCG@50"]
 
 wandb:
-  artifact_name: bagnn-checkpoint-v4
+  artifact_name: bpatmp-checkpoint-v1
   enabled: true
   entity: nguyenmaiductrong37-h-c-vi-n-c-ng-ngh-b-u-ch-nh-vi-n-th-ng
-  project: bagnn-recsys
-  run_name: bagnn-g4-v3
+  project: bpatmp-recsys
+  run_name: bpatmp-v1
   save_every: 1
