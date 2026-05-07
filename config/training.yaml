@@ -67,7 +67,7 @@ hierarchy_cl:
     - ["view", "purchase", 0.3]   # View->Purchase chỉ 12.5%
 
 wandb:
-  artifact_name: bpatmp-checkpoint-v1
+  artifact_name: bpatmp-checkpoint-v2
   enabled: true
   entity: nguyenmaiductrong37-h-c-vi-n-c-ng-ngh-b-u-ch-nh-vi-n-th-ng
   project: bpatmp-recsys
