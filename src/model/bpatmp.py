@@ -4,7 +4,10 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch import Tensor
+from torch.utils.checkpoint import checkpoint as grad_checkpoint
 from typing import Dict, Optional, Tuple
+
+from src.core.contracts import EMBED_DIM
 
 NODE_TYPES = ["user", "product", "category", "brand"]
 
@@ -128,18 +131,19 @@ class FourierTimeEncoding(nn.Module):
 class TemporalAttention(nn.Module):
     """Temporal attention voi decay-in-logit va value gate.
 
-    Cong thuc:
-        logit = Q·K/√d + b_ρ + time_bias − λ_β · log(1 + Δt/τ)
+    Cong thuc theo CLAUDE.md §8.4 va §8.6:
+        logit = Q·K/√d + b_ρ + u_{ρ,β}ᵀ Φ(Δt) − λ_β · log(1 + Δt/τ)
         alpha = scatter_softmax(logit, dst_idx)
-        gate  = σ(W_gate · [h_src ‖ time_feat])
+        gate  = σ(c_{ρ,β} + r_{ρ,β}ᵀ Φ(Δt) − μ_β · log(1 + Δt/τ))
 
     Thanh phan:
-        - Q·K/√d:     content match giua src va dst
-        - b_ρ:         bias theo loai relation
-        - time_bias:   Fourier features cua Δt project ve scalar
-        - λ_β·log():   decay term, λ khac nhau theo behavior
-                       (purchase decay cham hon view)
-        - gate:        kiem soat luong thong tin tu src di qua
+        - Q·K/√d:        content match giua src va dst
+        - b_ρ:           bias theo loai relation
+        - u_{ρ,β}ᵀ Φ:    time bias per relation-behavior
+        - λ_β·log():     decay term trong attention, khac nhau theo behavior
+        - c_{ρ,β}:       gate bias per relation-behavior
+        - r_{ρ,β}ᵀ Φ:    gate time projection per relation-behavior
+        - μ_β·log():     decay term trong gate, khac nhau theo behavior
     """
 
     def __init__(
@@ -156,6 +160,8 @@ class TemporalAttention(nn.Module):
         self.dim = dim
         self.scale = dim ** -0.5
         self.tau = tau
+        self.n_relations = n_relations
+        self.n_beta = n_beta
 
         self.W_q = nn.Linear(self.in_dim, dim, bias=False)
         self.W_k = nn.Linear(self.in_dim, dim, bias=False)
@@ -167,7 +173,11 @@ class TemporalAttention(nn.Module):
 
         self.raw_lambda = nn.Parameter(torch.zeros(n_beta))
 
-        self.gate_proj = nn.Linear(self.in_dim + n_freqs * 2, 1)
+        self.c_rho_beta = nn.Parameter(torch.zeros(n_relations, n_beta))
+        self.r_rho_beta = nn.Parameter(torch.zeros(n_relations, n_beta, n_freqs * 2))
+        self.raw_mu = nn.Parameter(torch.zeros(n_beta))
+
+        nn.init.xavier_uniform_(self.r_rho_beta)
 
     def forward(
         self,
@@ -206,8 +216,12 @@ class TemporalAttention(nn.Module):
         logit = qk + bias + time_bias - decay
         alpha = self._scatter_softmax(logit, dst_idx)
 
-        gate_in = torch.cat([h_src, phi], dim=-1) 
-        gate = torch.sigmoid(self.gate_proj(gate_in).squeeze(-1))
+        c = self.c_rho_beta[rho, beta]
+        r = self.r_rho_beta[rho, beta]
+        r_phi = (r * phi).sum(dim=-1)
+        mu = F.softplus(self.raw_mu)
+        gate_decay = mu[beta] * torch.log1p(delta_t / self.tau)
+        gate = torch.sigmoid(c + r_phi - gate_decay)
 
         return alpha, gate
 
