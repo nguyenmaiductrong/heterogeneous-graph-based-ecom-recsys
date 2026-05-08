@@ -66,5 +66,5 @@ a100:
   allow_tf32: true
   cudnn_benchmark: true
   use_fused_adamw: true
-  compile_model: false
+  compile_model: true
   empty_cache_freq: 0
