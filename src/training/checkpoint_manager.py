@@ -273,6 +273,15 @@ class CheckpointManager:
         except wandb.errors.CommError:
             logger.info("Artifact %s not found — fresh start.", ref)
             return None
+        except Exception as exc:
+            msg = str(exc).lower()
+            if "not committed" in msg or "400" in msg:
+                _log_warn(
+                    f"Artifact {ref} exists but was not committed (upload interrupted). "
+                    "Starting from epoch 0."
+                )
+                return None
+            raise
 
         pt_files = list(dl_dir.glob("*.pt")) + list(dl_dir.glob("*.pth"))
         if not pt_files:
