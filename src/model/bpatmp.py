@@ -90,11 +90,14 @@ class BehaviorAwareWeight(nn.Module):
     def forward(self, rho: int, beta: int) -> Tensor:
         """Compute W_{ρ,β} = W_ρ + A_ρ · diag(z_β) · B_ρᵀ"""
         b_idx = beta if beta >= 0 else 3
+        # Use W_rho's dtype as reference (fixes autocast + CUDA graph dtype mismatch)
+        target_dtype = self.W_rho.dtype
+        A_rho = self.A_rho[rho].to(target_dtype)
+        z_beta = self.z_beta[b_idx].to(target_dtype)
+        B_t = self.B_rho[rho].T.to(target_dtype)
+        W = self.W_rho[rho]
         # A_ρ · diag(z_β) = A_ρ * z_β (element-wise broadcast on last dim)
-        A_scaled = self.A_rho[rho] * self.z_beta[b_idx]  # [out_dim, rank]
-        # Ensure consistent dtype for matmul (fixes autocast + CUDA graph issue)
-        B_t = self.B_rho[rho].T.to(A_scaled.dtype)
-        W = self.W_rho[rho].to(A_scaled.dtype)
+        A_scaled = A_rho * z_beta  # [out_dim, rank]
         return W + A_scaled @ B_t
 
 class FourierTimeEncoding(nn.Module):

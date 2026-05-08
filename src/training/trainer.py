@@ -390,7 +390,6 @@ def export_embeddings(
     ref_time: float | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     model.eval()
-    torch._dynamo.reset()
     d = model.embed_dim
     _amp_dtype = torch.bfloat16 if use_bf16 else torch.float16
 
@@ -529,8 +528,8 @@ def train(
 
     # Compile model with torch.compile (PyTorch 2.0+)
     if cfg.compile_model and hasattr(torch, "compile"):
-        logger.info("Compiling model with torch.compile...")
-        model = torch.compile(model, mode="reduce-overhead")
+        logger.info("Compiling model with torch.compile (dynamic=True)...")
+        model = torch.compile(model, mode="default", dynamic=True)
 
     dataset = InteractionDataset(train_triplets)
     loader = DataLoader(
