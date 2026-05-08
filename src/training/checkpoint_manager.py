@@ -64,6 +64,7 @@ class CheckpointManager:
             id=run_id,
             resume="allow",
             config=config or {},
+            settings=wandb.Settings(init_timeout=300),
         )
         self._save_run_id(self.run.id)
         logger.info("W&B run ready: id=%s", self.run.id)

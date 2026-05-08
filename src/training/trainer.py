@@ -528,8 +528,15 @@ def train(
 
     # Compile model with torch.compile (PyTorch 2.0+)
     if cfg.compile_model and hasattr(torch, "compile"):
-        logger.info("Compiling model with torch.compile...")
-        model = torch.compile(model, mode="reduce-overhead")
+        # mode="default" + dynamic=True: hetero subgraph có shape thay đổi mỗi step,
+        # "reduce-overhead" dùng CUDA graphs nên sẽ recompile liên tục → chậm hơn.
+        logger.info("Compiling model with torch.compile (mode=default, dynamic=True)...")
+        try:
+            import torch._dynamo
+            torch._dynamo.config.cache_size_limit = 64
+        except ImportError:
+            pass
+        model = torch.compile(model, mode="default", dynamic=True)
 
     dataset = InteractionDataset(train_triplets)
     loader = DataLoader(
