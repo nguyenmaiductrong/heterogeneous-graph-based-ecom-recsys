@@ -25,30 +25,30 @@ sampler:
 training:
   amp: true
   use_bf16: true
-  batch_size: 16384
+  batch_size: 65536
   device: cuda
-  epochs: 40
-  eval_batch_size: 8192
-  eval_every: 1
-  eval_subsample: 0
+  epochs: 8
+  eval_batch_size: 16384
+  eval_every: 2
+  eval_subsample: 0.3
   eval_seed: 42
   l2_lambda: 5.0e-06
-  lr: 0.0008
+  lr: 0.0012
   max_grad_norm: 1.0
   cl_weight: 0.15
   cl_g_weight: 1.0e-5
   max_view_triplets: -1
-  num_neg: 8
+  num_neg: 4
   num_workers: 8
-  patience: 8
+  patience: 4
   save_dir: checkpoints-v2
   weight_decay: 5.0e-04
   pin_memory: true
   persistent_workers: true
   prefetch_factor: 4
-  warmup_epochs: 3
+  warmup_epochs: 1
   min_lr: 1.0e-6
-  gradient_accumulation: 2
+  gradient_accumulation: 1
 
 evaluation:
   full_ranking: true
