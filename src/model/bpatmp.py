@@ -746,7 +746,38 @@ class BPATMPModel(nn.Module):
         for ntype, emb in self.input_proj.items():
             if ntype in subgraph.node_types and hasattr(subgraph[ntype], "x"):
                 node_ids = subgraph[ntype].x
+                if node_ids.numel() > 0:
+                    nn_max = emb.num_embeddings
+                    ids_cpu = node_ids.detach().to("cpu")
+                    mx = int(ids_cpu.max().item())
+                    mn = int(ids_cpu.min().item())
+                    if mn < 0 or mx >= nn_max:
+                        raise RuntimeError(
+                            f"[BPATMP] OOB node ids for ntype='{ntype}': "
+                            f"ids in [{mn},{mx}] vs num_embeddings={nn_max}; "
+                            f"N={node_ids.numel()}. "
+                            f"Likely num_nodes_dict mismatch between sampler and model."
+                        )
                 x_dict[ntype] = emb(node_ids)
+
+        for edge_type in subgraph.edge_types:
+            store = subgraph[edge_type]
+            if not hasattr(store, "edge_index") or store.edge_index.numel() == 0:
+                continue
+            src_type, _, dst_type = edge_type
+            if src_type not in x_dict or dst_type not in x_dict:
+                continue
+            ei_cpu = store.edge_index.detach().to("cpu")
+            s_mn = int(ei_cpu[0].min().item()); s_mx = int(ei_cpu[0].max().item())
+            d_mn = int(ei_cpu[1].min().item()); d_mx = int(ei_cpu[1].max().item())
+            n_src = x_dict[src_type].size(0); n_dst = x_dict[dst_type].size(0)
+            if s_mn < 0 or s_mx >= n_src or d_mn < 0 or d_mx >= n_dst:
+                raise RuntimeError(
+                    f"[BPATMP] OOB edge_index for {edge_type}: "
+                    f"src in [{s_mn},{s_mx}] vs n_src={n_src}; "
+                    f"dst in [{d_mn},{d_mx}] vs n_dst={n_dst}; "
+                    f"E={ei_cpu.size(1)}. Sampler produced invalid local indices."
+                )
 
         edge_index_dict = {}
         edge_ts_dict = {}
