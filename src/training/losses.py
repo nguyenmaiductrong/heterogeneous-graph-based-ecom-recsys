@@ -2,9 +2,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.amp import autocast
-import numpy as np
-
-from src.core.contracts import BEHAVIOR_LOSS_WEIGHTS
 
 
 class PopularityBiasedNegativeSampler:
@@ -60,17 +57,35 @@ def bpr_loss(
 
 
 class MultiTaskBPRLoss(nn.Module):
+    """Per-behavior BPR with count-aware weights:
+
+        w_b = clip((N_purchase / N_b) ** alpha, w_min, 1.0)
+
+    purchase weight is 1.0 by construction. View/cart get scaled down because
+    REES46 has ~100x more views than purchases.
+    """
+
     BEHAVIOR_ORDER = ["view", "cart", "purchase"]
 
-    def __init__(self, behavior_counts: dict[str, int], l2_lambda: float = 1e-5):
+    def __init__(
+        self,
+        behavior_counts: dict[str, int],
+        l2_lambda: float = 1e-5,
+        alpha: float = 0.5,
+        w_min: float = 0.05,
+    ):
         super().__init__()
         self.l2_lambda = l2_lambda
-        raw = torch.tensor(
-            [BEHAVIOR_LOSS_WEIGHTS[b] / np.sqrt(behavior_counts[b]) for b in self.BEHAVIOR_ORDER],
-            dtype=torch.float32,
+        n_purchase = max(int(behavior_counts.get("purchase", 1)), 1)
+        weights = []
+        for b in self.BEHAVIOR_ORDER:
+            n_b = max(int(behavior_counts.get(b, 1)), 1)
+            w = (n_purchase / n_b) ** alpha
+            w = max(min(w, 1.0), w_min)
+            weights.append(w)
+        self.register_buffer(
+            "task_weights", torch.tensor(weights, dtype=torch.float32)
         )
-        normalized = raw / raw.sum() * len(self.BEHAVIOR_ORDER)
-        self.register_buffer("task_weights", normalized)
 
     @autocast("cuda", enabled=False)
     def forward(
@@ -287,12 +302,12 @@ def sample_aligned_negatives_local(
 
 
 class FunnelPriorLoss(nn.Module):
-    """Conversion-funnel score-ordering prior (Task 20, Step 1).
+    """Conversion-funnel score-ordering prior.
 
-    Enforces  s_strong ≥ s_weak + margin  for every consecutive pair
-    in the purchase funnel  (view → cart → purchase).
+    Enforces s_strong >= s_weak + margin for every consecutive pair in the
+    purchase funnel (view -> cart -> purchase):
 
-        L_conv = mean( relu(s_weak - s_strong + margin)² )
+        L_conv = mean( relu(s_weak - s_strong + margin) ** 2 )
 
     If the ordering is already satisfied the loss is exactly zero.
     """
@@ -341,16 +356,15 @@ class FunnelPriorLoss(nn.Module):
 
 
 class MonotonicDecayPriorLoss(nn.Module):
-    """Monotonic temporal-decay ordering prior (Task 20, Step 2).
+    """Monotonic temporal-decay ordering prior.
 
-    Enforces  λ_weak ≥ λ_strong  so that weaker signals (e.g. view)
-    fade faster than stronger ones (e.g. cart, purchase).
+    Enforces lam_weak >= lam_strong so that weaker signals (e.g. view) fade
+    faster than stronger ones (e.g. cart, purchase):
 
-        L_mono = mean( relu(λ_strong - λ_weak)² )
+        L_mono = mean( relu(lam_strong - lam_weak) ** 2 )
 
-    This works on the *per-behavior* decay rates (λ) used in
-    :class:`TemporalPurchaseIntentDecoder` or any temporal attention
-    where ``decay = λ · log(1 + Δt / τ)``.
+    Operates on per-behavior decay rates (post-softplus, positive) used in
+    the temporal attention where decay = lam * log(1 + dt / tau).
     """
 
     DECAY_ORDER: list[str] = ["view", "cart", "purchase"]
@@ -366,7 +380,7 @@ class MonotonicDecayPriorLoss(nn.Module):
                      Values should be *post-softplus* (positive).
 
         Returns:
-            Scalar loss (zero when λ_view ≥ λ_cart ≥ λ_purchase).
+            Scalar loss (zero when lam_view >= lam_cart >= lam_purchase).
         """
         device = next(iter(lambdas.values())).device
         loss = torch.tensor(0.0, device=device)
@@ -379,7 +393,7 @@ class MonotonicDecayPriorLoss(nn.Module):
                 continue
             lam_weak = lambdas[weak].float()
             lam_strong = lambdas[strong].float()
-            # weak signal must decay faster → λ_weak ≥ λ_strong
+            # weak signal must decay faster: lam_weak >= lam_strong
             violation = F.relu(lam_strong - lam_weak)
             loss = loss + (violation ** 2).mean()
             n_pairs += 1
@@ -391,11 +405,12 @@ class MonotonicDecayPriorLoss(nn.Module):
 
 
 class BPATMPTotalLoss(nn.Module):
-    """Combined loss for the BPATMP model (Task 24).
+    """Combined loss for the BPATMP model.
 
     Aggregates every training objective into a single call::
 
-        L = L_bpr + λ_CL · L_CL + λ_conv · L_conv + λ_mono · L_mono + λ_wd · ‖Θ‖²
+        L = L_bpr + lambda_cl * L_CL + lambda_conv * L_conv
+            + lambda_mono * L_mono + lambda_wd * ||theta||^2
 
     Each sub-loss is optional: if the corresponding input is ``None`` or
     empty, that term is silently skipped (and logged as 0).
@@ -415,11 +430,16 @@ class BPATMPTotalLoss(nn.Module):
         self,
         behavior_counts: dict[str, int],
         lambda_cl: float = 0.1,
-        lambda_conv: float = 0.01,
-        lambda_mono: float = 0.01,
+        lambda_conv: float = 0.0,
+        lambda_mono: float = 0.0,
         lambda_wd: float = 1e-5,
         margin: float = 0.1,
         tau: float = 0.1,
+        alpha: float = 0.5,
+        w_min: float = 0.05,
+        cl_hard_k: int = 32,
+        cl_min_pair_overlap: int = 4,
+        cl_pair_weights: list[tuple[str, str, float]] | None = None,
     ) -> None:
         super().__init__()
 
@@ -429,8 +449,15 @@ class BPATMPTotalLoss(nn.Module):
         self.lambda_wd = lambda_wd
 
         # Sub-modules — L2 handled here, so BPR gets l2_lambda=0
-        self.bpr = MultiTaskBPRLoss(behavior_counts, l2_lambda=0.0)
-        self.cl = HierarchicalMBCL(tau=tau)
+        self.bpr = MultiTaskBPRLoss(
+            behavior_counts, l2_lambda=0.0, alpha=alpha, w_min=w_min
+        )
+        self.cl = HierarchicalMBCL(
+            tau=tau,
+            pair_weights=cl_pair_weights,
+            hard_k=cl_hard_k,
+            min_pair_overlap=cl_min_pair_overlap,
+        )
         self.funnel = FunnelPriorLoss(margin=margin)
         self.mono = MonotonicDecayPriorLoss()
 
