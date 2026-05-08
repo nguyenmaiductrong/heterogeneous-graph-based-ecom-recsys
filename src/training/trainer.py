@@ -530,7 +530,7 @@ def train(
     # Compile model with torch.compile (PyTorch 2.0+)
     if cfg.compile_model and hasattr(torch, "compile"):
         logger.info("Compiling model with torch.compile...")
-        model = torch.compile(model, mode="reduce-overhead")
+        model = torch.compile(model, mode="default", dynamic=True)
 
     dataset = InteractionDataset(train_triplets)
     loader = DataLoader(
