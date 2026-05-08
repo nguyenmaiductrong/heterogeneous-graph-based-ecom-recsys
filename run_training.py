@@ -144,12 +144,59 @@ def main():
 
     hetero, node_counts, behavior_data = build_hetero_data(cfg)
 
+    # Sanity: HeteroData edge dtypes / bounds / contiguity.
+    # Skip leakage check here (needs val_gt), repeated below after we have it.
+    try:
+        from src.data_pipeline.sanity import sanity_check_heterodata
+        # Build a minimal triplets tensor for the sanity call
+        _tmp = []
+        for bid, b in enumerate(["view", "cart", "purchase"]):
+            n = len(behavior_data[b]["src"])
+            _tmp.append(np.stack([
+                behavior_data[b]["src"],
+                behavior_data[b]["dst"],
+                np.full(n, bid, dtype=np.int64),
+                behavior_data[b]["ts"],
+            ], axis=1))
+        _train_triplets_np = np.concatenate(_tmp, axis=0)
+        sanity_check_heterodata(
+            hetero,
+            torch.from_numpy(_train_triplets_np).long(),
+            test_triplets={},   # leakage check skipped (no eval pairs yet)
+            num_nodes_dict=node_counts,
+            check_leakage=False,
+            verbose=False,
+        )
+    except Exception as e:
+        logger.error("sanity_check_heterodata FAILED: %s", e)
+        raise
+
     data_dir = Path(cfg["data"]["data_dir"])
     with open(data_dir / "val_ground_truth.pkl", "rb") as f:
         val_gt = pickle.load(f)
+<<<<<<< Updated upstream
     purchase_only_path = data_dir / "train_mask_purchase_only.pkl"
     legacy_path = data_dir / "train_mask.pkl"
     mask_path = purchase_only_path if purchase_only_path.exists() else legacy_path
+=======
+
+    # Primary protocol masks ONLY train purchase, not view/cart.
+    primary_mask_path = data_dir / "train_mask_purchase_only.pkl"
+    legacy_mask_path = data_dir / "train_mask.pkl"
+    if primary_mask_path.exists():
+        mask_path = primary_mask_path
+    elif legacy_mask_path.exists():
+        logger.warning(
+            "train_mask_purchase_only.pkl not found; falling back to %s. "
+            "Verify this file masks ONLY train purchases (view/cart must NOT be masked).",
+            legacy_mask_path,
+        )
+        mask_path = legacy_mask_path
+    else:
+        raise FileNotFoundError(
+            f"Primary eval mask not found at {primary_mask_path} or {legacy_mask_path}"
+        )
+>>>>>>> Stashed changes
     with open(mask_path, "rb") as f:
         train_mask = pickle.load(f)
     logger.info(f"Loaded eval mask: {mask_path.name}")
@@ -165,6 +212,25 @@ def main():
                 logger.warning(
                     f"train_mask.pkl differs from train_mask_purchase_only.pkl on {mismatched} users"
                 )
+
+    seen_all_path = data_dir / "train_mask_seen_all.pkl"
+    if seen_all_path.exists() and mask_path == primary_mask_path:
+        with open(seen_all_path, "rb") as f:
+            seen_all = pickle.load(f)
+        if seen_all == train_mask:
+            raise AssertionError(
+                "train_mask_purchase_only.pkl == train_mask_seen_all.pkl. "
+                "Primary mask must NOT include view/cart."
+            )
+    logger.info(f"Loaded primary eval mask from {mask_path.name}")
+
+    # Sanity: every val positive must NOT lie in the primary mask.
+    try:
+        from src.data_pipeline.sanity import sanity_check_eval_mask
+        sanity_check_eval_mask(train_mask, val_gt, split_name="val")
+    except Exception as e:
+        logger.error("sanity_check_eval_mask FAILED: %s", e)
+        raise
 
     exclude_items = {u: list(items) for u, items in train_mask.items()}
     eval_user_ids = torch.tensor(list(val_gt.keys()), dtype=torch.long)

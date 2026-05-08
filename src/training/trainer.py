@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import torch
+import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
 from tqdm import tqdm
 
@@ -14,8 +15,7 @@ from src.model.bpatmp import BPATMPModel
 from src.core.contracts import BEHAVIOR_TYPES, EvalInput
 from src.graph.neighbor_sampler import BehaviorAwareNeighborSampler
 from src.training.losses import (
-    HierarchicalMBCL,
-    MultiTaskBPRLoss,
+    BPATMPTotalLoss,
     bpr_loss,
     build_user_history_csr,
     sample_aligned_negatives_local,
@@ -50,8 +50,14 @@ class TrainConfig:
     wandb_artifact_name: str = "bpatmp-checkpoint"
     wandb_save_every: int = 5
 
-    # Loss
-    cl_weight: float = 0.1
+    # Loss: L_total = L_BPR + lambda_cl*L_CL + lambda_conv*L_conv + lambda_mono*L_mono + lambda_wd*||theta||^2
+    cl_weight: float = 0.1          # lambda_cl
+    lambda_conv: float = 0.0        # lambda_conv (funnel prior; 0 = disabled)
+    lambda_mono: float = 0.0        # lambda_mono (monotonic decay prior; 0 = disabled)
+    funnel_margin: float = 0.1
+    bpr_alpha: float = 0.5          # exponent in w_b = (N_p / N_b) ** alpha
+    bpr_w_min: float = 0.05         # floor for w_b
+    cl_every_k: int = 1             # 1 = every step, K>1 = run CL every K steps
     use_bf16: bool = True
     max_view_triplets: int = -1
 
@@ -122,7 +128,13 @@ class TrainConfig:
             wandb_save_every=w.get("save_every", cls.wandb_save_every),
 
             # Loss
-            cl_weight=t.get("cl_weight", loss.get("lambda_cl", cls.cl_weight)),
+            cl_weight=loss.get("lambda_cl", t.get("cl_weight", cls.cl_weight)),
+            lambda_conv=loss.get("lambda_conv", cls.lambda_conv),
+            lambda_mono=loss.get("lambda_mono", cls.lambda_mono),
+            funnel_margin=loss.get("funnel_margin", cls.funnel_margin),
+            bpr_alpha=loss.get("alpha", cls.bpr_alpha),
+            bpr_w_min=loss.get("w_min", cls.bpr_w_min),
+            cl_every_k=int(t.get("cl_every_k", a100.get("cl_every_k", cls.cl_every_k))),
             use_bf16=t.get("use_bf16", cls.use_bf16),
             max_view_triplets=t.get("max_view_triplets", cls.max_view_triplets),
 
@@ -229,20 +241,34 @@ class InteractionDataset(Dataset):
         return self.triplets[idx]
 
 
+def _extract_per_behavior_lambdas(model: BPATMPModel) -> dict[str, torch.Tensor]:
+    """Mean across encoder layers of softplus(raw_lambda) per behavior.
+
+    Used by MonotonicDecayPriorLoss; returns a 1-element scalar tensor per
+    behavior so the prior can compute relu(lam_strong - lam_weak) ** 2.
+    """
+    base = model._orig_mod if hasattr(model, "_orig_mod") else model  # torch.compile unwrap
+    convs = base.encoder.convs
+    stacked = torch.stack(
+        [F.softplus(c.temporal_attn.raw_lambda) for c in convs], dim=0
+    )  # (n_layers, 3)
+    means = stacked.mean(dim=0)  # (3,)
+    return {beh: means[i] for i, beh in enumerate(BEHAVIOR_TYPES)}
+
+
 def train_epoch(
     model: BPATMPModel,
     sampler: BehaviorAwareNeighborSampler,
     dataloader: DataLoader,
     optimizer: torch.optim.Optimizer,
-    loss_fn: MultiTaskBPRLoss,
+    loss_fn: BPATMPTotalLoss,
     scaler: torch.amp.GradScaler,
     device: torch.device,
-    cl_fn: HierarchicalMBCL | None,
     num_neg: int = 1,
     max_grad_norm: float = 1.0,
     amp: bool = True,
-    cl_weight: float = 0.1,
     use_bf16: bool = True,
+    cl_every_k: int = 1,
     history_ptr: torch.Tensor | None = None,
     history_item: torch.Tensor | None = None,
     pop_dist: torch.Tensor | None = None,
@@ -252,21 +278,25 @@ def train_epoch(
     total_loss = 0.0
     total_cl_loss = 0.0
     n_steps = 0
+    n_skipped = 0  # batches dropped because no positive items found in subgraph
+    purchase_id = BEHAVIOR_TYPES.index("purchase")
 
     pbar = tqdm(dataloader, desc="train", leave=False, dynamic_ncols=True)
-    for raw_batch in pbar:
+    for step, raw_batch in enumerate(pbar):
         raw_batch = raw_batch.to(device)
         users_g = raw_batch[:, 0]
         items_g = raw_batch[:, 1]
         beh_ids = raw_batch[:, 2]
+        # ref_time = batch_min: every t_e < min(batch_ts) <= t_pos for ALL positives
+        # in the batch, so no future leakage. Tradeoff: late-batch positives lose
+        # access to recent context within (min, t_pos). Mitigated by large
+        # batch_size + i.i.d. shuffling so distribution is balanced.
         ref_time = float(raw_batch[:, 3].min().item()) if raw_batch.size(1) >= 4 else None
 
         unique_users = users_g.unique()
         subgraph = sampler.sample(unique_users, seed_type="user").to(device, non_blocking=True)
 
         optimizer.zero_grad(set_to_none=True)
-
-        l_cl = torch.zeros(1, device=device).squeeze()
 
         _amp_dtype = torch.bfloat16 if use_bf16 else torch.float16
         with torch.amp.autocast("cuda", dtype=_amp_dtype, enabled=amp and device.type == "cuda"):
@@ -288,6 +318,7 @@ def train_epoch(
             pp_loc = sort_ord[pos_p]
 
             if not found_p.any():
+                n_skipped += 1
                 continue
 
             u_loc = u_loc[found_p]
@@ -337,18 +368,45 @@ def train_epoch(
                 behavior_losses[beh_name] = bpr_loss(pos_s, neg_s)
 
             users_per_beh = {b: u_loc[bev == bid].unique() for bid, b in enumerate(BEHAVIOR_TYPES)}
-            if cl_fn is not None and cl_weight > 0:
-                l_cl = cl_fn(
-                    {b: beh_embs[b].float() for b in BEHAVIOR_TYPES},
-                    users_per_beh=users_per_beh,
-                )
+
+            # Funnel scores on the SHARED set of purchase positives so the
+            # ordering s_view < s_cart < s_purchase is computed on matched (u,i).
+            funnel_scores: dict[str, torch.Tensor] | None = None
+            if loss_fn.lambda_conv > 0:
+                p_mask = bev == purchase_id
+                if p_mask.any():
+                    u_p = u_loc[p_mask]
+                    pp_p = pp_loc[p_mask]
+                    pos_emb_p = item_emb[pp_p]
+                    funnel_scores = {
+                        b: (beh_embs[b][u_p] * pos_emb_p).sum(-1)
+                        for b in BEHAVIOR_TYPES
+                    }
+
+            lambdas_dict: dict[str, torch.Tensor] | None = None
+            if loss_fn.lambda_mono > 0:
+                lambdas_dict = _extract_per_behavior_lambdas(model)
+
+            # Skip CL on most steps when cl_every_k > 1: ~K times cheaper when lambda_cl > 0
+            run_cl = loss_fn.lambda_cl > 0 and (cl_every_k <= 1 or (step % cl_every_k == 0))
+            beh_embs_for_cl = (
+                {b: beh_embs[b].float() for b in BEHAVIOR_TYPES} if run_cl else None
+            )
+            users_per_beh_for_cl = users_per_beh if run_cl else None
 
         if not behavior_losses:
+            n_skipped += 1
             continue
 
-        l2 = model.embedding_l2_norm()
-        loss, log = loss_fn(behavior_losses, l2)
-        loss = loss + cl_weight * l_cl.float()
+        model_l2 = model.embedding_l2_norm()
+        loss, log = loss_fn(
+            behavior_losses=behavior_losses,
+            beh_embs=beh_embs_for_cl,
+            users_per_beh=users_per_beh_for_cl,
+            scores=funnel_scores,
+            lambdas=lambdas_dict,
+            model_params=model_l2,
+        )
 
         if amp:
             scaler.scale(loss).backward()
@@ -365,16 +423,24 @@ def train_epoch(
             scheduler.step()
 
         total_loss += log["loss/total"]
-        total_cl_loss += float(l_cl.detach())
+        total_cl_loss += float(log.get("loss/cl", 0.0))
         n_steps += 1
         pbar.set_postfix(
             loss=f"{log['loss/total']:.4f}",
-            cl=f"{float(l_cl.detach()):.4f}",
+            cl=f"{log.get('loss/cl', 0.0):.4f}",
+        )
+
+    if n_skipped > 0:
+        logger.warning(
+            "train_epoch: %d/%d batches skipped (no positive item in subgraph)",
+            n_skipped,
+            n_skipped + n_steps,
         )
 
     return {
         "train/loss": total_loss / max(n_steps, 1),
         "train/cl_loss": total_cl_loss / max(n_steps, 1),
+        "train/skipped_batches": float(n_skipped),
     }
 
 
@@ -550,15 +616,26 @@ def train(
         prefetch_factor=cfg.prefetch_factor if cfg.num_workers > 0 else None,
     )
 
-    loss_fn = MultiTaskBPRLoss(behavior_counts, l2_lambda=cfg.l2_lambda).to(device)
-    cl_fn = None
-    if cfg.hierarchy_cl_enabled and cfg.cl_weight > 0:
-        cl_fn = HierarchicalMBCL(
-            tau=cfg.hierarchy_cl_tau,
-            pair_weights=cfg.hierarchy_cl_pair_weights,
-            hard_k=cfg.hierarchy_cl_hard_k,
-            min_pair_overlap=cfg.hierarchy_cl_min_pair_overlap,
-        ).to(device)
+    loss_fn = BPATMPTotalLoss(
+        behavior_counts=behavior_counts,
+        lambda_cl=cfg.cl_weight if cfg.hierarchy_cl_enabled else 0.0,
+        lambda_conv=cfg.lambda_conv,
+        lambda_mono=cfg.lambda_mono,
+        lambda_wd=cfg.l2_lambda,
+        margin=cfg.funnel_margin,
+        tau=cfg.hierarchy_cl_tau,
+        alpha=cfg.bpr_alpha,
+        w_min=cfg.bpr_w_min,
+        cl_hard_k=cfg.hierarchy_cl_hard_k,
+        cl_min_pair_overlap=cfg.hierarchy_cl_min_pair_overlap,
+        cl_pair_weights=cfg.hierarchy_cl_pair_weights,
+    ).to(device)
+    logger.info(
+        "Loss: BPR(alpha=%.2f, w_min=%.2f, weights=%s) + lambda_cl=%.3f + lambda_conv=%.3f + lambda_mono=%.3f + lambda_wd=%.1e",
+        cfg.bpr_alpha, cfg.bpr_w_min,
+        loss_fn.bpr.task_weights.tolist(),
+        loss_fn.lambda_cl, loss_fn.lambda_conv, loss_fn.lambda_mono, loss_fn.lambda_wd,
+    )
 
     history_ptr, history_item = build_user_history_csr(train_triplets, n_users=n_users)
     history_ptr = history_ptr.to(device)
@@ -653,12 +730,11 @@ def train(
             loss_fn,
             scaler,
             device,
-            cl_fn=cl_fn,
             num_neg=cfg.num_neg,
             max_grad_norm=cfg.max_grad_norm,
             amp=cfg.amp,
-            cl_weight=cfg.cl_weight,
             use_bf16=cfg.use_bf16,
+            cl_every_k=cfg.cl_every_k,
             history_ptr=history_ptr,
             history_item=history_item,
             pop_dist=pop_dist,
