@@ -532,8 +532,8 @@ def train(
         # "reduce-overhead" dùng CUDA graphs nên sẽ recompile liên tục → chậm hơn.
         logger.info("Compiling model with torch.compile (mode=default, dynamic=True)...")
         try:
-            import torch._dynamo
-            torch._dynamo.config.cache_size_limit = 64
+            from torch import _dynamo as _td
+            _td.config.cache_size_limit = 64
         except ImportError:
             pass
         model = torch.compile(model, mode="default", dynamic=True)
