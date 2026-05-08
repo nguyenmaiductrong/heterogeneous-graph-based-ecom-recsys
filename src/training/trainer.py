@@ -37,7 +37,7 @@ class TrainConfig:
     max_grad_norm: float = 1.0
     amp: bool = True
     patience: int = 5
-    eval_every: int = 1
+    eval_every: int = 3
     eval_batch_size: int = 512
     num_workers: int = 4
     save_dir: str = "checkpoints/rees46"
@@ -73,7 +73,7 @@ class TrainConfig:
     warmup_epochs: int = 0
     min_lr: float = 1e-6
     use_fused_adamw: bool = True
-    compile_model: bool = False
+    compile_model: bool = True
     allow_tf32: bool = True
     cudnn_benchmark: bool = True
     pin_memory: bool = True

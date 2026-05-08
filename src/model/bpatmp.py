@@ -92,7 +92,10 @@ class BehaviorAwareWeight(nn.Module):
         b_idx = beta if beta >= 0 else 3
         # A_ρ · diag(z_β) = A_ρ * z_β (element-wise broadcast on last dim)
         A_scaled = self.A_rho[rho] * self.z_beta[b_idx]  # [out_dim, rank]
-        return self.W_rho[rho] + A_scaled @ self.B_rho[rho].T
+        # Ensure consistent dtype for matmul (fixes autocast + CUDA graph issue)
+        B_t = self.B_rho[rho].T.to(A_scaled.dtype)
+        W = self.W_rho[rho].to(A_scaled.dtype)
+        return W + A_scaled @ B_t
 
 class FourierTimeEncoding(nn.Module):
     """Bien doi thoi gian delta_t thanh vector Fourier features.
@@ -122,7 +125,7 @@ class FourierTimeEncoding(nn.Module):
         Returns:
             [*, 2 * n_freqs] Fourier time features.
         """
-        omega = F.softplus(self.raw_omega)
+        omega = F.softplus(self.raw_omega).to(delta_t.dtype)
         t = torch.log1p(delta_t).unsqueeze(-1)
         phase = t * omega
         return torch.cat([torch.cos(phase), torch.sin(phase)], dim=-1)
@@ -201,25 +204,26 @@ class TemporalAttention(nn.Module):
             alpha: [E]  attention weights (scatter-softmax normalised per dst)
             gate:  [E]  value gate (sigmoid)
         """
+        _dtype = h_dst.dtype
         q = self.W_q(h_dst)
         k = self.W_k(h_src)
         qk = (q * k).sum(dim=-1) * self.scale
 
-        bias = self.b_rho[rho]
+        bias = self.b_rho[rho].to(_dtype)
 
         phi = self.time_enc(delta_t)
         time_bias = self.time_bias_proj(phi).squeeze(-1)
 
-        lam = F.softplus(self.raw_lambda)
+        lam = F.softplus(self.raw_lambda).to(_dtype)
         decay = lam[beta] * torch.log1p(delta_t / self.tau)
 
         logit = qk + bias + time_bias - decay
         alpha = self._scatter_softmax(logit, dst_idx)
 
-        c = self.c_rho_beta[rho, beta]
-        r = self.r_rho_beta[rho, beta]
+        c = self.c_rho_beta[rho, beta].to(_dtype)
+        r = self.r_rho_beta[rho, beta].to(_dtype)
         r_phi = (r * phi).sum(dim=-1)
-        mu = F.softplus(self.raw_mu)
+        mu = F.softplus(self.raw_mu).to(_dtype)
         gate_decay = mu[beta] * torch.log1p(delta_t / self.tau)
         gate = torch.sigmoid(c + r_phi - gate_decay)
 
@@ -317,7 +321,7 @@ class TemporalPurchaseIntentDecoder(nn.Module):
         x = e_item + e_beh + e_pos + e_time
 
         mask = item_seq >= 0
-        x = x * mask.unsqueeze(-1).float()
+        x = x * mask.unsqueeze(-1).to(x.dtype)
 
         _, h_n = self.seq_encoder(x)
         return h_n.squeeze(0)
@@ -338,9 +342,8 @@ class TemporalPurchaseIntentDecoder(nn.Module):
         Returns:
             s_pop: [B] popularity scores
         """
-        eta = F.softplus(self.raw_eta)
-        counts = item_counts[item_idx]
         decay_sum = item_decay_sum[item_idx]
+        eta = F.softplus(self.raw_eta).to(decay_sum.dtype)
         weighted = (eta * decay_sum).sum(dim=-1)
         return torch.log1p(weighted)
 
@@ -365,6 +368,7 @@ class TemporalPurchaseIntentDecoder(nn.Module):
         """
         h_u = user_emb[user_idx]
         h_i = item_emb[item_idx]
+        _dtype = h_u.dtype
         s_graph = (h_u * h_i).sum(dim=-1) + self.item_bias(item_idx).squeeze(-1)
 
         B = user_idx.size(0)
@@ -375,12 +379,12 @@ class TemporalPurchaseIntentDecoder(nn.Module):
             e_i = item_emb[item_idx]
             s_seq = (z_u * e_i).sum(dim=-1)
         else:
-            s_seq = torch.zeros(B, device=device)
+            s_seq = torch.zeros(B, device=device, dtype=_dtype)
 
         if item_pop_decay is not None:
             s_pop = self.compute_popularity_score(item_idx, item_pop_decay, item_pop_decay)
         else:
-            s_pop = torch.zeros(B, device=device)
+            s_pop = torch.zeros(B, device=device, dtype=_dtype)
 
         if user_n_events is None:
             user_n_events = torch.ones(B, device=device)
@@ -419,13 +423,14 @@ class BehaviorNormalizedAgg(nn.Module):
         x_dict: Dict[str, Tensor],
     ) -> Dict[str, Tensor]:
         out: Dict[str, Tensor] = {}
+        _ref_dtype = next(iter(x_dict.values())).dtype if x_dict else torch.float32
         for t in NODE_TYPES:
             present = [(i, b) for i, b in enumerate(BEH_BUCKETS) if agg_pb[t][b] is not None]
             if not present:
                 if t in x_dict:
                     out[t] = x_dict[t]
                 continue
-            w = F.softmax(self.beh_w[t], dim=0)
+            w = F.softmax(self.beh_w[t], dim=0).to(_ref_dtype)
             mixed = sum(w[i] * self.norms[f"{t}__{b}"](agg_pb[t][b]) for i, b in present)
             if t in x_dict and x_dict[t].shape == mixed.shape:
                 mixed = mixed + x_dict[t]
@@ -523,9 +528,9 @@ class BPATMPConv(nn.Module):
 
             if edge_ts is not None and ref_time is not None:
                 delta_t = (ref_time - edge_ts.float()) / 86400.0
-                delta_t = delta_t.clamp(min=0)
+                delta_t = delta_t.clamp(min=0).to(h_src.dtype)
             else:
-                delta_t = torch.zeros(E, device=ref.device)
+                delta_t = torch.zeros(E, device=ref.device, dtype=h_src.dtype)
 
             if beta_raw < 0 and attr is not None and attr.numel() > 0:
                 origin = attr.view(-1).long().clamp(0, 2)
@@ -533,17 +538,18 @@ class BPATMPConv(nn.Module):
                 A_rho = self.baw.A_rho[rho]
                 B_rho = self.baw.B_rho[rho]
 
-                base_msg = torch.einsum("oi,ei->eo", W_rho, h_src)
-                h_B = h_src @ B_rho
+                _dtype = h_src.dtype
+                base_msg = torch.einsum("oi,ei->eo", W_rho.to(_dtype), h_src)
+                h_B = h_src @ B_rho.to(_dtype)
                 scaled = torch.zeros_like(h_B)
                 for b_idx in origin.unique():
                     mask = origin == b_idx
-                    scaled[mask] = (h_B[mask] * self.baw.z_beta[b_idx]).to(scaled.dtype)
-                msg = base_msg + scaled @ A_rho.T
+                    scaled[mask] = (h_B[mask] * self.baw.z_beta[b_idx].to(_dtype)).to(scaled.dtype)
+                msg = base_msg + scaled @ A_rho.T.to(_dtype)
                 beta_tensor = origin
             else:
                 beta_idx = beta_raw if beta_raw >= 0 else 3
-                W = self.baw(rho, beta_raw)
+                W = self.baw(rho, beta_raw).to(h_src.dtype)
                 msg = torch.einsum("oi,ei->eo", W, h_src)
                 beta_tensor = torch.full((E,), beta_idx, device=ref.device, dtype=torch.long)
 
@@ -678,9 +684,10 @@ class IntentCodebook(nn.Module):
         self._scale = dim**-0.5
 
     def _attend(self, x: Tensor, codebook: Tensor) -> Tensor:
-        attn = (x @ codebook.T) * self._scale
+        cb = codebook.to(x.dtype)
+        attn = (x @ cb.T) * self._scale
         attn = torch.softmax(attn, dim=-1)
-        return attn @ codebook
+        return attn @ cb
 
     def forward(self, x_dict: Dict[str, Tensor]) -> Dict[str, Tensor]:
         out = dict(x_dict)
