@@ -147,8 +147,24 @@ def main():
     data_dir = Path(cfg["data"]["data_dir"])
     with open(data_dir / "val_ground_truth.pkl", "rb") as f:
         val_gt = pickle.load(f)
-    with open(data_dir / "train_mask.pkl", "rb") as f:
+    purchase_only_path = data_dir / "train_mask_purchase_only.pkl"
+    legacy_path = data_dir / "train_mask.pkl"
+    mask_path = purchase_only_path if purchase_only_path.exists() else legacy_path
+    with open(mask_path, "rb") as f:
         train_mask = pickle.load(f)
+    logger.info(f"Loaded eval mask: {mask_path.name}")
+    if purchase_only_path.exists() and legacy_path.exists() and mask_path == purchase_only_path:
+        with open(legacy_path, "rb") as f:
+            legacy_mask = pickle.load(f)
+        if set(legacy_mask.keys()) == set(train_mask.keys()):
+            mismatched = sum(
+                1 for u in train_mask
+                if set(legacy_mask.get(u, [])) != set(train_mask[u])
+            )
+            if mismatched > 0:
+                logger.warning(
+                    f"train_mask.pkl differs from train_mask_purchase_only.pkl on {mismatched} users"
+                )
 
     exclude_items = {u: list(items) for u, items in train_mask.items()}
     eval_user_ids = torch.tensor(list(val_gt.keys()), dtype=torch.long)
