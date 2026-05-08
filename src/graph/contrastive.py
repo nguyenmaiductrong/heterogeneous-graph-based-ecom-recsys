@@ -61,13 +61,14 @@ class BoundedBAGraphAug(nn.Module):
         Returns:
             eps: [N] bounded noise magnitudes in [eps_min, eps_max]
         """
-        a1 = F.softplus(self.raw_a1)
-        a2 = F.softplus(self.raw_a2)
-        a3 = F.softplus(self.raw_a3)
-        a4 = F.softplus(self.raw_a4)
+        # Force float32 to avoid torch.compile dtype cache issues
+        a1 = F.softplus(self.raw_a1.float())
+        a2 = F.softplus(self.raw_a2.float())
+        a3 = F.softplus(self.raw_a3.float())
+        a4 = F.softplus(self.raw_a4.float())
 
         logit = (
-            self.a_0
+            self.a_0.float()
             + a1 / torch.sqrt(1.0 + n_purchase.float())
             + a2 / torch.sqrt(1.0 + degree.float())
             + a3 * n_tilde.float()
@@ -132,7 +133,7 @@ class BoundedBAGraphAug(nn.Module):
 
         return h_aug1, h_aug2, eps
     
-def contrastive_loss(
+    def contrastive_loss(
         self,
         h_aug1: Tensor,
         h_aug2: Tensor,
@@ -148,7 +149,8 @@ def contrastive_loss(
         Returns:
             loss: scalar contrastive loss
         """
-        sim = h_aug1 @ h_aug2.T / self.tau_cl
+        # Force float32 to avoid torch.compile dtype cache issues
+        sim = h_aug1.float() @ h_aug2.float().T / self.tau_cl
         labels = torch.arange(sim.size(0), device=sim.device)
         loss = F.cross_entropy(sim, labels)
         return loss

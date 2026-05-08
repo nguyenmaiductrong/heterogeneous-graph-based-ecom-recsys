@@ -8,46 +8,46 @@ data:
   struct_dir: /content/data/node_mappings
 
 model:
-  dropout: 0.2
-  embed_dim: 128
-  n_layers: 2
-  rank: 32
-  use_grad_checkpoint: true 
-  n_intents: 32
-  n_freqs: 16
-  tau: 5.0   
+  dropout: 0.15
+  embed_dim: 192
+  n_layers: 3
+  rank: 48
+  use_grad_checkpoint: false
+  n_intents: 48
+  n_freqs: 24
+  tau: 5.0
 
 sampler:
-  hop1_budget: 8
-  hop2_budget: 3
+  hop1_budget: 12
+  hop2_budget: 5
   hop1_sample_replace: false
 
 training:
   amp: true
   use_bf16: true
-  batch_size: 24576    
+  batch_size: 32768
   device: cuda
   epochs: 40
-  eval_batch_size: 8192
+  eval_batch_size: 16384
   eval_every: 1
-  eval_subsample: 10000
+  eval_subsample: 0
   eval_seed: 42
-  l2_lambda: 1.0e-05
-  lr: 0.001     
+  l2_lambda: 5.0e-06
+  lr: 0.0008
   max_grad_norm: 1.0
-  cl_weight: 0.2   
+  cl_weight: 0.15
   cl_g_weight: 1.0e-5
-  max_view_triplets: 2000000  
-  num_neg: 16     
+  max_view_triplets: -1
+  num_neg: 8
   num_workers: 8
-  patience: 6
+  patience: 8
   save_dir: checkpoints-v2
-  weight_decay: 1.0e-03
+  weight_decay: 5.0e-04
   pin_memory: true
   persistent_workers: true
   prefetch_factor: 4
-  warmup_epochs: 2
-  min_lr: 1.0e-5
+  warmup_epochs: 3
+  min_lr: 1.0e-6
   gradient_accumulation: 1
 
 evaluation:
@@ -58,25 +58,25 @@ evaluation:
 
 hierarchy_cl:
   enabled: true
-  tau: 0.1              # Standard temperature
-  hard_k: 32            # 32 hard negatives đủ cho 8192 batch
-  min_pair_overlap: 16  
+  tau: 0.07
+  hard_k: 48
+  min_pair_overlap: 8
   pair_weights:
-    - ["view", "cart", 0.2]       # View noisy (15% convert)
-    - ["cart", "purchase", 1.0]   # Cart->Purchase 74% - quan trọng nhất!
-    - ["view", "purchase", 0.3]   # View->Purchase chỉ 12.5%
+    - ["view", "cart", 0.15]
+    - ["cart", "purchase", 1.0]
+    - ["view", "purchase", 0.25]
 
 wandb:
   artifact_name: bpatmp-checkpoint-v2
   enabled: true
   entity: nguyenmaiductrong37-h-c-vi-n-c-ng-ngh-b-u-ch-nh-vi-n-th-ng
   project: bpatmp-recsys
-  run_name: bpatmp-v2
+  run_name: bpatmp-v2-a100-80gb
   save_every: 1
 
 a100:
   allow_tf32: true
   cudnn_benchmark: true
   use_fused_adamw: true
-  compile_model: true  
-  empty_cache_freq: 10  
+  compile_model: false
+  empty_cache_freq: 0
