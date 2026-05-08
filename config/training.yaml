@@ -12,7 +12,7 @@ model:
   embed_dim: 192
   n_layers: 3
   rank: 48
-  use_grad_checkpoint: false
+  use_grad_checkpoint: true
   n_intents: 48
   n_freqs: 24
   tau: 5.0
@@ -25,10 +25,10 @@ sampler:
 training:
   amp: true
   use_bf16: true
-  batch_size: 32768
+  batch_size: 16384
   device: cuda
   epochs: 40
-  eval_batch_size: 16384
+  eval_batch_size: 8192
   eval_every: 1
   eval_subsample: 0
   eval_seed: 42
@@ -48,7 +48,7 @@ training:
   prefetch_factor: 4
   warmup_epochs: 3
   min_lr: 1.0e-6
-  gradient_accumulation: 1
+  gradient_accumulation: 2
 
 evaluation:
   full_ranking: true
@@ -79,4 +79,4 @@ a100:
   cudnn_benchmark: true
   use_fused_adamw: true
   compile_model: false
-  empty_cache_freq: 0
+  empty_cache_freq: 50
