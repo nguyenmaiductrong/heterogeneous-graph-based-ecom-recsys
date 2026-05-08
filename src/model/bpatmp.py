@@ -543,7 +543,7 @@ class BPATMPConv(nn.Module):
                 scaled = torch.zeros_like(h_B)
                 for b_idx in origin.unique():
                     mask = origin == b_idx
-                    scaled[mask] = h_B[mask] * self.baw.z_beta[b_idx].to(_out_dtype)
+                    scaled[mask] = (h_B[mask] * self.baw.z_beta[b_idx].to(_out_dtype)).to(scaled.dtype)
                 msg = base_msg + scaled @ A_rho.T
                 beta_tensor = origin
             else:
