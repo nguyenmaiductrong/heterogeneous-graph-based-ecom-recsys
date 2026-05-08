@@ -18,8 +18,8 @@ model:
   tau: 5.0
 
 sampler:
-  hop1_budget: 12
-  hop2_budget: 5
+  hop1_budget: 8
+  hop2_budget: 3
   hop1_sample_replace: false
 
 training:
