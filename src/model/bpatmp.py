@@ -745,7 +745,9 @@ class BPATMPModel(nn.Module):
             store = subgraph[edge_type]
             if hasattr(store, "edge_index") and store.edge_index.numel() > 0:
                 edge_index_dict[edge_type] = store.edge_index
-                if hasattr(store, "ts"):
+                if hasattr(store, "edge_ts"):
+                    edge_ts_dict[edge_type] = store.edge_ts
+                elif hasattr(store, "ts"):
                     edge_ts_dict[edge_type] = store.ts
                 if hasattr(store, "edge_attr"):
                     edge_attr_dict[edge_type] = store.edge_attr
