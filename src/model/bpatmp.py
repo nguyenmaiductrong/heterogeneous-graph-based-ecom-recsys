@@ -88,19 +88,13 @@ class BehaviorAwareWeight(nn.Module):
         nn.init.ones_(self.z_beta)  # Initialize to 1 for stable start
 
     def forward(self, rho: int, beta: int) -> Tensor:
-        """Compute W_{ρ,β} = W_ρ + A_ρ · diag(z_β) · B_ρᵀ
-
-        Note: Always compute in float32 to avoid dtype mismatch when torch.compile
-        caches graphs. The caller (.to(h_src.dtype)) handles final dtype conversion.
-        """
+        """Compute W_{ρ,β} = W_ρ + A_ρ · diag(z_β) · B_ρᵀ"""
         b_idx = beta if beta >= 0 else 3
-        # Force float32 for all ops to avoid CUDA graph dtype mismatch
-        W = self.W_rho[rho].float()
-        A_rho = self.A_rho[rho].float()
-        z_beta = self.z_beta[b_idx].float()
-        B_t = self.B_rho[rho].T.float()
-        # A_ρ · diag(z_β) = A_ρ * z_β (element-wise broadcast on last dim)
-        A_scaled = A_rho * z_beta  # [out_dim, rank]
+        W = self.W_rho[rho]
+        A_rho = self.A_rho[rho]
+        z_beta = self.z_beta[b_idx]
+        B_t = self.B_rho[rho].T
+        A_scaled = A_rho * z_beta
         return W + A_scaled @ B_t
 
 class FourierTimeEncoding(nn.Module):
@@ -124,20 +118,10 @@ class FourierTimeEncoding(nn.Module):
         self.raw_omega = nn.Parameter(torch.randn(n_freqs))
 
     def forward(self, delta_t: Tensor) -> Tensor:
-        """
-        Args:
-            delta_t: [*] arbitrary-shape tensor of time deltas (in days).
-
-        Returns:
-            [*, 2 * n_freqs] Fourier time features.
-        """
-        # Force float32 to avoid torch.compile dtype cache issues
-        _out_dtype = delta_t.dtype
-        omega = F.softplus(self.raw_omega.float())
-        t = torch.log1p(delta_t.float()).unsqueeze(-1)
+        omega = F.softplus(self.raw_omega).to(delta_t.dtype)
+        t = torch.log1p(delta_t).unsqueeze(-1)
         phase = t * omega
-        result = torch.cat([torch.cos(phase), torch.sin(phase)], dim=-1)
-        return result.to(_out_dtype)
+        return torch.cat([torch.cos(phase), torch.sin(phase)], dim=-1)
 
 
 class TemporalAttention(nn.Module):
@@ -214,34 +198,32 @@ class TemporalAttention(nn.Module):
             gate:  [E]  value gate (sigmoid)
         """
         _out_dtype = h_dst.dtype
-        # Force float32 for all internal ops to avoid torch.compile dtype cache issues
-        h_dst_f = h_dst.float()
-        h_src_f = h_src.float()
-        delta_t_f = delta_t.float()
+        delta_t_c = delta_t.to(_out_dtype)
 
-        q = self.W_q(h_dst_f)
-        k = self.W_k(h_src_f)
+        q = self.W_q(h_dst)
+        k = self.W_k(h_src)
         qk = (q * k).sum(dim=-1) * self.scale
 
-        bias = self.b_rho[rho].float()
+        bias = self.b_rho[rho].to(_out_dtype)
 
-        phi = self.time_enc(delta_t_f)
+        phi = self.time_enc(delta_t_c)
         time_bias = self.time_bias_proj(phi).squeeze(-1)
 
-        lam = F.softplus(self.raw_lambda.float())
-        decay = lam[beta] * torch.log1p(delta_t_f / self.tau)
+        lam = F.softplus(self.raw_lambda).to(_out_dtype)
+        decay = lam[beta] * torch.log1p(delta_t_c / self.tau)
 
-        logit = qk + bias + time_bias - decay
-        alpha = self._scatter_softmax(logit, dst_idx)
+        # scatter_softmax in float32 for numerical stability (tiny [E] tensor)
+        logit = (qk + bias + time_bias - decay).float()
+        alpha = self._scatter_softmax(logit, dst_idx).to(_out_dtype)
 
-        c = self.c_rho_beta[rho, beta].float()
-        r = self.r_rho_beta[rho, beta].float()
+        c = self.c_rho_beta[rho, beta].to(_out_dtype)
+        r = self.r_rho_beta[rho, beta].to(_out_dtype)
         r_phi = (r * phi).sum(dim=-1)
-        mu = F.softplus(self.raw_mu.float())
-        gate_decay = mu[beta] * torch.log1p(delta_t_f / self.tau)
+        mu = F.softplus(self.raw_mu).to(_out_dtype)
+        gate_decay = mu[beta] * torch.log1p(delta_t_c / self.tau)
         gate = torch.sigmoid(c + r_phi - gate_decay)
 
-        return alpha.to(_out_dtype), gate.to(_out_dtype)
+        return alpha, gate
 
     @staticmethod
     def _scatter_softmax(logit: Tensor, index: Tensor) -> Tensor:
@@ -447,12 +429,11 @@ class BehaviorNormalizedAgg(nn.Module):
                 if t in x_dict:
                     out[t] = x_dict[t]
                 continue
-            # Force float32 for softmax to avoid torch.compile dtype cache issues
-            w = F.softmax(self.beh_w[t].float(), dim=0)
-            mixed = sum(w[i] * self.norms[f"{t}__{b}"](agg_pb[t][b].float()) for i, b in present)
+            w = F.softmax(self.beh_w[t], dim=0).to(_ref_dtype)
+            mixed = sum(w[i] * self.norms[f"{t}__{b}"](agg_pb[t][b]) for i, b in present)
             if t in x_dict and x_dict[t].shape == mixed.shape:
-                mixed = mixed + x_dict[t].float()
-            out[t] = F.elu(mixed).to(_ref_dtype)
+                mixed = mixed + x_dict[t]
+            out[t] = F.elu(mixed)
         return out
 
 class BPATMPConv(nn.Module):
@@ -544,35 +525,31 @@ class BPATMPConv(nn.Module):
                         attr = attr.view(-1)[keep].view(-1, 1)
                     E = h_src.size(0)
 
+            _out_dtype = h_src.dtype
             if edge_ts is not None and ref_time is not None:
-                delta_t = (ref_time - edge_ts.float()) / 86400.0
-                delta_t = delta_t.clamp(min=0)  # keep float32, temporal_attn handles dtype
+                # compute in fp32 (Unix seconds ~1.7e9 exceeds bf16 precision), then downcast
+                delta_t = ((ref_time - edge_ts.float()) / 86400.0).clamp(min=0).to(_out_dtype)
             else:
-                delta_t = torch.zeros(E, device=ref.device, dtype=torch.float32)
+                delta_t = torch.zeros(E, device=ref.device, dtype=_out_dtype)
 
             if beta_raw < 0 and attr is not None and attr.numel() > 0:
                 origin = attr.view(-1).long().clamp(0, 2)
-                # Force float32 for all matmul ops to avoid torch.compile dtype cache issues
-                _out_dtype = h_src.dtype
-                h_src_f = h_src.float()
-                W_rho = self.baw.W_rho[rho].float()
-                A_rho = self.baw.A_rho[rho].float()
-                B_rho = self.baw.B_rho[rho].float()
+                W_rho = self.baw.W_rho[rho].to(_out_dtype)
+                A_rho = self.baw.A_rho[rho].to(_out_dtype)
+                B_rho = self.baw.B_rho[rho].to(_out_dtype)
 
-                base_msg = torch.einsum("oi,ei->eo", W_rho, h_src_f)
-                h_B = h_src_f @ B_rho
-                scaled = torch.zeros(h_B.shape, device=h_B.device, dtype=torch.float32)
+                base_msg = torch.einsum("oi,ei->eo", W_rho, h_src)
+                h_B = h_src @ B_rho
+                scaled = torch.zeros_like(h_B)
                 for b_idx in origin.unique():
                     mask = origin == b_idx
-                    scaled[mask] = h_B[mask] * self.baw.z_beta[b_idx].float()
-                msg = (base_msg + scaled @ A_rho.T).to(_out_dtype)
+                    scaled[mask] = h_B[mask] * self.baw.z_beta[b_idx].to(_out_dtype)
+                msg = base_msg + scaled @ A_rho.T
                 beta_tensor = origin
             else:
                 beta_idx = beta_raw if beta_raw >= 0 else 3
-                # Force float32 for einsum to avoid torch.compile dtype cache issues
-                _out_dtype = h_src.dtype
-                W = self.baw(rho, beta_raw)  # already float32
-                msg = torch.einsum("oi,ei->eo", W, h_src.float()).to(_out_dtype)
+                W = self.baw(rho, beta_raw).to(_out_dtype)
+                msg = torch.einsum("oi,ei->eo", W, h_src)
                 beta_tensor = torch.full((E,), beta_idx, device=ref.device, dtype=torch.long)
 
             alpha, gate = self.temporal_attn(h_src, h_dst, delta_t, rho, beta_tensor, dst_idx)
@@ -706,13 +683,10 @@ class IntentCodebook(nn.Module):
         self._scale = dim**-0.5
 
     def _attend(self, x: Tensor, codebook: Tensor) -> Tensor:
-        # Force float32 to avoid torch.compile dtype cache issues
-        _out_dtype = x.dtype
-        x_f = x.float()
-        cb = codebook.float()
-        attn = (x_f @ cb.T) * self._scale
-        attn = torch.softmax(attn, dim=-1)
-        return (attn @ cb).to(_out_dtype)
+        cb = codebook.to(x.dtype)
+        attn = (x @ cb.T) * self._scale
+        attn = torch.softmax(attn.float(), dim=-1).to(x.dtype)
+        return attn @ cb
 
     def forward(self, x_dict: Dict[str, Tensor]) -> Dict[str, Tensor]:
         out = dict(x_dict)
@@ -812,7 +786,7 @@ class BPATMPModel(nn.Module):
 
         if return_beh_embs:
             beh_embs = {
-                beh: self.beh_proj[beh](beh_user_agg.get(beh, torch.zeros_like(user_emb)).float()).to(user_emb.dtype)
+                beh: self.beh_proj[beh](beh_user_agg.get(beh, torch.zeros_like(user_emb)))
                 for beh in ("view", "cart", "purchase")
             }
             return user_emb, item_emb, beh_embs
