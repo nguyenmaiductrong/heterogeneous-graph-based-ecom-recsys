@@ -474,6 +474,20 @@ class BPATMPConv(nn.Module):
                 continue
 
             src_idx, dst_idx = edge_index
+            n_src = x_dict[src_type].size(0)
+            n_dst = x_dict[dst_type].size(0)
+            if src_idx.numel() > 0:
+                s_max = int(src_idx.max().item())
+                d_max = int(dst_idx.max().item())
+                s_min = int(src_idx.min().item())
+                d_min = int(dst_idx.min().item())
+                if s_max >= n_src or d_max >= n_dst or s_min < 0 or d_min < 0:
+                    raise RuntimeError(
+                        f"OOB edge {edge_type}: "
+                        f"src_idx in [{s_min},{s_max}] vs n_src={n_src}; "
+                        f"dst_idx in [{d_min},{d_max}] vs n_dst={n_dst}; "
+                        f"E={src_idx.numel()}"
+                    )
             h_src = x_dict[src_type][src_idx]
             h_dst = x_dict[dst_type][dst_idx]
             E = h_src.size(0)
