@@ -498,14 +498,18 @@ class BPATMPConv(nn.Module):
 
             edge_ts = (edge_ts_dict or {}).get(edge_type)
             if edge_ts is not None:
-                edge_ts = edge_ts.to(device=ref.device)
+                edge_ts = edge_ts.to(device=ref.device).view(-1)
+                if edge_ts.numel() != src_idx.numel():
+                    edge_ts = None
 
             attr = attr.to(device=ref.device) if attr is not None else None
+            if attr is not None and attr.view(-1).numel() != src_idx.numel():
+                attr = None
             if edge_ts is not None and ref_time is not None:
                 keep = edge_ts.float() < float(ref_time)
-                if not keep.any():
+                if not bool(keep.any().item()):
                     continue
-                if not bool(keep.all()):
+                if not bool(keep.all().item()):
                     src_idx = src_idx[keep]
                     dst_idx = dst_idx[keep]
                     h_src = h_src[keep]
