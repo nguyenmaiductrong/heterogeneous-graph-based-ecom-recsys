@@ -246,6 +246,7 @@ def train_epoch(
     history_ptr: torch.Tensor | None = None,
     history_item: torch.Tensor | None = None,
     pop_dist: torch.Tensor | None = None,
+    scheduler: torch.optim.lr_scheduler._LRScheduler | None = None,
 ) -> dict[str, float]:
     model.train()
     total_loss = 0.0
@@ -261,7 +262,7 @@ def train_epoch(
         ref_time = float(raw_batch[:, 3].min().item()) if raw_batch.size(1) >= 4 else None
 
         unique_users = users_g.unique()
-        subgraph = sampler.sample(unique_users, seed_type="user").to(device)
+        subgraph = sampler.sample(unique_users, seed_type="user").to(device, non_blocking=True)
 
         optimizer.zero_grad(set_to_none=True)
 
@@ -359,6 +360,9 @@ def train_epoch(
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
             optimizer.step()
+
+        if scheduler is not None:
+            scheduler.step()
 
         total_loss += log["loss/total"]
         total_cl_loss += float(l_cl.detach())
@@ -559,15 +563,31 @@ def train(
     emb_params = list(model.input_proj.parameters()) + list(model.beh_proj.parameters())
     emb_ids = {id(p) for p in emb_params}
     other_params = [p for p in model.parameters() if id(p) not in emb_ids]
-    optimizer = torch.optim.Adam(
+    use_fused = cfg.use_fused_adamw and device.type == "cuda"
+    optimizer = torch.optim.AdamW(
         [
             {"params": other_params, "weight_decay": cfg.weight_decay},
             {"params": emb_params, "weight_decay": 0.0},
         ],
         lr=cfg.lr,
+        fused=use_fused,
     )
+    logger.info("Optimizer: AdamW (fused=%s, wd=%.1e on non-embedding)", use_fused, cfg.weight_decay)
     scaler = torch.amp.GradScaler(
         "cuda", enabled=cfg.amp and not cfg.use_bf16 and device.type == "cuda"
+    )
+
+    steps_per_epoch = max(1, len(loader))
+    num_training_steps = cfg.epochs * steps_per_epoch
+    num_warmup_steps = max(0, cfg.warmup_epochs) * steps_per_epoch
+    scheduler = _get_cosine_schedule_with_warmup(
+        optimizer, num_warmup_steps, num_training_steps, min_lr=cfg.min_lr / max(cfg.lr, 1e-12)
+    )
+    logger.info(
+        "LR scheduler: cosine warmup — warmup_steps=%d, total_steps=%d, peak_lr=%.2e",
+        num_warmup_steps,
+        num_training_steps,
+        cfg.lr,
     )
     evaluator = TemporalSplitEvaluator(ks=list(cfg.eval_ks), device=str(device))
 
@@ -606,7 +626,7 @@ def train(
     if wandb_manager is not None:
         start_epoch = wandb_manager.load_checkpoint(model, optimizer, scaler, device)
 
-    if start_epoch == 0:
+    if start_epoch == 0 and wandb_manager is None:
         latest_ckpt = _find_latest_checkpoint(save_dir)
         if latest_ckpt is not None:
             start_epoch = _load_checkpoint(latest_ckpt, model, optimizer, scaler, device)
@@ -635,8 +655,10 @@ def train(
             history_ptr=history_ptr,
             history_item=history_item,
             pop_dist=pop_dist,
+            scheduler=scheduler,
         )
         train_loss = train_log["train/loss"]
+        train_log["train/lr"] = float(optimizer.param_groups[0]["lr"])
 
         row = f"Epoch {epoch:03d} | " + " | ".join(f"{k}={v:.4f}" for k, v in train_log.items())
 
