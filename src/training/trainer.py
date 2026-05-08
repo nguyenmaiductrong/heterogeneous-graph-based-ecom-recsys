@@ -390,6 +390,7 @@ def export_embeddings(
     ref_time: float | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     model.eval()
+    torch._dynamo.reset()
     d = model.embed_dim
     _amp_dtype = torch.bfloat16 if use_bf16 else torch.float16
 
