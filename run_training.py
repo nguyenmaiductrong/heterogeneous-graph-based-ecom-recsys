@@ -174,29 +174,25 @@ def main():
     data_dir = Path(cfg["data"]["data_dir"])
     with open(data_dir / "val_ground_truth.pkl", "rb") as f:
         val_gt = pickle.load(f)
-<<<<<<< Updated upstream
-    purchase_only_path = data_dir / "train_mask_purchase_only.pkl"
-    legacy_path = data_dir / "train_mask.pkl"
-    mask_path = purchase_only_path if purchase_only_path.exists() else legacy_path
-=======
 
     # Primary protocol masks ONLY train purchase, not view/cart.
-    primary_mask_path = data_dir / "train_mask_purchase_only.pkl"
-    legacy_mask_path = data_dir / "train_mask.pkl"
-    if primary_mask_path.exists():
-        mask_path = primary_mask_path
-    elif legacy_mask_path.exists():
+    purchase_only_path = data_dir / "train_mask_purchase_only.pkl"
+    legacy_path = data_dir / "train_mask.pkl"
+    primary_mask_path = purchase_only_path
+    legacy_mask_path = legacy_path
+    if purchase_only_path.exists():
+        mask_path = purchase_only_path
+    elif legacy_path.exists():
         logger.warning(
             "train_mask_purchase_only.pkl not found; falling back to %s. "
             "Verify this file masks ONLY train purchases (view/cart must NOT be masked).",
-            legacy_mask_path,
+            legacy_path,
         )
-        mask_path = legacy_mask_path
+        mask_path = legacy_path
     else:
         raise FileNotFoundError(
-            f"Primary eval mask not found at {primary_mask_path} or {legacy_mask_path}"
+            f"Primary eval mask not found at {purchase_only_path} or {legacy_path}"
         )
->>>>>>> Stashed changes
     with open(mask_path, "rb") as f:
         train_mask = pickle.load(f)
     logger.info(f"Loaded eval mask: {mask_path.name}")
