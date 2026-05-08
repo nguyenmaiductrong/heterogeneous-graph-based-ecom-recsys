@@ -561,7 +561,7 @@ class BPATMPConv(nn.Module):
 
                 base_msg = torch.einsum("oi,ei->eo", W_rho, h_src_f)
                 h_B = h_src_f @ B_rho
-                scaled = torch.zeros_like(h_B)
+                scaled = torch.zeros(h_B.shape, device=h_B.device, dtype=torch.float32)
                 for b_idx in origin.unique():
                     mask = origin == b_idx
                     scaled[mask] = h_B[mask] * self.baw.z_beta[b_idx].float()
