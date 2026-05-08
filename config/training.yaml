@@ -38,7 +38,7 @@ training:
   cl_weight: 0.1
   max_view_triplets: 4000000
   num_neg: 16
-  num_workers: 8
+  num_workers: 4
   patience: 8
   save_dir: checkpoints-v2
   weight_decay: 1.0e-02
@@ -66,5 +66,5 @@ a100:
   allow_tf32: true
   cudnn_benchmark: true
   use_fused_adamw: true
-  compile_model: true
+  compile_model: false
   empty_cache_freq: 0
