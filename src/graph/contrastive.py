@@ -131,27 +131,16 @@ class BoundedBAGraphAug(nn.Module):
         h_aug2 = self.augment(h, eps)
 
         return h_aug1, h_aug2, eps
-    
-def contrastive_loss(
+
+    def contrastive_loss(
         self,
         h_aug1: Tensor,
         h_aug2: Tensor,
     ) -> Tensor:
-        """Compute InfoNCE contrastive loss.
-
-        L_CL = -sum_v log[ exp(sim(h1_v, h2_v)/tau) / sum_v' exp(sim(h1_v, h2_v')/tau) ]
-
-        Args:
-            h_aug1: [N, dim] first view (L2 normalized)
-            h_aug2: [N, dim] second view (L2 normalized)
-
-        Returns:
-            loss: scalar contrastive loss
-        """
+        """InfoNCE on the two augmented views (rows aligned as positives)."""
         sim = h_aug1 @ h_aug2.T / self.tau_cl
         labels = torch.arange(sim.size(0), device=sim.device)
-        loss = F.cross_entropy(sim, labels)
-        return loss
+        return F.cross_entropy(sim, labels)
 
 
 def compute_ba_graphaug_loss(

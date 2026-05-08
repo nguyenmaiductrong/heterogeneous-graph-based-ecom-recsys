@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import torch
+import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
 from tqdm import tqdm
 
@@ -82,6 +83,15 @@ class TrainConfig:
     log_every: int = 50
     empty_cache_freq: int = 0
 
+    aux_loss_alpha: float = 0.4
+    aux_loss_w_min: float = 0.1
+
+    use_tpid: bool = False
+    tpid_seq_len: int = 20
+    tpid_n_freqs: int = 16
+    tpid_tau_pop: float = 30.0
+    tpid_train_cutoff_ts: float = 0.0  # required when use_tpid=True (Unix seconds)
+
     @classmethod
     def from_yaml(cls, cfg: dict) -> "TrainConfig":
         t = cfg.get("training", {})
@@ -154,6 +164,15 @@ class TrainConfig:
             prefetch_factor=t.get("prefetch_factor", cls.prefetch_factor),
             log_every=w.get("log_every", cls.log_every),
             empty_cache_freq=a100.get("empty_cache_freq", cls.empty_cache_freq),
+            aux_loss_alpha=float(loss.get("aux_alpha", cls.aux_loss_alpha)),
+            aux_loss_w_min=float(loss.get("aux_w_min", cls.aux_loss_w_min)),
+            use_tpid=bool(cfg.get("tpid", {}).get("enabled", cls.use_tpid)),
+            tpid_seq_len=int(cfg.get("tpid", {}).get("seq_len", cls.tpid_seq_len)),
+            tpid_n_freqs=int(cfg.get("tpid", {}).get("n_freqs", cls.tpid_n_freqs)),
+            tpid_tau_pop=float(cfg.get("tpid", {}).get("tau_pop", cls.tpid_tau_pop)),
+            tpid_train_cutoff_ts=float(
+                cfg.get("tpid", {}).get("train_cutoff_ts", cls.tpid_train_cutoff_ts)
+            ),
         )
 
 
@@ -229,6 +248,76 @@ class InteractionDataset(Dataset):
         return self.triplets[idx]
 
 
+def gather_user_history_padded(
+    unique_users: torch.Tensor,
+    ref_t: float,
+    history_ptr: torch.Tensor,
+    history_item: torch.Tensor,
+    history_beh: torch.Tensor,
+    history_ts: torch.Tensor,
+    L: int,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Gather the last L events with t < ref_t for each user, left-padded with -1.
+
+    Assumes history_* are sorted by (user, ts) ascending within each user's slice
+    (see build_user_history_csr(with_beh_ts=True)).
+    """
+    device = history_ptr.device
+    U = unique_users.size(0)
+
+    ptr_u = history_ptr[unique_users]
+    ptr_u1 = history_ptr[unique_users + 1]
+    n_total = ptr_u1 - ptr_u
+
+    ref_long = int(ref_t)
+    future_mask = (history_ts >= ref_long).long()
+    cum = torch.cat(
+        [torch.zeros(1, dtype=torch.long, device=device), future_mask.cumsum(0)]
+    )
+    n_future = cum[ptr_u1] - cum[ptr_u]
+    n_valid = (n_total - n_future).clamp(min=0)
+
+    L_t = torch.tensor(L, device=device, dtype=n_valid.dtype)
+    take = torch.minimum(n_valid, L_t)
+    src_start = ptr_u + n_valid - take  # [U]
+
+    pos = torch.arange(L, device=device).unsqueeze(0).expand(U, -1)
+    valid_slot = pos >= (L - take.unsqueeze(-1))
+    src_offset = (pos - (L - take.unsqueeze(-1))).clamp(min=0)
+    src_idx = (src_start.unsqueeze(-1) + src_offset).clamp(max=history_item.size(0) - 1)
+
+    items_g = history_item[src_idx]
+    behs_g = history_beh[src_idx]
+    tss_g = history_ts[src_idx]
+
+    item_seq = torch.where(valid_slot, items_g, torch.full_like(items_g, -1))
+    beh_seq = torch.where(valid_slot, behs_g, torch.zeros_like(behs_g))
+    ts_seq = torch.where(valid_slot, tss_g, torch.zeros_like(tss_g))
+    return item_seq, beh_seq, ts_seq
+
+
+def build_item_pop_decay(
+    train_triplets: torch.Tensor,
+    n_items: int,
+    ref_t: float,
+    tau_pop: float = 30.0,
+) -> torch.Tensor:
+    """decay_sum[i, β] = Σ_{(u,i,β,t)<ref_t} (1 + (ref_t - t)/τ)^{-1}."""
+    item = train_triplets[:, 1].long()
+    beh = train_triplets[:, 2].long().clamp(min=0, max=2)
+    ts = train_triplets[:, 3].long()
+    mask = ts < int(ref_t)
+    item = item[mask]
+    beh = beh[mask]
+    ts = ts[mask]
+    delta_days = (float(ref_t) - ts.float()) / 86400.0
+    weight = 1.0 / (1.0 + delta_days / tau_pop)
+    out = torch.zeros(n_items * 3, dtype=torch.float32)
+    flat = item * 3 + beh
+    out.index_add_(0, flat, weight)
+    return out.view(n_items, 3)
+
+
 def train_epoch(
     model: BPATMPModel,
     sampler: BehaviorAwareNeighborSampler,
@@ -247,6 +336,9 @@ def train_epoch(
     history_item: torch.Tensor | None = None,
     pop_dist: torch.Tensor | None = None,
     scheduler: torch.optim.lr_scheduler._LRScheduler | None = None,
+    history_beh: torch.Tensor | None = None,
+    history_ts: torch.Tensor | None = None,
+    item_pop_decay: torch.Tensor | None = None,
 ) -> dict[str, float]:
     model.train()
     total_loss = 0.0
@@ -299,6 +391,58 @@ def train_epoch(
             N_items = item_emb.size(0)
             behavior_losses: dict[str, torch.Tensor] = {}
 
+            tpid = getattr(model, "intent_decoder", None)
+            tpid_active = (
+                tpid is not None
+                and history_beh is not None
+                and history_ts is not None
+                and item_pop_decay is not None
+                and ref_time is not None
+            )
+            if tpid_active:
+                # Encode z_u once per unique user in the batch.
+                u_unique_loc, u_inv_all = u_loc.unique(return_inverse=True)
+                u_unique_global = subgraph["user"].x[u_unique_loc]
+                item_seq_u, beh_seq_u, ts_seq_u = gather_user_history_padded(
+                    u_unique_global,
+                    ref_time,
+                    history_ptr,
+                    history_item,
+                    history_beh,
+                    history_ts,
+                    L=tpid.seq_len,
+                )
+                item_input_emb = model.input_proj["product"].weight
+                z_u_unique = tpid.encode_sequence(
+                    item_seq_u, beh_seq_u, ts_seq_u, ref_time, item_input_emb
+                )
+                # Fusion gate features per unique user.
+                ptr_uu = history_ptr[u_unique_global]
+                ptr_uu1 = history_ptr[u_unique_global + 1]
+                n_events_u = (ptr_uu1 - ptr_uu).float()
+                last_ts_u = torch.where(
+                    ptr_uu1 > ptr_uu,
+                    history_ts[(ptr_uu1 - 1).clamp(min=0)].float(),
+                    torch.full_like(n_events_u, float(ref_time)),
+                )
+                last_dt_u = ((float(ref_time) - last_ts_u) / 86400.0).clamp(min=0)
+                h_u_unique = user_emb[u_unique_loc]
+                feat_u = torch.stack(
+                    [
+                        torch.log1p(n_events_u),
+                        torch.log1p(last_dt_u),
+                        h_u_unique.float().norm(dim=-1),
+                    ],
+                    dim=-1,
+                )
+                omega_unique = F.softmax(tpid.fusion_mlp(feat_u), dim=-1)  # [U, 3]
+            else:
+                u_unique_loc = None
+                u_inv_all = None
+                z_u_unique = None
+                omega_unique = None
+                item_input_emb = None
+
             for beh_id, beh_name in enumerate(BEHAVIOR_TYPES):
                 mask = bev == beh_id
                 if not mask.any():
@@ -332,8 +476,41 @@ def train_epoch(
                     neg_loc[neg_loc >= pp_b.unsqueeze(-1)] += 1
 
                 neg_emb_b = item_emb[neg_loc]
-                pos_s = (u_emb_b * pos_emb_b).sum(-1, keepdim=True)
-                neg_s = torch.bmm(neg_emb_b, u_emb_b.unsqueeze(-1)).squeeze(-1)
+                pos_s_graph = (u_emb_b * pos_emb_b).sum(-1, keepdim=True)
+                neg_s_graph = torch.bmm(neg_emb_b, u_emb_b.unsqueeze(-1)).squeeze(-1)
+
+                if tpid_active:
+                    inv_b = u_inv_all[mask]
+                    z_u_b = z_u_unique[inv_b]
+                    omega_b = omega_unique[inv_b]
+                    # Map local item ids to global for input-embedding & pop lookup.
+                    pos_global = items_g_kept[mask].long()
+                    neg_global = subgraph["product"].x[neg_loc].long()
+                    e_pos = item_input_emb[pos_global]
+                    e_neg = item_input_emb[neg_global]
+                    s_seq_pos = (z_u_b * e_pos).sum(-1, keepdim=True)
+                    s_seq_neg = torch.bmm(e_neg, z_u_b.unsqueeze(-1)).squeeze(-1)
+                    s_pop_pos = tpid.compute_popularity_score(
+                        pos_global, item_pop_decay
+                    ).unsqueeze(-1)
+                    s_pop_neg = tpid.compute_popularity_score(
+                        neg_global.view(-1), item_pop_decay
+                    ).view(neg_global.shape)
+                    item_bias_pos = tpid.item_bias(pos_global).squeeze(-1).unsqueeze(-1)
+                    item_bias_neg = tpid.item_bias(neg_global).squeeze(-1)
+                    pos_s = (
+                        omega_b[:, 0:1] * (pos_s_graph + item_bias_pos)
+                        + omega_b[:, 1:2] * s_seq_pos
+                        + omega_b[:, 2:3] * s_pop_pos
+                    )
+                    neg_s = (
+                        omega_b[:, 0:1] * (neg_s_graph + item_bias_neg)
+                        + omega_b[:, 1:2] * s_seq_neg
+                        + omega_b[:, 2:3] * s_pop_neg
+                    )
+                else:
+                    pos_s = pos_s_graph
+                    neg_s = neg_s_graph
                 behavior_losses[beh_name] = bpr_loss(pos_s, neg_s)
 
             users_per_beh = {b: u_loc[bev == bid].unique() for bid, b in enumerate(BEHAVIOR_TYPES)}
@@ -550,7 +727,19 @@ def train(
         prefetch_factor=cfg.prefetch_factor if cfg.num_workers > 0 else None,
     )
 
-    loss_fn = MultiTaskBPRLoss(behavior_counts, l2_lambda=cfg.l2_lambda).to(device)
+    loss_fn = MultiTaskBPRLoss(
+        behavior_counts,
+        l2_lambda=cfg.l2_lambda,
+        alpha=cfg.aux_loss_alpha,
+        w_min=cfg.aux_loss_w_min,
+    ).to(device)
+    logger.info(
+        "Aux loss weights (α=%.2f, w_min=%.2f): %s",
+        cfg.aux_loss_alpha,
+        cfg.aux_loss_w_min,
+        {b: round(loss_fn.task_weights[i].item(), 4)
+         for i, b in enumerate(MultiTaskBPRLoss.BEHAVIOR_ORDER)},
+    )
     cl_fn = None
     if cfg.hierarchy_cl_enabled and cfg.cl_weight > 0:
         cl_fn = HierarchicalMBCL(
@@ -560,7 +749,34 @@ def train(
             min_pair_overlap=cfg.hierarchy_cl_min_pair_overlap,
         ).to(device)
 
-    history_ptr, history_item = build_user_history_csr(train_triplets, n_users=n_users)
+    history_beh = None
+    history_ts = None
+    item_pop_decay = None
+    if cfg.use_tpid:
+        assert train_triplets.size(1) >= 4, "use_tpid requires (user, item, beh, ts) triplets"
+        history_ptr, history_item, history_beh, history_ts = build_user_history_csr(
+            train_triplets, n_users=n_users, with_beh_ts=True
+        )
+        history_beh = history_beh.to(device)
+        history_ts = history_ts.to(device)
+        ref_t = float(cfg.tpid_train_cutoff_ts)
+        if ref_t <= 0:
+            ref_t = float(train_triplets[:, 3].max().item()) + 1.0
+            logger.warning(
+                "tpid_train_cutoff_ts not set; falling back to max(train_ts)+1 = %.0f", ref_t
+            )
+        item_pop_decay = build_item_pop_decay(
+            train_triplets, n_items=n_items, ref_t=ref_t, tau_pop=cfg.tpid_tau_pop
+        ).to(device)
+        logger.info(
+            "TPID enabled (seq_len=%d, τ_pop=%.1f, ref_t=%.0f). pop_decay shape=%s",
+            cfg.tpid_seq_len,
+            cfg.tpid_tau_pop,
+            ref_t,
+            tuple(item_pop_decay.shape),
+        )
+    else:
+        history_ptr, history_item = build_user_history_csr(train_triplets, n_users=n_users)
     history_ptr = history_ptr.to(device)
     history_item = history_item.to(device)
 
@@ -663,6 +879,9 @@ def train(
             history_item=history_item,
             pop_dist=pop_dist,
             scheduler=scheduler,
+            history_beh=history_beh,
+            history_ts=history_ts,
+            item_pop_decay=item_pop_decay,
         )
         train_loss = train_log["train/loss"]
         train_log["train/lr"] = float(optimizer.param_groups[0]["lr"])

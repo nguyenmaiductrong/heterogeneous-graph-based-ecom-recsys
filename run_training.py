@@ -8,6 +8,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import pickle
 from pathlib import Path
 
@@ -180,6 +181,7 @@ def main():
     logger.info(f"Using device: {device}")
 
     model_cfg = cfg["model"]
+    tpid_cfg = cfg.get("tpid", {})
     model = BPATMPModel(
         num_nodes_dict=node_counts,
         embed_dim=model_cfg["embed_dim"],
@@ -188,6 +190,10 @@ def main():
         n_intents=model_cfg.get("n_intents", 32),
         rank=model_cfg.get("rank", 32),
         use_grad_checkpoint=model_cfg.get("use_grad_checkpoint", False),
+        use_tpid=bool(tpid_cfg.get("enabled", False)),
+        tpid_seq_len=int(tpid_cfg.get("seq_len", 20)),
+        tpid_n_freqs=int(tpid_cfg.get("n_freqs", 16)),
+        tpid_tau_pop=float(tpid_cfg.get("tau_pop", 30.0)),
     )
     logger.info(f"Model parameters: {sum(p.numel() for p in model.parameters()):,}")
 
@@ -205,6 +211,21 @@ def main():
     )
 
     train_cfg = TrainConfig.from_yaml(cfg)
+    if train_cfg.use_tpid and train_cfg.tpid_train_cutoff_ts <= 0:
+        data_dir = cfg["data"]["data_dir"]
+        for candidate in (
+            os.path.join(data_dir, "split_manifest.json"),
+            os.path.join(data_dir, "edge_lists", "split_manifest.json"),
+            os.path.join(data_dir, "graph", "split_manifest.json"),
+        ):
+            if os.path.exists(candidate):
+                with open(candidate) as fp:
+                    manifest = json.load(fp)
+                cutoff = float(manifest.get("train_cutoff_ts", 0))
+                if cutoff > 0:
+                    train_cfg.tpid_train_cutoff_ts = cutoff
+                    logger.info("Loaded train_cutoff_ts=%d from %s", int(cutoff), candidate)
+                break
     eval_ref_time = float(train_triplets[:, 3].max().item())
     logger.info(f"Eval reference time: {eval_ref_time}")
 

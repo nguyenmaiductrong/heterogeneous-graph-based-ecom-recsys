@@ -62,15 +62,26 @@ def bpr_loss(
 class MultiTaskBPRLoss(nn.Module):
     BEHAVIOR_ORDER = ["view", "cart", "purchase"]
 
-    def __init__(self, behavior_counts: dict[str, int], l2_lambda: float = 1e-5):
+    def __init__(
+        self,
+        behavior_counts: dict[str, int],
+        l2_lambda: float = 1e-5,
+        alpha: float = 0.4,
+        w_min: float = 0.1,
+    ):
+        """w_β = clip((N_purchase / N_β)^α, w_min, 1)."""
         super().__init__()
         self.l2_lambda = l2_lambda
-        raw = torch.tensor(
-            [BEHAVIOR_LOSS_WEIGHTS[b] / np.sqrt(behavior_counts[b]) for b in self.BEHAVIOR_ORDER],
-            dtype=torch.float32,
-        )
-        normalized = raw / raw.sum() * len(self.BEHAVIOR_ORDER)
-        self.register_buffer("task_weights", normalized)
+        self.alpha = float(alpha)
+        self.w_min = float(w_min)
+        n_purchase = max(int(behavior_counts.get("purchase", 1)), 1)
+        weights = []
+        for b in self.BEHAVIOR_ORDER:
+            n_b = max(int(behavior_counts.get(b, 1)), 1)
+            ratio = (n_purchase / n_b) ** self.alpha
+            w_b = max(self.w_min, min(1.0, ratio))
+            weights.append(w_b)
+        self.register_buffer("task_weights", torch.tensor(weights, dtype=torch.float32))
 
     @autocast("cuda", enabled=False)
     def forward(
@@ -91,9 +102,6 @@ class MultiTaskBPRLoss(nn.Module):
             total = total + w * beh_loss
             log_dict[f"loss/{beh}"] = beh_loss.item()
             log_dict[f"weight/{beh}"] = w.item()
-
-        if n_present > 0:
-            total = total * (len(self.BEHAVIOR_ORDER) / n_present)
 
         if model_params is not None and self.l2_lambda > 0:
             l2_term = self.l2_lambda * model_params.float()
@@ -188,11 +196,35 @@ class HierarchicalMBCL(nn.Module):
 def build_user_history_csr(
     triplets: torch.Tensor,
     n_users: int,
-) -> tuple[torch.Tensor, torch.Tensor]:
+    with_beh_ts: bool = False,
+):
     """CSR over (user -> seen items) across ALL behaviors so train-time
-    negatives can be masked the same way eval's exclude_items does."""
+    negatives can be masked the same way eval's exclude_items does.
+
+    When `with_beh_ts=True` and triplets has shape [N, 4] = (user, item, beh, ts),
+    also returns per-event behavior and timestamp arrays aligned to history_item
+    and sorted by (user, timestamp) so the last K entries per user are the most
+    recent events.
+    """
     user = triplets[:, 0].long()
     item = triplets[:, 1].long()
+    if with_beh_ts:
+        assert triplets.size(1) >= 4, "TPID history needs (user, item, beh, ts)"
+        beh = triplets[:, 2].long()
+        ts = triplets[:, 3].long()
+        # Sort key: (user, ts). Stable sort: sort by ts first, then by user.
+        order_ts = ts.argsort(stable=True)
+        u2 = user[order_ts]
+        order_user = u2.argsort(stable=True)
+        order = order_ts[order_user]
+        user_s = user[order]
+        item_s = item[order]
+        beh_s = beh[order]
+        ts_s = ts[order]
+        counts = torch.bincount(user_s, minlength=n_users)
+        ptr = torch.zeros(n_users + 1, dtype=torch.long)
+        ptr[1:] = counts.cumsum(0)
+        return ptr, item_s, beh_s, ts_s
     order = user.argsort()
     user_s = user[order]
     item_s = item[order]

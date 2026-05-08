@@ -15,6 +15,13 @@ model:
   use_grad_checkpoint: false
   n_intents: 32
 
+tpid:
+  enabled: true
+  seq_len: 20
+  n_freqs: 16
+  tau_pop: 30.0
+  train_cutoff_ts: 0  # 0 = auto from max(train_ts)+1; override with split_manifest.json value
+
 sampler:
   hop1_budget: 8
   hop2_budget: 4

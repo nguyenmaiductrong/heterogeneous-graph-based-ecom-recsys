@@ -129,21 +129,11 @@ class FourierTimeEncoding(nn.Module):
 
 
 class TemporalAttention(nn.Module):
-    """Temporal attention voi decay-in-logit va value gate.
+    """Temporal attention with decay-in-logit and value gate.
 
-    Cong thuc theo CLAUDE.md §8.4 va §8.6:
         logit = Q·K/√d + b_ρ + u_{ρ,β}ᵀ Φ(Δt) − λ_β · log(1 + Δt/τ)
         alpha = scatter_softmax(logit, dst_idx)
         gate  = σ(c_{ρ,β} + r_{ρ,β}ᵀ Φ(Δt) − μ_β · log(1 + Δt/τ))
-
-    Thanh phan:
-        - Q·K/√d:        content match giua src va dst
-        - b_ρ:           bias theo loai relation
-        - u_{ρ,β}ᵀ Φ:    time bias per relation-behavior
-        - λ_β·log():     decay term trong attention, khac nhau theo behavior
-        - c_{ρ,β}:       gate bias per relation-behavior
-        - r_{ρ,β}ᵀ Φ:    gate time projection per relation-behavior
-        - μ_β·log():     decay term trong gate, khac nhau theo behavior
     """
 
     def __init__(
@@ -310,13 +300,14 @@ class TemporalPurchaseIntentDecoder(nn.Module):
         e_pos = self.pos_emb(torch.arange(L, device=device).unsqueeze(0).expand(B, -1))
 
         delta_t = (ref_time - ts_seq.float()) / 86400.0
+        future = delta_t < 0
         delta_t = delta_t.clamp(min=0)
         phi = self.time_enc(delta_t.view(-1)).view(B, L, -1)
         e_time = self.time_proj(phi)
 
         x = e_item + e_beh + e_pos + e_time
 
-        mask = item_seq >= 0
+        mask = (item_seq >= 0) & (~future)
         x = x * mask.unsqueeze(-1).float()
 
         _, h_n = self.seq_encoder(x)
@@ -325,21 +316,10 @@ class TemporalPurchaseIntentDecoder(nn.Module):
     def compute_popularity_score(
         self,
         item_idx: Tensor,
-        item_counts: Tensor,
         item_decay_sum: Tensor,
     ) -> Tensor:
-        """Compute time-decayed popularity score.
-
-        Args:
-            item_idx: [B] item indices
-            item_counts: [N, 3] per-behavior counts
-            item_decay_sum: [N, 3] sum of time-decayed weights
-
-        Returns:
-            s_pop: [B] popularity scores
-        """
+        """s_pop(i, T) = log(1 + Σ_β η_β · decay_sum[i, β]). decay_sum precomputed; η_β learned."""
         eta = F.softplus(self.raw_eta)
-        counts = item_counts[item_idx]
         decay_sum = item_decay_sum[item_idx]
         weighted = (eta * decay_sum).sum(dim=-1)
         return torch.log1p(weighted)
@@ -378,7 +358,7 @@ class TemporalPurchaseIntentDecoder(nn.Module):
             s_seq = torch.zeros(B, device=device)
 
         if item_pop_decay is not None:
-            s_pop = self.compute_popularity_score(item_idx, item_pop_decay, item_pop_decay)
+            s_pop = self.compute_popularity_score(item_idx, item_pop_decay)
         else:
             s_pop = torch.zeros(B, device=device)
 
@@ -689,10 +669,15 @@ class BPATMPModel(nn.Module):
         use_grad_checkpoint: bool = True,
         n_freqs: int = 16,
         tau: float = 7.0,
+        use_tpid: bool = False,
+        tpid_seq_len: int = 20,
+        tpid_n_freqs: int = 16,
+        tpid_tau_pop: float = 30.0,
     ) -> None:
         super().__init__()
         self.embed_dim = embed_dim
         self.num_nodes_dict = num_nodes_dict
+        self.use_tpid = use_tpid
 
         self.input_proj = nn.ModuleDict({
             ntype: nn.Embedding(num_nodes, embed_dim)
@@ -719,6 +704,17 @@ class BPATMPModel(nn.Module):
         )
 
         self.intent_codebook = IntentCodebook(n_intents=n_intents, dim=embed_dim)
+
+        self.intent_decoder: Optional[TemporalPurchaseIntentDecoder] = None
+        if use_tpid:
+            n_products = int(num_nodes_dict.get("product", 0))
+            self.intent_decoder = TemporalPurchaseIntentDecoder(
+                dim=embed_dim,
+                n_items=n_products,
+                seq_len=tpid_seq_len,
+                n_freqs=tpid_n_freqs,
+                tau_pop=tpid_tau_pop,
+            )
 
     def embedding_l2_norm(self) -> Tensor:
         total = torch.tensor(0.0, device=next(self.parameters()).device)
