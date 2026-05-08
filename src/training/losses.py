@@ -238,12 +238,29 @@ def sample_aligned_negatives_local(
 
     if n_hard > 0:
         with torch.no_grad():
-            scores = user_emb_b @ item_emb_local.T
-            scores = scores.scatter(
-                1, pp_b.unsqueeze(1), float("-inf")
-            )
             k = min(n_hard, N_items - 1)
-            _, hard_negs = scores.topk(k, dim=-1)
+            # Memory-efficient: chunk by users if N_items is large
+            MAX_SCORE_ELEMS = 50_000_000  # ~200MB for float32
+            chunk_size = max(1, MAX_SCORE_ELEMS // N_items)
+            if chunk_size >= B:
+                # Can fit all at once
+                scores = user_emb_b @ item_emb_local.T
+                scores = scores.scatter(1, pp_b.unsqueeze(1), float("-inf"))
+                _, hard_negs = scores.topk(k, dim=-1)
+                del scores
+            else:
+                # Process in chunks to avoid OOM
+                hard_negs_list = []
+                for start in range(0, B, chunk_size):
+                    end = min(start + chunk_size, B)
+                    chunk_scores = user_emb_b[start:end] @ item_emb_local.T
+                    chunk_scores = chunk_scores.scatter(
+                        1, pp_b[start:end].unsqueeze(1), float("-inf")
+                    )
+                    _, chunk_hard = chunk_scores.topk(k, dim=-1)
+                    hard_negs_list.append(chunk_hard)
+                    del chunk_scores
+                hard_negs = torch.cat(hard_negs_list, dim=0)
             if k < n_hard:
                 pad = torch.randint(
                     0, N_items, (B, n_hard - k), device=device
