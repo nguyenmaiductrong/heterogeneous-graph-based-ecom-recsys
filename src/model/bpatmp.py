@@ -473,10 +473,18 @@ class BPATMPConv(nn.Module):
             if edge_index.numel() == 0:
                 continue
 
-            src_idx, dst_idx = edge_index
+            if edge_index.dim() != 2 or edge_index.size(0) != 2:
+                raise RuntimeError(
+                    f"Bad edge_index shape for {edge_type}: {tuple(edge_index.shape)}"
+                )
+
+            src_idx = edge_index[0].contiguous()
+            dst_idx = edge_index[1].contiguous()
             n_src = x_dict[src_type].size(0)
             n_dst = x_dict[dst_type].size(0)
             if src_idx.numel() > 0:
+                if torch.cuda.is_available():
+                    torch.cuda.synchronize()
                 s_max = int(src_idx.max().item())
                 d_max = int(dst_idx.max().item())
                 s_min = int(src_idx.min().item())
@@ -488,6 +496,8 @@ class BPATMPConv(nn.Module):
                         f"dst_idx in [{d_min},{d_max}] vs n_dst={n_dst}; "
                         f"E={src_idx.numel()}"
                     )
+                src_idx = src_idx.clamp(0, n_src - 1)
+                dst_idx = dst_idx.clamp(0, n_dst - 1)
             h_src = x_dict[src_type][src_idx]
             h_dst = x_dict[dst_type][dst_idx]
             E = h_src.size(0)
