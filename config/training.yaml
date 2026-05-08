@@ -10,20 +10,20 @@ data:
 model:
   dropout: 0.3
   embed_dim: 128
-  n_layers: 3
+  n_layers: 2
   rank: 32
   use_grad_checkpoint: false
   n_intents: 32
 
 sampler:
-  hop1_budget: 12
-  hop2_budget: 6
+  hop1_budget: 8
+  hop2_budget: 4
   hop1_sample_replace: true
 
 training:
   amp: true
   use_bf16: true
-  batch_size: 4096
+  batch_size: 8192
   device: cuda
   epochs: 30
   eval_batch_size: 8192
@@ -36,9 +36,9 @@ training:
   warmup_epochs: 2
   max_grad_norm: 1.0
   cl_weight: 0.1
-  max_view_triplets: 4000000
-  num_neg: 16
-  num_workers: 4
+  max_view_triplets: 2000000
+  num_neg: 8
+  num_workers: 8
   patience: 8
   save_dir: checkpoints-v2
   weight_decay: 1.0e-02
@@ -66,5 +66,5 @@ a100:
   allow_tf32: true
   cudnn_benchmark: true
   use_fused_adamw: true
-  compile_model: false
+  compile_model: true
   empty_cache_freq: 0
