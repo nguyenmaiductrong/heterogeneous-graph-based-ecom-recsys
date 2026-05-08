@@ -183,6 +183,7 @@ class TemporalAttention(nn.Module):
         rho: int,
         beta: Tensor,
         dst_idx: Tensor,
+        n_dst: int,
     ) -> Tuple[Tensor, Tensor]:
         """
         Args:
@@ -214,7 +215,7 @@ class TemporalAttention(nn.Module):
 
         # scatter_softmax in float32 for numerical stability (tiny [E] tensor)
         logit = (qk + bias + time_bias - decay).float()
-        alpha = self._scatter_softmax(logit, dst_idx).to(_out_dtype)
+        alpha = self._scatter_softmax(logit, dst_idx, n_dst).to(_out_dtype)
 
         c = self.c_rho_beta[rho, beta].to(_out_dtype)
         r = self.r_rho_beta[rho, beta].to(_out_dtype)
@@ -226,9 +227,9 @@ class TemporalAttention(nn.Module):
         return alpha, gate
 
     @staticmethod
-    def _scatter_softmax(logit: Tensor, index: Tensor) -> Tensor:
+    def _scatter_softmax(logit: Tensor, index: Tensor, n_dst: int) -> Tensor:
         """Numerically stable softmax grouped by destination node."""
-        N = int(index.max().item()) + 1
+        N = n_dst
         max_val = logit.new_full((N,), torch.finfo(logit.dtype).min)
         max_val.scatter_reduce_(0, index, logit.detach(), reduce="amax", include_self=True)
         exp_logit = (logit - max_val[index]).exp()
@@ -513,17 +514,16 @@ class BPATMPConv(nn.Module):
             attr = attr.to(device=ref.device) if attr is not None else None
             if edge_ts is not None and ref_time is not None:
                 keep = edge_ts.float() < float(ref_time)
-                if not keep.any():
+                src_idx = src_idx[keep]
+                dst_idx = dst_idx[keep]
+                h_src = h_src[keep]
+                h_dst = h_dst[keep]
+                edge_ts = edge_ts[keep]
+                if attr is not None and attr.numel() > 0:
+                    attr = attr.view(-1)[keep].view(-1, 1)
+                E = h_src.size(0)
+                if E == 0:
                     continue
-                if not bool(keep.all()):
-                    src_idx = src_idx[keep]
-                    dst_idx = dst_idx[keep]
-                    h_src = h_src[keep]
-                    h_dst = h_dst[keep]
-                    edge_ts = edge_ts[keep]
-                    if attr is not None and attr.numel() > 0:
-                        attr = attr.view(-1)[keep].view(-1, 1)
-                    E = h_src.size(0)
 
             _out_dtype = h_src.dtype
             if edge_ts is not None and ref_time is not None:
@@ -540,10 +540,8 @@ class BPATMPConv(nn.Module):
 
                 base_msg = torch.einsum("oi,ei->eo", W_rho, h_src)
                 h_B = h_src @ B_rho
-                scaled = torch.zeros_like(h_B)
-                for b_idx in origin.unique():
-                    mask = origin == b_idx
-                    scaled[mask] = (h_B[mask] * self.baw.z_beta[b_idx].to(_out_dtype)).to(scaled.dtype)
+                z_per_edge = self.baw.z_beta.to(_out_dtype)[origin]  # [E, rank]
+                scaled = h_B * z_per_edge
                 msg = base_msg + scaled @ A_rho.T
                 beta_tensor = origin
             else:
@@ -552,10 +550,10 @@ class BPATMPConv(nn.Module):
                 msg = torch.einsum("oi,ei->eo", W, h_src)
                 beta_tensor = torch.full((E,), beta_idx, device=ref.device, dtype=torch.long)
 
-            alpha, gate = self.temporal_attn(h_src, h_dst, delta_t, rho, beta_tensor, dst_idx)
+            N_dst = x_dict[dst_type].size(0)
+            alpha, gate = self.temporal_attn(h_src, h_dst, delta_t, rho, beta_tensor, dst_idx, N_dst)
 
             weighted = (alpha * gate).unsqueeze(-1) * msg
-            N_dst = x_dict[dst_type].size(0)
             bucket = BEH_BUCKETS[_BEH_IDX[edge_name]]
             if agg_pb[dst_type][bucket] is None:
                 agg_pb[dst_type][bucket] = weighted.new_zeros(N_dst, self.out_dim)
@@ -581,7 +579,7 @@ class BPATMPLayer(nn.Module):
         n_layers: int = 2,
         rank: int = 16,
         dropout: float = 0.1,
-        use_checkpoint: bool = True,
+        use_checkpoint: bool = False,
         n_freqs: int = 16,
         tau: float = 7.0,
     ) -> None:
@@ -708,7 +706,7 @@ class BPATMPModel(nn.Module):
         dropout: float = 0.1,
         n_intents: int = 32,
         rank: int = 16,
-        use_grad_checkpoint: bool = True,
+        use_grad_checkpoint: bool = False,
         n_freqs: int = 16,
         tau: float = 7.0,
     ) -> None:

@@ -12,7 +12,7 @@ model:
   embed_dim: 192
   n_layers: 3
   rank: 48
-  use_grad_checkpoint: true
+  use_grad_checkpoint: false
   n_intents: 48
   n_freqs: 24
   tau: 5.0
