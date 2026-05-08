@@ -179,7 +179,6 @@ def main():
     purchase_only_path = data_dir / "train_mask_purchase_only.pkl"
     legacy_path = data_dir / "train_mask.pkl"
     primary_mask_path = purchase_only_path
-    legacy_mask_path = legacy_path
     if purchase_only_path.exists():
         mask_path = purchase_only_path
     elif legacy_path.exists():
