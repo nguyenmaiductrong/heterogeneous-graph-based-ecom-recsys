@@ -16,15 +16,15 @@ model:
   n_intents: 64
 
 sampler:
-  hop1_budget: 16
-  hop2_budget: 8
+  hop1_budget: 32
+  hop2_budget: 16
   hop1_sample_replace: true
 
 # Total loss:
 #   L = L_BPR + lambda_cl*L_CL + lambda_conv*L_conv + lambda_mono*L_mono + lambda_wd*||theta||^2
 # Per-behavior BPR weights: w_b = clip((N_purchase / N_b) ** alpha, w_min, 1.0)
 loss:
-  lambda_cl: 0.15 # contrastive (HierarchicalMBCL)
+  lambda_cl: 0.05 # contrastive (HierarchicalMBCL)
   lambda_conv: 0.1 # funnel prior s_view < s_cart < s_purchase (0 = off)
   lambda_mono: 0.05 # monotonic decay prior lam_view >= lam_cart >= lam_purchase (0 = off)
   funnel_margin: 0.1
@@ -44,7 +44,7 @@ training:
   batch_size: 8192
   device: cuda
   epochs: 40
-  eval_batch_size: 8192
+  eval_batch_size: 2048
   eval_every: 1
   eval_subsample: 20000 # 0 = full eval each cycle
   eval_seed: 42
