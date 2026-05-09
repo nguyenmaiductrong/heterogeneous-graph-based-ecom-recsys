@@ -53,9 +53,9 @@ training:
   min_lr: 1.0e-06
   warmup_epochs: 3
   max_grad_norm: 1.0
-  cl_every_k: 4 # CL runs every 4 steps to reduce its dominance over BPR
-  max_view_triplets: 3000000
-  num_neg: 64
+  cl_every_k: 2 # raise to 2 since deeper model; keep CL quality high without per-step overhead
+  max_view_triplets: 5000000
+  num_neg: 32
   num_workers: 8
   patience: 10
   save_dir: checkpoints-v7
