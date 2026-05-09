@@ -175,11 +175,15 @@ class EvalInput:
         n_eval_users = self.user_embeddings.size(0)
         num_items = self.item_embeddings.size(0)
 
-        assert self.user_embeddings.size(1) == EMBED_DIM, (
-            f"user_embeddings dim1={self.user_embeddings.size(1)}, expected {EMBED_DIM}"
+        assert self.user_embeddings.size(1) in (EMBED_DIM, EMBED_DIM + 1), (
+            f"user_embeddings dim1={self.user_embeddings.size(1)}, expected {EMBED_DIM} or {EMBED_DIM + 1}"
         )
-        assert self.item_embeddings.size(1) == EMBED_DIM, (
-            f"item_embeddings dim1={self.item_embeddings.size(1)}, expected {EMBED_DIM}"
+        assert self.item_embeddings.size(1) in (EMBED_DIM, EMBED_DIM + 1), (
+            f"item_embeddings dim1={self.item_embeddings.size(1)}, expected {EMBED_DIM} or {EMBED_DIM + 1}"
+        )
+        assert self.user_embeddings.size(1) == self.item_embeddings.size(1), (
+            f"user_embeddings dim1={self.user_embeddings.size(1)} != "
+            f"item_embeddings dim1={self.item_embeddings.size(1)}"
         )
 
         # user_embeddings is ordered by POSITION in eval_user_ids, not by
