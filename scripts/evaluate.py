@@ -134,7 +134,7 @@ def main():
 
     out = ckpt_path.parent / f"eval_{args.split}.json"
     out.write_text(json.dumps({"split": args.split, "epoch": ckpt.get("epoch"), "metrics": metrics}, indent=2))
-    logger.info("Saved → %s", out)
+    logger.info("Saved -> %s", out)
 
 
 if __name__ == "__main__":
