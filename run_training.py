@@ -17,7 +17,7 @@ import torch
 import yaml
 from torch_geometric.data import HeteroData
 
-from src.core.contracts import BEHAVIOR_TYPES
+from src.core.contracts import BEHAVIOR_TYPES, configure_dims
 from src.graph.neighbor_sampler import BehaviorAwareNeighborSampler
 from src.model.bpatmp import BPATMPModel
 from src.training.trainer import TrainConfig, train
@@ -136,6 +136,7 @@ def main():
 
     logger.info(f"Loading config from {args.config}")
     cfg = load_config(args.config)
+    configure_dims(cfg["model"]["embed_dim"])
 
     logger.info(f"PyTorch: {torch.__version__}")
     logger.info(f"CUDA available: {torch.cuda.is_available()}")
