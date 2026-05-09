@@ -131,7 +131,6 @@ class FourierTimeEncoding(nn.Module):
 class TemporalAttention(nn.Module):
     """Temporal attention voi decay-in-logit va value gate.
 
-    Cong thuc theo CLAUDE.md §8.4 va §8.6:
         logit = Q·K/√d + b_ρ + u_{ρ,β}ᵀ Φ(Δt) − λ_β · log(1 + Δt/τ)
         alpha = scatter_softmax(logit, dst_idx)
         gate  = σ(c_{ρ,β} + r_{ρ,β}ᵀ Φ(Δt) − μ_β · log(1 + Δt/τ))
