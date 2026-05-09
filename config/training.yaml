@@ -13,28 +13,28 @@ model:
   n_layers: 3
   rank: 64
   use_grad_checkpoint: false
-  n_intents: 128 
+  n_intents: 96
 
 sampler:
-  hop1_budget: 20 
-  hop2_budget: 12 
+  hop1_budget: 20
+  hop2_budget: 12
   hop1_sample_replace: true
 
 # Total loss:
 #   L = L_BPR + lambda_cl*L_CL + lambda_conv*L_conv + lambda_mono*L_mono + lambda_wd*||theta||^2
 # Per-behavior BPR weights: w_b = clip((N_purchase / N_b) ** alpha, w_min, 1.0)
 loss:
-  lambda_cl: 0.2 
-  lambda_conv: 0.1 
+  lambda_cl: 0.15
+  lambda_conv: 0.1
   lambda_mono: 0.05
   funnel_margin: 0.1
-  alpha: 0.5 
-  w_min: 0.05 
+  alpha: 0.5
+  w_min: 0.05
 
 hierarchy_cl:
   enabled: true
-  tau: 0.1
-  hard_k: 128 # doubled: harder negatives in CL → stronger representation learning
+  tau: 0.07
+  hard_k: 64
   min_pair_overlap: 4
   pair_weights: null # null = auto progressive (view -> cart -> purchase)
 
@@ -43,22 +43,22 @@ training:
   use_bf16: true
   batch_size: 8192
   device: cuda
-  epochs: 60 # extended: patience=15 needs room; v3 stopped at 13 with potential remaining
+  epochs: 60
   eval_batch_size: 8192
   eval_every: 1
-  eval_subsample: 20000 # 0 = full eval each cycle
+  eval_subsample: 60000
   eval_seed: 42
   l2_lambda: 1.0e-05 # lambda_wd
-  lr: 1.0e-03 # up from 0.0008: v3 peaked early then plateaued; higher lr gives more exploration momentum
+  lr: 1.0e-03
   min_lr: 1.0e-06
-  warmup_epochs: 5 # extended warmup to stabilize higher lr before full training
+  warmup_epochs: 4
   max_grad_norm: 1.0
-  cl_every_k: 1 # back to 1: CL actively learning (cl_loss 4.35 in v3), don't skip steps
-  max_view_triplets: 5000000 # increased: 80GB allows larger triplet pool for view behavior
-  num_neg: 64 # doubled: A100-80GB has headroom; harder BPR negatives → sharper ranking
+  cl_every_k: 2
+  max_view_triplets: 5000000
+  num_neg: 48
   num_workers: 8
-  patience: 15 # up from 10: v3 stopped too early (best epoch 3, stopped epoch 13)
-  save_dir: checkpoints-v4
+  patience: 15
+  save_dir: checkpoints-v5
   weight_decay: 1.0e-02
   pin_memory: true
   persistent_workers: true
@@ -71,11 +71,11 @@ evaluation:
   metrics: ["HR@10", "HR@20", "HR@50", "NDCG@10", "NDCG@20", "NDCG@50"]
 
 wandb:
-  artifact_name: bpatmp-checkpoint-v4
+  artifact_name: bpatmp-checkpoint-v5
   enabled: true
   entity: nguyenmaiductrong37-h-c-vi-n-c-ng-ngh-b-u-ch-nh-vi-n-th-ng
   project: bpatmp-recsys
-  run_name: bpatmp-v4
+  run_name: bpatmp-v5
   save_every: 1
 
 # A100-80GB optimizations
