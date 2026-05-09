@@ -54,11 +54,11 @@ training:
   warmup_epochs: 3
   max_grad_norm: 1.0
   cl_every_k: 2 # raise to 2 since deeper model; keep CL quality high without per-step overhead
-  max_view_triplets: 3000000
+  max_view_triplets: 5000000
   num_neg: 32
   num_workers: 8
   patience: 10
-  save_dir: checkpoints-v3
+  save_dir: checkpoints-v7
   weight_decay: 1.0e-02
   pin_memory: true
   persistent_workers: true
@@ -71,11 +71,11 @@ evaluation:
   metrics: ["HR@10", "HR@20", "HR@50", "NDCG@10", "NDCG@20", "NDCG@50"]
 
 wandb:
-  artifact_name: bpatmp-checkpoint-v3
+  artifact_name: bpatmp-checkpoint-v7
   enabled: true
   entity: nguyenmaiductrong37-h-c-vi-n-c-ng-ngh-b-u-ch-nh-vi-n-th-ng
   project: bpatmp-recsys
-  run_name: bpatmp-v3
+  run_name: bpatmp-v7
   save_every: 1
 
 # A100 optimizations
