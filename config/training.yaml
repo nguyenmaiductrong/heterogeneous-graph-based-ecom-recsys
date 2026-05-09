@@ -13,11 +13,11 @@ model:
   n_layers: 3
   rank: 64
   use_grad_checkpoint: false
-  n_intents: 96
+  n_intents: 64
 
 sampler:
-  hop1_budget: 20
-  hop2_budget: 12
+  hop1_budget: 16
+  hop2_budget: 8
   hop1_sample_replace: true
 
 # Total loss:
@@ -33,7 +33,7 @@ loss:
 
 hierarchy_cl:
   enabled: true
-  tau: 0.07
+  tau: 0.1
   hard_k: 64
   min_pair_overlap: 4
   pair_weights: null # null = auto progressive (view -> cart -> purchase)
@@ -49,16 +49,16 @@ training:
   eval_subsample: 60000
   eval_seed: 42
   l2_lambda: 1.0e-05 # lambda_wd
-  lr: 1.0e-03
+  lr: 8.0e-04
   min_lr: 1.0e-06
-  warmup_epochs: 4
+  warmup_epochs: 3
   max_grad_norm: 1.0
   cl_every_k: 2
-  max_view_triplets: 5000000
-  num_neg: 48
+  max_view_triplets: 3000000
+  num_neg: 32
   num_workers: 8
   patience: 15
-  save_dir: checkpoints-v5
+  save_dir: checkpoints-v6
   weight_decay: 1.0e-02
   pin_memory: true
   persistent_workers: true
@@ -71,11 +71,11 @@ evaluation:
   metrics: ["HR@10", "HR@20", "HR@50", "NDCG@10", "NDCG@20", "NDCG@50"]
 
 wandb:
-  artifact_name: bpatmp-checkpoint-v5
+  artifact_name: bpatmp-checkpoint-v6
   enabled: true
   entity: nguyenmaiductrong37-h-c-vi-n-c-ng-ngh-b-u-ch-nh-vi-n-th-ng
   project: bpatmp-recsys
-  run_name: bpatmp-v5
+  run_name: bpatmp-v6
   save_every: 1
 
 # A100-80GB optimizations

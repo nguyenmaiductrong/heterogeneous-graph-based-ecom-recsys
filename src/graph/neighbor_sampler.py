@@ -242,6 +242,33 @@ class BehaviorAwareNeighborSampler:
             if ts_vals is not None:
                 self._csr_edge_ts[key] = ts_vals
 
+        self._build_rev_beh_csr()
+
+    def _build_rev_beh_csr(self) -> None:
+        """Build (product, rev_{beh}, user) CSR from forward edges if missing.
+
+        Required so _sample_product_seeds_vectorized can include behavioral
+        context when computing item embeddings during evaluation.
+        """
+        n_prod = self._num_nodes.get("product", 0)
+        for beh in BEHAVIOR_TYPES:
+            rev_key = ("product", f"rev_{beh}", "user")
+            fwd_key = ("user", beh, "product")
+            if rev_key in self._csr or fwd_key not in self._edge_index_dict:
+                continue
+            fwd_ei = self._edge_index_dict[fwd_key]
+            if fwd_ei.numel() == 0:
+                continue
+            n = max(n_prod, int(fwd_ei[1].max().item()) + 1)
+            rev_ei = fwd_ei.flip(0).contiguous()
+            fwd_ts = self._edge_ts_dict.get(fwd_key)
+            ptr, cols, ts_vals = _edge_index_to_csr_with_values(
+                rev_ei, n, dedupe=False, edge_values=fwd_ts
+            )
+            self._csr[rev_key] = (ptr, cols)
+            if ts_vals is not None:
+                self._csr_edge_ts[rev_key] = ts_vals
+
     @property
     def num_nodes_dict(self) -> dict[str, int]:
         return dict(self._num_nodes)
@@ -696,34 +723,107 @@ class BehaviorAwareNeighborSampler:
         product_seeds: Tensor,
         generator: torch.Generator | None,
     ) -> HeteroData:
+        """Sample product-centered subgraph with behavioral context.
+
+        For each product seed, samples up to hop1_budget users per behavior
+        (via rev_view/cart/purchase CSR) so that BPATMPConv can aggregate
+        user-derived behavioral signals into item embeddings — matching the
+        context items receive inside user subgraphs during training.
+        """
         bsz = product_seeds.numel()
-        bid = BEHAVIOR_TO_ID["purchase"]
+        bid_purchase = BEHAVIOR_TO_ID["purchase"]
         device = self._device
         _empty2 = torch.empty((2, 0), dtype=torch.long, device=device)
         _empty1 = torch.empty((0,), dtype=torch.long, device=device)
 
         prod_x = product_seeds
         prod_b = torch.arange(bsz, device=device, dtype=torch.long)
+
+        # --- Behavioral context: sample users who interacted with each product ---
+        all_edges: list[tuple[Tensor, Tensor, int, Tensor | None]] = []
+
+        for beh in BEHAVIOR_TYPES:
+            rev_key = ("product", f"rev_{beh}", "user")
+            if not self._has_csr(rev_key):
+                continue
+            ptr, cols = self._csr[rev_key]
+            ts_vals = self._csr_edge_ts.get(rev_key)
+
+            sampled, valid, positions = _batch_sample_csr(
+                ptr, cols, product_seeds, self._cfg.hop1_budget, generator,
+                replace=True, return_positions=True,
+            )
+            ridx, cidx = valid.nonzero(as_tuple=True)
+            if ridx.numel() == 0:
+                continue
+
+            u_g = sampled[ridx, cidx]   # global user ids
+            p_l = ridx                   # local product index (index into product_seeds)
+
+            if ts_vals is not None:
+                safe_pos = positions[ridx, cidx].clamp(min=0)
+                ts = ts_vals[safe_pos]
+            else:
+                ts = None
+
+            all_edges.append((u_g, p_l, BEHAVIOR_TO_ID[beh], ts))
+
+        # --- Build user and behavioral edge tensors ---
+        if all_edges:
+            u_g_cat = torch.cat([e[0] for e in all_edges])
+            p_l_cat = torch.cat([e[1] for e in all_edges])
+            beh_cat = torch.cat([
+                torch.full((e[0].numel(),), e[2], dtype=torch.long, device=device)
+                for e in all_edges
+            ])
+
+            any_ts = any(e[3] is not None for e in all_edges)
+            if any_ts:
+                ts_parts = [
+                    e[3] if e[3] is not None
+                    else torch.full((e[0].numel(),), -1, dtype=torch.long, device=device)
+                    for e in all_edges
+                ]
+                ts_cat: Tensor | None = torch.cat(ts_parts)
+            else:
+                ts_cat = None
+
+            user_uniq, inv_u = torch.unique(u_g_cat, return_inverse=True)
+            user_x = user_uniq
+            user_b = torch.zeros(user_uniq.numel(), dtype=torch.long, device=device)
+            u_l = inv_u  # local user index for each edge
+
+            def _beh_edges(beh_id: int) -> tuple[Tensor, Tensor | None]:
+                mask = beh_cat == beh_id
+                if not mask.any():
+                    return _empty2, None
+                ei = torch.stack([u_l[mask], p_l_cat[mask]], dim=0)
+                ts = ts_cat[mask] if ts_cat is not None else None
+                return ei, ts
+
+            e_view, ts_view = _beh_edges(BEHAVIOR_TO_ID["view"])
+            e_cart, ts_cart = _beh_edges(BEHAVIOR_TO_ID["cart"])
+            e_purchase, ts_purchase = _beh_edges(BEHAVIOR_TO_ID["purchase"])
+
+            e_rev_view = e_view.flip(0).contiguous() if e_view.size(1) > 0 else _empty2
+            e_rev_cart = e_cart.flip(0).contiguous() if e_cart.size(1) > 0 else _empty2
+            e_rev_purchase = e_purchase.flip(0).contiguous() if e_purchase.size(1) > 0 else _empty2
+        else:
+            user_x = _empty1
+            user_b = _empty1
+            e_view = e_cart = e_purchase = _empty2
+            e_rev_view = e_rev_cart = e_rev_purchase = _empty2
+            ts_view = ts_cart = ts_purchase = None
+
+        # --- Structural context: category and brand (unchanged) ---
         inv_p = torch.arange(bsz, device=device, dtype=torch.long)
-        origin_flat = torch.full((bsz,), bid, dtype=torch.int8, device=device)
+        origin_flat = torch.full((bsz,), bid_purchase, dtype=torch.int8, device=device)
 
         cat_x, cat_b, pc_src, pc_dst, pc_tag, pc_ts = self._process_hop2(
-            product_seeds,
-            prod_b,
-            inv_p,
-            origin_flat,
-            None,
-            "belongs_to",
-            generator,
+            product_seeds, prod_b, inv_p, origin_flat, None, "belongs_to", generator,
         )
         brand_x, brand_b, pb_src, pb_dst, pb_tag, pb_ts = self._process_hop2(
-            product_seeds,
-            prod_b,
-            inv_p,
-            origin_flat,
-            None,
-            "brand",
-            generator,
+            product_seeds, prod_b, inv_p, origin_flat, None, "brand", generator,
         )
 
         def _ei(src: Tensor, dst: Tensor) -> Tensor:
@@ -737,18 +837,18 @@ class BehaviorAwareNeighborSampler:
             return tag.view(-1, 1)
 
         node_data = {
-            "user": (_empty1, _empty1),
+            "user": (user_x, user_b),
             "product": (prod_x, prod_b),
             "category": (cat_x, cat_b),
             "brand": (brand_x, brand_b),
         }
-        edge_data: dict[tuple[str, str, str], tuple[Tensor, Tensor | None]] = {
-            ("user", "view", "product"): (_empty2, None),
-            ("user", "cart", "product"): (_empty2, None),
-            ("user", "purchase", "product"): (_empty2, None),
-            ("product", "rev_view", "user"): (_empty2, None),
-            ("product", "rev_cart", "user"): (_empty2, None),
-            ("product", "rev_purchase", "user"): (_empty2, None),
+        edge_data: dict[tuple[str, str, str], tuple[Tensor, Tensor | None, Tensor | None]] = {
+            ("user", "view", "product"): (e_view, None, ts_view),
+            ("user", "cart", "product"): (e_cart, None, ts_cart),
+            ("user", "purchase", "product"): (e_purchase, None, ts_purchase),
+            ("product", "rev_view", "user"): (e_rev_view, None, ts_view),
+            ("product", "rev_cart", "user"): (e_rev_cart, None, ts_cart),
+            ("product", "rev_purchase", "user"): (e_rev_purchase, None, ts_purchase),
             ("product", "belongs_to", "category"): (_ei(pc_src, pc_dst), _attr(pc_tag), pc_ts),
             ("category", "contains", "product"): (_ei(pc_dst, pc_src), _attr(pc_tag), pc_ts),
             ("product", "producedBy", "brand"): (_ei(pb_src, pb_dst), _attr(pb_tag), pb_ts),
