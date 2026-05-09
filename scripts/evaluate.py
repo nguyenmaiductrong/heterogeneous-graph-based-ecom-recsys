@@ -83,8 +83,10 @@ def main():
     # --- model ---
     from src.model.bpatmp import BPATMPModel
     from src.graph.neighbor_sampler import BehaviorAwareNeighborSampler, NeighborSamplerConfig
+    from src.core.contracts import configure_dims
 
     mc = cfg["model"]
+    configure_dims(mc["embed_dim"])
     model = BPATMPModel(
         num_nodes_dict=node_counts,
         embed_dim=mc["embed_dim"],
