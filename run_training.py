@@ -34,7 +34,7 @@ def load_config(config_path: str) -> dict:
         return yaml.safe_load(f)
 
 
-def build_hetero_data(cfg: dict) -> tuple[HeteroData, dict]:
+def build_hetero_data(cfg: dict) -> tuple[HeteroData, dict, dict]:
     """Build HeteroData from config paths."""
     data_dir = Path(cfg["data"]["data_dir"])
     struct_dir = Path(cfg["data"]["struct_dir"])
