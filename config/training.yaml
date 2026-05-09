@@ -8,25 +8,25 @@ data:
   struct_dir: /content/data/node_mappings
 
 model:
-  dropout: 0.3
-  embed_dim: 128
-  n_layers: 2
-  rank: 32
+  dropout: 0.2
+  embed_dim: 256
+  n_layers: 3
+  rank: 64
   use_grad_checkpoint: false
-  n_intents: 32
+  n_intents: 64
 
 sampler:
-  hop1_budget: 8
-  hop2_budget: 4
+  hop1_budget: 16
+  hop2_budget: 8
   hop1_sample_replace: true
 
 # Total loss:
 #   L = L_BPR + lambda_cl*L_CL + lambda_conv*L_conv + lambda_mono*L_mono + lambda_wd*||theta||^2
 # Per-behavior BPR weights: w_b = clip((N_purchase / N_b) ** alpha, w_min, 1.0)
 loss:
-  lambda_cl: 0.1 # contrastive (HierarchicalMBCL)
-  lambda_conv: 0.0 # funnel prior s_view < s_cart < s_purchase (0 = off)
-  lambda_mono: 0.0 # monotonic decay prior lam_view >= lam_cart >= lam_purchase (0 = off)
+  lambda_cl: 0.15 # contrastive (HierarchicalMBCL)
+  lambda_conv: 0.1 # funnel prior s_view < s_cart < s_purchase (0 = off)
+  lambda_mono: 0.05 # monotonic decay prior lam_view >= lam_cart >= lam_purchase (0 = off)
   funnel_margin: 0.1
   alpha: 0.5 # exponent in (N_p / N_b) ** alpha; alpha in [0.25, 0.5]
   w_min: 0.05 # floor for view/cart weight
@@ -34,7 +34,7 @@ loss:
 hierarchy_cl:
   enabled: true
   tau: 0.1
-  hard_k: 32
+  hard_k: 64
   min_pair_overlap: 4
   pair_weights: null # null = auto progressive (view -> cart -> purchase)
 
@@ -43,22 +43,22 @@ training:
   use_bf16: true
   batch_size: 8192
   device: cuda
-  epochs: 30
+  epochs: 40
   eval_batch_size: 8192
   eval_every: 1
   eval_subsample: 20000 # 0 = full eval each cycle
   eval_seed: 42
   l2_lambda: 1.0e-05 # lambda_wd
-  lr: 1.0e-03
+  lr: 8.0e-04
   min_lr: 1.0e-06
-  warmup_epochs: 2
+  warmup_epochs: 3
   max_grad_norm: 1.0
-  cl_every_k: 1 # 1 = run CL each step; raise to 5 for ~5x cheaper CL
+  cl_every_k: 2 # raise to 2 since deeper model; keep CL quality high without per-step overhead
   max_view_triplets: 3000000
-  num_neg: 16
+  num_neg: 32
   num_workers: 8
-  patience: 8
-  save_dir: checkpoints-v2
+  patience: 10
+  save_dir: checkpoints-v3
   weight_decay: 1.0e-02
   pin_memory: true
   persistent_workers: true
@@ -71,11 +71,11 @@ evaluation:
   metrics: ["HR@10", "HR@20", "HR@50", "NDCG@10", "NDCG@20", "NDCG@50"]
 
 wandb:
-  artifact_name: bpatmp-checkpoint-v2
+  artifact_name: bpatmp-checkpoint-v3
   enabled: true
   entity: nguyenmaiductrong37-h-c-vi-n-c-ng-ngh-b-u-ch-nh-vi-n-th-ng
   project: bpatmp-recsys
-  run_name: bpatmp-v2
+  run_name: bpatmp-v3
   save_every: 1
 
 # A100 optimizations
