@@ -9,7 +9,14 @@ from torch import Tensor
 EMBED_DIM: int = 128
 LOW_RANK: int = 16  # rank r cho A_phi @ B_beta^T (CrossComboWeightSpec)
 NUM_HEADS: int = 4
-HEAD_DIM: int = EMBED_DIM // NUM_HEADS  # 32
+HEAD_DIM: int = EMBED_DIM // NUM_HEADS
+
+
+def configure_dims(embed_dim: int) -> None:
+    """Sync EMBED_DIM/HEAD_DIM with config before any validation runs."""
+    global EMBED_DIM, HEAD_DIM
+    EMBED_DIM = embed_dim
+    HEAD_DIM = embed_dim // NUM_HEADS
 NUM_GNN_LAYERS: int = 2
 NODE_TYPES: list[str] = ["user", "product", "category", "brand"]
 BEHAVIOR_TYPES: list[str] = ["view", "cart", "purchase"]
