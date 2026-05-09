@@ -280,6 +280,7 @@ def train_epoch(
     n_steps = 0
     n_skipped = 0  # batches dropped because no positive items found in subgraph
     purchase_id = BEHAVIOR_TYPES.index("purchase")
+    model_raw = model._orig_mod if hasattr(model, "_orig_mod") else model
 
     pbar = tqdm(dataloader, desc="train", leave=False, dynamic_ncols=True)
     for step, raw_batch in enumerate(pbar):
@@ -363,8 +364,11 @@ def train_epoch(
                     neg_loc[neg_loc >= pp_b.unsqueeze(-1)] += 1
 
                 neg_emb_b = item_emb[neg_loc]
-                pos_s = (u_emb_b * pos_emb_b).sum(-1, keepdim=True)
-                neg_s = torch.bmm(neg_emb_b, u_emb_b.unsqueeze(-1)).squeeze(-1)
+                pos_bias = model_raw.item_bias(items_g_kept[mask])  # [B_b, 1]
+                pos_s = (u_emb_b * pos_emb_b).sum(-1, keepdim=True) + pos_bias
+                neg_global = prod_x[neg_loc.clamp(0, prod_x.size(0) - 1).long()]
+                neg_bias = model_raw.item_bias(neg_global).squeeze(-1)  # [B_b, num_neg]
+                neg_s = torch.bmm(neg_emb_b, u_emb_b.unsqueeze(-1)).squeeze(-1) + neg_bias
                 behavior_losses[beh_name] = bpr_loss(pos_s, neg_s)
 
             users_per_beh = {b: u_loc[bev == bid].unique() for bid, b in enumerate(BEHAVIOR_TYPES)}
@@ -519,6 +523,16 @@ def eval_epoch(
         use_bf16=use_bf16,
         ref_time=ref_time,
     )
+
+    # L2 normalize for cosine-similarity ranking
+    user_emb = F.normalize(user_emb, dim=-1)
+    item_emb = F.normalize(item_emb, dim=-1)
+
+    # Append item bias as extra dim: score = normalize(u)·normalize(i) + item_bias[i]
+    model_raw = model._orig_mod if hasattr(model, "_orig_mod") else model
+    item_bias = model_raw.item_bias.weight.detach().cpu()  # [n_items, 1]
+    user_emb = torch.cat([user_emb, torch.ones(user_emb.size(0), 1)], dim=-1)
+    item_emb = torch.cat([item_emb, item_bias], dim=-1)
 
     eval_input = EvalInput(
         user_embeddings=user_emb,
@@ -748,6 +762,8 @@ def train(
         postfix: dict[str, str] = {"loss": f"{train_loss:.4f}"}
 
         if (epoch + 1) % cfg.eval_every == 0:
+            if device.type == "cuda":
+                torch.cuda.empty_cache()
             metrics = eval_epoch(
                 model,
                 sampler,

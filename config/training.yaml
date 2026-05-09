@@ -44,7 +44,7 @@ training:
   batch_size: 8192
   device: cuda
   epochs: 40
-  eval_batch_size: 8192
+  eval_batch_size: 2048
   eval_every: 1
   eval_subsample: 20000 # 0 = full eval each cycle
   eval_seed: 42
