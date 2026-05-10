@@ -311,43 +311,10 @@ def train_epoch(
         users_g = raw_batch[:, 0]
         items_g = raw_batch[:, 1]
         beh_ids = raw_batch[:, 2]
-        # Per-sample ref_time: each user u's positive at t_pos_u; subgraph edges
-        # touching u are filtered by ts < min(t_pos_u for u in batch). Non-batch
-        # users (hop-1 neighbors) get fallback = batch_max (no leakage for them
-        # since they aren't being predicted). Replaces old batch_min global cutoff
-        # which discarded too much recent context.
-        has_ts = raw_batch.size(1) >= 4
-        ref_time_arg = None
-        ts_batch = None
-        if has_ts:
-            ts_batch = raw_batch[:, 3].float()
+        ref_time = float(raw_batch[:, 3].min().item()) if raw_batch.size(1) >= 4 else None
 
         unique_users = users_g.unique()
         subgraph = sampler.sample(unique_users, seed_type="user").to(device, non_blocking=True)
-
-        if has_ts:
-            # Min t_pos per batch user (no leakage: every positive of u >= ref_per_user[u]).
-            uu_sorted, _ = torch.sort(unique_users)
-            users_g_c = users_g.contiguous()
-            local_in_batch = torch.searchsorted(uu_sorted, users_g_c)
-            min_per_uu = torch.full(
-                (uu_sorted.size(0),), float("inf"), device=device, dtype=torch.float
-            )
-            min_per_uu.scatter_reduce_(0, local_in_batch, ts_batch, reduce="amin", include_self=True)
-
-            # In-batch users get their per-sample cutoff (min_per_uu).
-            # Non-batch users (hop-neighbors) fallback to batch_min: KHONG dung batch_max
-            # vi day la cao nhat -> nhieu edge song -> OOM. batch_min con bao toan
-            # signal cua in-batch users (dieu duy nhat anh huong eval) va bound memory.
-            sub_user_x = subgraph["user"].x.contiguous()
-            ts_min = float(ts_batch.min().item())
-            sub_pos = torch.searchsorted(uu_sorted, sub_user_x).clamp(max=uu_sorted.size(0) - 1)
-            in_batch_mask = uu_sorted[sub_pos] == sub_user_x
-            ref_time_arg = torch.where(
-                in_batch_mask,
-                min_per_uu[sub_pos],
-                torch.full_like(sub_user_x, fill_value=ts_min, dtype=torch.float),
-            )
 
         optimizer.zero_grad(set_to_none=True)
 
@@ -356,7 +323,7 @@ def train_epoch(
             user_emb, item_emb, beh_embs = model(
                 subgraph,
                 return_beh_embs=True,
-                ref_time=ref_time_arg,
+                ref_time=ref_time,
             )
 
             user_x = subgraph["user"].x.contiguous()
@@ -576,8 +543,11 @@ def eval_epoch(
         ref_time=ref_time,
     )
 
-    # Eval ranking khớp với BPR train (raw dot-product, không normalize).
-    # Append item bias as extra dim: score = u·i + item_bias[i]
+    # L2 normalize for cosine-similarity ranking
+    user_emb = F.normalize(user_emb, dim=-1)
+    item_emb = F.normalize(item_emb, dim=-1)
+
+    # Append item bias as extra dim: score = normalize(u)·normalize(i) + item_bias[i]
     model_raw = model._orig_mod if hasattr(model, "_orig_mod") else model
     item_bias = model_raw.item_bias.weight.detach().cpu()  # [n_items, 1]
     user_emb = torch.cat([user_emb, torch.ones(user_emb.size(0), 1)], dim=-1)
