@@ -171,11 +171,15 @@ class TemporalAttention(nn.Module):
         self.time_enc = FourierTimeEncoding(n_freqs)
         self.time_bias_proj = nn.Linear(n_freqs * 2, 1, bias=False)
 
-        self.raw_lambda = nn.Parameter(torch.zeros(n_beta))
+        # Init bat doi xung de pha symmetry: raw_lambda=0 (softplus=0.693) cho moi behavior
+        # khien decay rate khong khac biet -> module behavior-aware temporal decay vo dung.
+        # view decays nhanh, purchase decay cham. struct=0 (mid).
+        # softplus values: view~1.31, cart~0.91, purchase~0.62, struct=0.69
+        self.raw_lambda = nn.Parameter(torch.tensor([1.0, 0.5, 0.0, 0.0]))
 
         self.c_rho_beta = nn.Parameter(torch.zeros(n_relations, n_beta))
         self.r_rho_beta = nn.Parameter(torch.zeros(n_relations, n_beta, n_freqs * 2))
-        self.raw_mu = nn.Parameter(torch.zeros(n_beta))
+        self.raw_mu = nn.Parameter(torch.tensor([0.7, 0.3, -0.3, 0.0]))
 
         nn.init.xavier_uniform_(self.r_rho_beta)
 
