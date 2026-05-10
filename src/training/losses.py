@@ -7,12 +7,20 @@ from torch.amp import autocast
 def bpr_loss(
     pos_scores: torch.Tensor,
     neg_scores: torch.Tensor,
+    margin: float = 0.0,
 ) -> torch.Tensor:
+    """Margin BPR (MixRec-style) khi margin > 0: max(0, margin - (pos - neg)).
+    Log-sigmoid BPR khi margin = 0 (default): -log(sigmoid(pos - neg)).
+    Margin BPR cho gradient manh hon o vung vi pham nang.
+    """
     if pos_scores.dim() == 1:
         pos_scores = pos_scores.unsqueeze(-1)
     if neg_scores.dim() == 1:
         neg_scores = neg_scores.unsqueeze(-1)
-    return -F.logsigmoid(pos_scores - neg_scores).mean()
+    diff = pos_scores - neg_scores
+    if margin > 0:
+        return F.relu(margin - diff).mean()
+    return -F.logsigmoid(diff).mean()
 
 
 class MultiTaskBPRLoss(nn.Module):
