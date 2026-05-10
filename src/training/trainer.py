@@ -547,11 +547,8 @@ def eval_epoch(
         ref_time=ref_time,
     )
 
-    # L2 normalize for cosine-similarity ranking
-    user_emb = F.normalize(user_emb, dim=-1)
-    item_emb = F.normalize(item_emb, dim=-1)
-
-    # Append item bias as extra dim: score = normalize(u)·normalize(i) + item_bias[i]
+    # Eval ranking khớp với BPR train (raw dot-product, không normalize).
+    # Append item bias as extra dim: score = u·i + item_bias[i]
     model_raw = model._orig_mod if hasattr(model, "_orig_mod") else model
     item_bias = model_raw.item_bias.weight.detach().cpu()  # [n_items, 1]
     user_emb = torch.cat([user_emb, torch.ones(user_emb.size(0), 1)], dim=-1)
@@ -684,7 +681,12 @@ def train(
     # Functional/structural params must NOT be L2-shrunk: WD=1e-2 caused
     # z_beta to decay 8.0 -> 7.0 and raw_lambda to stay stuck at init 0.693
     # in v7c diagnostic, killing behavior-awareness and temporal decay.
-    emb_params = list(model.input_proj.parameters()) + list(model.beh_proj.parameters())
+    # item_bias gop vao group WD=0: WD=1e-2 keo bias ve 0 -> mat tin hieu popularity.
+    emb_params = (
+        list(model.input_proj.parameters())
+        + list(model.beh_proj.parameters())
+        + list(model.item_bias.parameters())
+    )
     emb_ids = {id(p) for p in emb_params}
 
     FUNC_PARAM_PATTERNS = (
