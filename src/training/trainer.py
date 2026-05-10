@@ -311,14 +311,39 @@ def train_epoch(
         users_g = raw_batch[:, 0]
         items_g = raw_batch[:, 1]
         beh_ids = raw_batch[:, 2]
-        # ref_time = batch_min: every t_e < min(batch_ts) <= t_pos for ALL positives
-        # in the batch, so no future leakage. Tradeoff: late-batch positives lose
-        # access to recent context within (min, t_pos). Mitigated by large
-        # batch_size + i.i.d. shuffling so distribution is balanced.
-        ref_time = float(raw_batch[:, 3].min().item()) if raw_batch.size(1) >= 4 else None
+        # Per-sample ref_time: each user u's positive at t_pos_u; subgraph edges
+        # touching u are filtered by ts < min(t_pos_u for u in batch). Non-batch
+        # users (hop-1 neighbors) get fallback = batch_max (no leakage for them
+        # since they aren't being predicted). Replaces old batch_min global cutoff
+        # which discarded too much recent context.
+        has_ts = raw_batch.size(1) >= 4
+        ref_time_arg = None
+        ts_batch = None
+        if has_ts:
+            ts_batch = raw_batch[:, 3].float()
 
         unique_users = users_g.unique()
         subgraph = sampler.sample(unique_users, seed_type="user").to(device, non_blocking=True)
+
+        if has_ts:
+            # Min t_pos per batch user (no leakage: every positive of u >= ref_per_user[u]).
+            uu_sorted, _ = torch.sort(unique_users)
+            local_in_batch = torch.searchsorted(uu_sorted, users_g)
+            min_per_uu = torch.full(
+                (uu_sorted.size(0),), float("inf"), device=device, dtype=torch.float
+            )
+            min_per_uu.scatter_reduce_(0, local_in_batch, ts_batch, reduce="amin", include_self=True)
+
+            # Map each subgraph user to its ref_time: in-batch -> min_per_uu, else -> batch_max.
+            sub_user_x = subgraph["user"].x
+            ts_max = float(ts_batch.max().item())
+            sub_pos = torch.searchsorted(uu_sorted, sub_user_x).clamp(max=uu_sorted.size(0) - 1)
+            in_batch_mask = uu_sorted[sub_pos] == sub_user_x
+            ref_time_arg = torch.where(
+                in_batch_mask,
+                min_per_uu[sub_pos],
+                torch.full_like(sub_user_x, fill_value=ts_max, dtype=torch.float),
+            )
 
         optimizer.zero_grad(set_to_none=True)
 
@@ -327,7 +352,7 @@ def train_epoch(
             user_emb, item_emb, beh_embs = model(
                 subgraph,
                 return_beh_embs=True,
-                ref_time=ref_time,
+                ref_time=ref_time_arg,
             )
 
             user_x = subgraph["user"].x.contiguous()

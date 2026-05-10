@@ -304,7 +304,7 @@ class BPATMPConv(nn.Module):
         edge_index_dict: Dict[Tuple, Tensor],
         edge_attr_dict: Optional[Dict[Tuple, Tensor]] = None,
         edge_ts_dict: Optional[Dict[Tuple, Tensor]] = None,
-        ref_time: Optional[float] = None,
+        ref_time = None,  # float | Tensor[N_user_in_subgraph]
     ) -> Tuple[Dict[str, Tensor], Dict[str, Tensor]]:
         """Forward pass with temporal attention.
 
@@ -313,7 +313,10 @@ class BPATMPConv(nn.Module):
             edge_index_dict: edge indices per edge type
             edge_attr_dict: behavior origin for structural edges
             edge_ts_dict: timestamps per edge type (Unix seconds)
-            ref_time: reference time T for computing delta_t
+            ref_time: reference time. Float (legacy) or Tensor of shape
+                      [N_user_in_subgraph] - per-user cutoff for filtering
+                      edges. Per-edge cutoff = ref[user_node] for edges
+                      touching a user; struct edges use scalar fallback.
         """
         agg_pb: Dict[str, Dict[str, Optional[Tensor]]] = {
             t: {b: None for b in BEH_BUCKETS} for t in NODE_TYPES
@@ -325,6 +328,14 @@ class BPATMPConv(nn.Module):
             k: torch.zeros(n_users, self.out_dim, device=ref.device, dtype=ref.dtype)
             for k in ("view", "cart", "purchase")
         }
+
+        # Pre-compute fallback scalar ref (used for struct edges and float input).
+        ref_is_tensor = isinstance(ref_time, torch.Tensor)
+        if ref_is_tensor:
+            ref_time = ref_time.to(device=ref.device).float()
+            ref_time_scalar = float(ref_time.max().item())
+        else:
+            ref_time_scalar = float(ref_time) if ref_time is not None else None
 
         for edge_type, edge_index in edge_index_dict.items():
             src_type, edge_name, dst_type = edge_type
@@ -348,8 +359,28 @@ class BPATMPConv(nn.Module):
                 edge_ts = edge_ts.to(device=ref.device)
 
             attr = attr.to(device=ref.device) if attr is not None else None
+
+            # Per-edge ref_time:
+            #   dst is user (rev_*) -> ref[dst_user]
+            #   src is user (view/cart/purchase) -> ref[src_user]
+            #   neither (struct: product<->category, product<->brand) -> scalar fallback
+            ref_per_edge = None
             if edge_ts is not None and ref_time is not None:
-                keep = edge_ts.float() < float(ref_time)
+                if ref_is_tensor:
+                    if dst_type == "user":
+                        ref_per_edge = ref_time[dst_idx]
+                    elif src_type == "user":
+                        ref_per_edge = ref_time[src_idx]
+                    else:
+                        ref_per_edge = torch.full(
+                            (E,), ref_time_scalar, device=ref.device, dtype=torch.float
+                        )
+                else:
+                    ref_per_edge = torch.full(
+                        (E,), ref_time_scalar, device=ref.device, dtype=torch.float
+                    )
+
+                keep = edge_ts.float() < ref_per_edge
                 if not keep.any():
                     continue
                 if not bool(keep.all()):
@@ -358,12 +389,13 @@ class BPATMPConv(nn.Module):
                     h_src = h_src[keep]
                     h_dst = h_dst[keep]
                     edge_ts = edge_ts[keep]
+                    ref_per_edge = ref_per_edge[keep]
                     if attr is not None and attr.numel() > 0:
                         attr = attr.view(-1)[keep].view(-1, 1)
                     E = h_src.size(0)
 
-            if edge_ts is not None and ref_time is not None:
-                delta_t = (ref_time - edge_ts.float()) / 86400.0
+            if edge_ts is not None and ref_per_edge is not None:
+                delta_t = (ref_per_edge - edge_ts.float()) / 86400.0
                 delta_t = delta_t.clamp(min=0)
             else:
                 delta_t = torch.zeros(E, device=ref.device)
