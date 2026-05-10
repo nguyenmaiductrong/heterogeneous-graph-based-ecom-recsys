@@ -328,21 +328,25 @@ def train_epoch(
         if has_ts:
             # Min t_pos per batch user (no leakage: every positive of u >= ref_per_user[u]).
             uu_sorted, _ = torch.sort(unique_users)
-            local_in_batch = torch.searchsorted(uu_sorted, users_g)
+            users_g_c = users_g.contiguous()
+            local_in_batch = torch.searchsorted(uu_sorted, users_g_c)
             min_per_uu = torch.full(
                 (uu_sorted.size(0),), float("inf"), device=device, dtype=torch.float
             )
             min_per_uu.scatter_reduce_(0, local_in_batch, ts_batch, reduce="amin", include_self=True)
 
-            # Map each subgraph user to its ref_time: in-batch -> min_per_uu, else -> batch_max.
-            sub_user_x = subgraph["user"].x
-            ts_max = float(ts_batch.max().item())
+            # In-batch users get their per-sample cutoff (min_per_uu).
+            # Non-batch users (hop-neighbors) fallback to batch_min: KHONG dung batch_max
+            # vi day la cao nhat -> nhieu edge song -> OOM. batch_min con bao toan
+            # signal cua in-batch users (dieu duy nhat anh huong eval) va bound memory.
+            sub_user_x = subgraph["user"].x.contiguous()
+            ts_min = float(ts_batch.min().item())
             sub_pos = torch.searchsorted(uu_sorted, sub_user_x).clamp(max=uu_sorted.size(0) - 1)
             in_batch_mask = uu_sorted[sub_pos] == sub_user_x
             ref_time_arg = torch.where(
                 in_batch_mask,
                 min_per_uu[sub_pos],
-                torch.full_like(sub_user_x, fill_value=ts_max, dtype=torch.float),
+                torch.full_like(sub_user_x, fill_value=ts_min, dtype=torch.float),
             )
 
         optimizer.zero_grad(set_to_none=True)
