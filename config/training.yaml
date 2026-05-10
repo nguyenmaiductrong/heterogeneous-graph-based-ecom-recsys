@@ -21,9 +21,9 @@ sampler:
   hop1_sample_replace: true
 
 loss:
-  lambda_cl: 0.05      # ha tu 0.15: CL~4.3 * 0.15 = 0.65 ap dao BPR~2.0
-  lambda_conv: 0.0     # tat funnel prior ban dau, bat lai sau ep ~5 khi BPR on dinh
-  lambda_mono: 0.0     # tat mono prior ban dau (raw_lambda chua break symmetry)
+  lambda_cl: 0.10      # compromise giua v3 (0.15) va v10 (0.05). v10 chung minh 0.05 qua yeu.
+  lambda_conv: 0.05    # bat lai funnel prior nhung yeu hon v3 (0.1)
+  lambda_mono: 0.025   # bat lai mono prior. raw_lambda gio init bat doi xung roi -> mono co cho neo.
   funnel_margin: 0.1
   alpha: 0.5
   w_min: 0.05
@@ -55,7 +55,7 @@ training:
   num_neg: 32
   num_workers: 8
   patience: 12
-  save_dir: checkpoints-v9
+  save_dir: checkpoints-v10
   weight_decay: 1.0e-02
   pin_memory: true
   persistent_workers: true
@@ -68,11 +68,11 @@ evaluation:
   metrics: ["HR@10", "HR@20", "HR@50", "NDCG@10", "NDCG@20", "NDCG@50"]
 
 wandb:
-  artifact_name: bpatmp-checkpoint-v9
+  artifact_name: bpatmp-checkpoint-v10
   enabled: true
   entity: nguyenmaiductrong37-h-c-vi-n-c-ng-ngh-b-u-ch-nh-vi-n-th-ng
   project: bpatmp-recsys
-  run_name: bpatmp-v9
+  run_name: bpatmp-v10
   save_every: 1
 
 a100:
