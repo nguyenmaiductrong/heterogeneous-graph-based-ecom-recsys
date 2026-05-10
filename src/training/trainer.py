@@ -24,6 +24,39 @@ from src.core.evaluator import TemporalSplitEvaluator
 logger = logging.getLogger(__name__)
 
 
+@torch.no_grad()
+def diagnostic_module_stats(model: torch.nn.Module) -> dict[str, float]:
+    """Per-epoch diagnostic: are temporal-decay (lambda, mu) and behavior-aware
+    z_beta actually learning, or stuck near init?
+
+    - softplus(raw_lambda)/softplus(raw_mu): per-behavior temporal decay rates
+      Init at softplus(0) = ln(2) ≈ 0.693. If they drift apart per behavior,
+      decay is being learned. If all stay near 0.693, decay is dead.
+    - ||z_beta||: per-behavior weight scale in W_{rho,beta} decomposition.
+      Init at ones (||z|| = sqrt(rank) for rank=64 → 8.0). Drift = learning.
+    """
+    stats: dict[str, float] = {}
+    layer_idx = 0
+    baw_idx = 0
+    for _name, mod in model.named_modules():
+        cls = mod.__class__.__name__
+        if cls == "TemporalAttention" and hasattr(mod, "raw_lambda"):
+            lam = F.softplus(mod.raw_lambda).detach().cpu()
+            mu = F.softplus(mod.raw_mu).detach().cpu()
+            for b_idx, b in enumerate(("view", "cart", "purchase", "struct")):
+                if b_idx < lam.numel():
+                    stats[f"diag/L{layer_idx}_lambda_{b}"] = float(lam[b_idx])
+                    stats[f"diag/L{layer_idx}_mu_{b}"] = float(mu[b_idx])
+            layer_idx += 1
+        elif cls == "BehaviorAwareWeight" and hasattr(mod, "z_beta"):
+            z = mod.z_beta.detach().cpu()
+            for b_idx, b in enumerate(("view", "cart", "purchase", "struct")):
+                if b_idx < z.shape[0]:
+                    stats[f"diag/baw{baw_idx}_zbeta_norm_{b}"] = float(z[b_idx].norm())
+            baw_idx += 1
+    return stats
+
+
 @dataclass
 class TrainConfig:
     # Basic training
@@ -804,8 +837,16 @@ def train(
         epoch_pbar.set_postfix(postfix)
         _save_checkpoint(save_dir, epoch, model, optimizer, scaler, train_loss, metrics)
 
+        diag = diagnostic_module_stats(model)
+        if diag:
+            lam_keys = sorted(k for k in diag if "_lambda_" in k)
+            zb_keys = sorted(k for k in diag if "_zbeta_norm_" in k)
+            lam_summary = " ".join(f"{k.split('/')[-1]}={diag[k]:.3f}" for k in lam_keys[:6])
+            zb_summary = " ".join(f"{k.split('/')[-1]}={diag[k]:.3f}" for k in zb_keys[:6])
+            row += f" | DIAG λ: {lam_summary} | DIAG z: {zb_summary}"
+
         if wandb_manager is not None:
-            wandb_run.log({**train_log, **metrics, "epoch": epoch})
+            wandb_run.log({**train_log, **metrics, **diag, "epoch": epoch})
             cloud_ok = wandb_manager.save_checkpoint(
                 model,
                 optimizer,
