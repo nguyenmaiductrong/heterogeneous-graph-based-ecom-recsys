@@ -20,18 +20,16 @@ sampler:
   hop2_budget: 8
   hop1_sample_replace: true
 
-# v7 — controlled experiment: clone v3 (best) and set lambda_cl = 0.
-# Mục tiêu: phân biệt CL hại / trung tính / có ích. Single-variable change.
 loss:
-  lambda_cl: 0.0          # 0.15 -> 0.0  (TẮT CL — biến độc lập duy nhất so với v3)
-  lambda_conv: 0.1        # giữ v3
-  lambda_mono: 0.05       # giữ v3
+  lambda_cl: 0.15
+  lambda_conv: 0.1
+  lambda_mono: 0.05
   funnel_margin: 0.1
-  alpha: 0.5              # giữ v3
+  alpha: 0.5
   w_min: 0.05
 
 hierarchy_cl:
-  enabled: false          # tắt hoàn toàn để khỏi compute uổng
+  enabled: true
   tau: 0.1
   hard_k: 64
   min_pair_overlap: 4
@@ -42,22 +40,22 @@ training:
   use_bf16: true
   batch_size: 8192
   device: cuda
-  epochs: 20              # v7 chỉ cần 15-20 epoch để biết peak; rút từ 40 cho nhanh
+  epochs: 25
   eval_batch_size: 8192
   eval_every: 1
-  eval_subsample: 60000   # 20000 -> 60000 (giảm noise đo, ~30% val users)
+  eval_subsample: 60000
   eval_seed: 42
   l2_lambda: 1.0e-05
-  lr: 8.0e-04             # giữ v3
+  lr: 8.0e-04
   min_lr: 1.0e-06
-  warmup_epochs: 3        # giữ v3
-  max_grad_norm: 1.0
+  warmup_epochs: 3
+  max_grad_norm: 5.0
   cl_every_k: 2
-  max_view_triplets: 3000000   # giữ v3
-  num_neg: 32             # giữ v3
+  max_view_triplets: 3000000
+  num_neg: 32
   num_workers: 8
-  patience: 12            # 10 -> 12 (cho phép quan sát peak muộn hơn nếu có)
-  save_dir: checkpoints-v7
+  patience: 12
+  save_dir: checkpoints-v8
   weight_decay: 1.0e-02
   pin_memory: true
   persistent_workers: true
@@ -70,11 +68,11 @@ evaluation:
   metrics: ["HR@10", "HR@20", "HR@50", "NDCG@10", "NDCG@20", "NDCG@50"]
 
 wandb:
-  artifact_name: bpatmp-checkpoint-v7
+  artifact_name: bpatmp-checkpoint-v8
   enabled: true
   entity: nguyenmaiductrong37-h-c-vi-n-c-ng-ngh-b-u-ch-nh-vi-n-th-ng
   project: bpatmp-recsys
-  run_name: bpatmp-v7
+  run_name: bpatmp-v8
   save_every: 1
 
 a100:
