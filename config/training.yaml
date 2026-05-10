@@ -12,7 +12,7 @@ model:
   embed_dim: 256
   n_layers: 3
   rank: 64
-  use_grad_checkpoint: false
+  use_grad_checkpoint: true
   n_intents: 64
 
 sampler:
@@ -21,9 +21,9 @@ sampler:
   hop1_sample_replace: true
 
 loss:
-  lambda_cl: 0.10
-  lambda_conv: 0.05
-  lambda_mono: 0.025
+  lambda_cl: 0.15
+  lambda_conv: 0.1
+  lambda_mono: 0.05
   funnel_margin: 0.1
   alpha: 0.5
   w_min: 0.05
@@ -38,10 +38,10 @@ hierarchy_cl:
 training:
   amp: true
   use_bf16: true
-  batch_size: 4096
+  batch_size: 8192
   device: cuda
   epochs: 25
-  eval_batch_size: 4096
+  eval_batch_size: 8192
   eval_every: 1
   eval_subsample: 60000
   eval_seed: 42
