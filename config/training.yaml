@@ -16,48 +16,47 @@ model:
   n_intents: 64
 
 sampler:
-  hop1_budget: 32
-  hop2_budget: 16
+  hop1_budget: 16
+  hop2_budget: 8
   hop1_sample_replace: true
 
-# Total loss:
-#   L = L_BPR + lambda_cl*L_CL + lambda_conv*L_conv + lambda_mono*L_mono + lambda_wd*||theta||^2
-# Per-behavior BPR weights: w_b = clip((N_purchase / N_b) ** alpha, w_min, 1.0)
+# v7 — controlled experiment: clone v3 (best) and set lambda_cl = 0.
+# Mục tiêu: phân biệt CL hại / trung tính / có ích. Single-variable change.
 loss:
-  lambda_cl: 0.05 # contrastive (HierarchicalMBCL)
-  lambda_conv: 0.1 # funnel prior s_view < s_cart < s_purchase (0 = off)
-  lambda_mono: 0.05 # monotonic decay prior lam_view >= lam_cart >= lam_purchase (0 = off)
+  lambda_cl: 0.0          # 0.15 -> 0.0  (TẮT CL — biến độc lập duy nhất so với v3)
+  lambda_conv: 0.1        # giữ v3
+  lambda_mono: 0.05       # giữ v3
   funnel_margin: 0.1
-  alpha: 0.5 # exponent in (N_p / N_b) ** alpha; alpha in [0.25, 0.5]
-  w_min: 0.05 # floor for view/cart weight
+  alpha: 0.5              # giữ v3
+  w_min: 0.05
 
 hierarchy_cl:
-  enabled: true
+  enabled: false          # tắt hoàn toàn để khỏi compute uổng
   tau: 0.1
   hard_k: 64
   min_pair_overlap: 4
-  pair_weights: null # null = auto progressive (view -> cart -> purchase)
+  pair_weights: null
 
 training:
   amp: true
   use_bf16: true
   batch_size: 8192
   device: cuda
-  epochs: 40
-  eval_batch_size: 2048
+  epochs: 20              # v7 chỉ cần 15-20 epoch để biết peak; rút từ 40 cho nhanh
+  eval_batch_size: 8192
   eval_every: 1
-  eval_subsample: 20000 # 0 = full eval each cycle
+  eval_subsample: 60000   # 20000 -> 60000 (giảm noise đo, ~30% val users)
   eval_seed: 42
-  l2_lambda: 1.0e-05 # lambda_wd
-  lr: 8.0e-04
+  l2_lambda: 1.0e-05
+  lr: 8.0e-04             # giữ v3
   min_lr: 1.0e-06
-  warmup_epochs: 3
+  warmup_epochs: 3        # giữ v3
   max_grad_norm: 1.0
-  cl_every_k: 2 # raise to 2 since deeper model; keep CL quality high without per-step overhead
-  max_view_triplets: 2000000
-  num_neg: 32
+  cl_every_k: 2
+  max_view_triplets: 3000000   # giữ v3
+  num_neg: 32             # giữ v3
   num_workers: 8
-  patience: 10
+  patience: 12            # 10 -> 12 (cho phép quan sát peak muộn hơn nếu có)
   save_dir: checkpoints-v7
   weight_decay: 1.0e-02
   pin_memory: true
@@ -78,7 +77,6 @@ wandb:
   run_name: bpatmp-v7
   save_every: 1
 
-# A100 optimizations
 a100:
   allow_tf32: true
   cudnn_benchmark: true
