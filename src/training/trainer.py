@@ -26,15 +26,6 @@ logger = logging.getLogger(__name__)
 
 @torch.no_grad()
 def diagnostic_module_stats(model: torch.nn.Module) -> dict[str, float]:
-    """Per-epoch diagnostic: are temporal-decay (lambda, mu) and behavior-aware
-    z_beta actually learning, or stuck near init?
-
-    - softplus(raw_lambda)/softplus(raw_mu): per-behavior temporal decay rates
-      Init at softplus(0) = ln(2) ≈ 0.693. If they drift apart per behavior,
-      decay is being learned. If all stay near 0.693, decay is dead.
-    - ||z_beta||: per-behavior weight scale in W_{rho,beta} decomposition.
-      Init at ones (||z|| = sqrt(rank) for rank=64 → 8.0). Drift = learning.
-    """
     stats: dict[str, float] = {}
     layer_idx = 0
     baw_idx = 0
@@ -690,19 +681,44 @@ def train(
     item_pop_counts = torch.bincount(train_triplets[:, 1].long(), minlength=n_items).float()
     pop_dist = (item_pop_counts + 1.0).pow(0.75)
     pop_dist = (pop_dist / pop_dist.sum()).to(device)
+    # Functional/structural params must NOT be L2-shrunk: WD=1e-2 caused
+    # z_beta to decay 8.0 -> 7.0 and raw_lambda to stay stuck at init 0.693
+    # in v7c diagnostic, killing behavior-awareness and temporal decay.
     emb_params = list(model.input_proj.parameters()) + list(model.beh_proj.parameters())
     emb_ids = {id(p) for p in emb_params}
-    other_params = [p for p in model.parameters() if id(p) not in emb_ids]
+
+    FUNC_PARAM_PATTERNS = (
+        "z_beta", "raw_lambda", "raw_mu", "raw_omega",
+        "b_rho", "c_rho_beta", "r_rho_beta",
+    )
+    functional_params = []
+    functional_ids: set[int] = set()
+    for name, p in model.named_parameters():
+        if id(p) in emb_ids:
+            continue
+        if any(pat in name for pat in FUNC_PARAM_PATTERNS):
+            functional_params.append(p)
+            functional_ids.add(id(p))
+
+    other_params = [
+        p for p in model.parameters()
+        if id(p) not in emb_ids and id(p) not in functional_ids
+    ]
     use_fused = cfg.use_fused_adamw and device.type == "cuda"
     optimizer = torch.optim.AdamW(
         [
             {"params": other_params, "weight_decay": cfg.weight_decay},
             {"params": emb_params, "weight_decay": 0.0},
+            {"params": functional_params, "weight_decay": 0.0},
         ],
         lr=cfg.lr,
         fused=use_fused,
     )
-    logger.info("Optimizer: AdamW (fused=%s, wd=%.1e on non-embedding)", use_fused, cfg.weight_decay)
+    logger.info(
+        "Optimizer: AdamW (fused=%s, wd=%.1e | groups: matmul=%d, emb=%d, functional=%d wd=0)",
+        use_fused, cfg.weight_decay,
+        len(other_params), len(emb_params), len(functional_params),
+    )
     scaler = torch.amp.GradScaler(
         "cuda", enabled=cfg.amp and not cfg.use_bf16 and device.type == "cuda"
     )
