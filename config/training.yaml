@@ -24,6 +24,7 @@ loss:
   lambda_cl: 0.15
   lambda_conv: 0.1
   lambda_mono: 0.05
+  lambda_hyper_ssl: 0.1     # v14: SSL on hyperedges
   funnel_margin: 0.1
   alpha: 0.5
   w_min: 0.05
@@ -34,6 +35,9 @@ hierarchy_cl:
   hard_k: 64
   min_pair_overlap: 4
   pair_weights: null
+
+hyper_ssl:
+  tau: 1.0                  # v14: temperature for HyperEdgeSSL
 
 training:
   amp: true
@@ -55,7 +59,7 @@ training:
   num_neg: 32
   num_workers: 8
   patience: 12
-  save_dir: checkpoints-v12
+  save_dir: checkpoints-v14
   weight_decay: 1.0e-02
   pin_memory: true
   persistent_workers: true
@@ -68,11 +72,11 @@ evaluation:
   metrics: ["HR@10", "HR@20", "HR@50", "NDCG@10", "NDCG@20", "NDCG@50"]
 
 wandb:
-  artifact_name: bpatmp-checkpoint-v12
+  artifact_name: bpatmp-checkpoint-v14
   enabled: true
   entity: nguyenmaiductrong37-h-c-vi-n-c-ng-ngh-b-u-ch-nh-vi-n-th-ng
   project: bpatmp-recsys
-  run_name: bpatmp-v12
+  run_name: bpatmp-v14
   save_every: 1
 
 a100:

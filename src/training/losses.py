@@ -389,6 +389,51 @@ class MonotonicDecayPriorLoss(nn.Module):
         return loss
 
 
+class HyperEdgeSSL(nn.Module):
+    """Global SSL on hyperedges (MixRec calcGlobalSSL).
+
+    Train hyperedge embeddings TRUC TIEP bang contrastive:
+        target = pool(hyper[purchase])              -- behavior strongest
+        positive = pool(hyper[view|cart])           -- same user, weaker behavior
+        negative = pool(hyper_disturbed[view|cart]) -- random shuffled assignment
+
+    Loss = -log( exp(target.pos / tau) / (exp(target.pos/tau) + exp(target.neg/tau)) )
+
+    Uses sum-pooling across hyperedges (shape becomes [dim]) to get a fixed-size
+    global summary per behavior. Inputs are per-behavior hyperedge tensors
+    [hyper_num, dim]. Returns scalar loss averaged across (view, cart) pairs.
+    """
+
+    BEHAVIORS_POS = ("view", "cart")
+    TARGET = "purchase"
+
+    def __init__(self, tau: float = 1.0) -> None:
+        super().__init__()
+        self.tau = tau
+
+    @autocast("cuda", enabled=False)
+    def forward(
+        self,
+        hyper_per_beh: dict[str, torch.Tensor],
+        hyper_disturbed: dict[str, torch.Tensor],
+    ) -> torch.Tensor:
+        if self.TARGET not in hyper_per_beh:
+            return torch.zeros((), device=next(iter(hyper_per_beh.values())).device)
+        target = F.normalize(hyper_per_beh[self.TARGET].float().sum(0), dim=0)
+        loss = target.new_zeros(())
+        n = 0
+        for beh in self.BEHAVIORS_POS:
+            if beh not in hyper_per_beh or beh not in hyper_disturbed:
+                continue
+            pos = F.normalize(hyper_per_beh[beh].float().sum(0), dim=0)
+            neg = F.normalize(hyper_disturbed[beh].float().sum(0), dim=0)
+            pos_s = torch.exp((target * pos).sum() / self.tau)
+            neg_s = torch.exp((target * neg).sum() / self.tau)
+            loss = loss + -torch.log(pos_s / (pos_s + neg_s + 1e-8))
+            n += 1
+        return loss / max(n, 1)
+
+
 class BPATMPTotalLoss(nn.Module):
     """Combined loss for the BPATMP model.
 
@@ -425,6 +470,8 @@ class BPATMPTotalLoss(nn.Module):
         cl_hard_k: int = 32,
         cl_min_pair_overlap: int = 4,
         cl_pair_weights: list[tuple[str, str, float]] | None = None,
+        lambda_hyper_ssl: float = 0.0,
+        hyper_ssl_tau: float = 1.0,
     ) -> None:
         super().__init__()
 
@@ -432,6 +479,7 @@ class BPATMPTotalLoss(nn.Module):
         self.lambda_conv = lambda_conv
         self.lambda_mono = lambda_mono
         self.lambda_wd = lambda_wd
+        self.lambda_hyper_ssl = lambda_hyper_ssl
 
         # Sub-modules — L2 handled here, so BPR gets l2_lambda=0
         self.bpr = MultiTaskBPRLoss(
@@ -445,6 +493,7 @@ class BPATMPTotalLoss(nn.Module):
         )
         self.funnel = FunnelPriorLoss(margin=margin)
         self.mono = MonotonicDecayPriorLoss()
+        self.hyper_ssl = HyperEdgeSSL(tau=hyper_ssl_tau)
 
     @autocast("cuda", enabled=False)
     def forward(
@@ -455,6 +504,7 @@ class BPATMPTotalLoss(nn.Module):
         scores: dict[str, torch.Tensor] | None = None,
         lambdas: dict[str, torch.Tensor] | None = None,
         model_params: torch.Tensor | None = None,
+        hyperedges: dict[str, dict[str, torch.Tensor]] | None = None,
     ) -> tuple[torch.Tensor, dict[str, float]]:
         """Compute the total BPATMP loss.
 
@@ -511,7 +561,22 @@ class BPATMPTotalLoss(nn.Module):
         else:
             log_dict["loss/mono"] = 0.0
 
-        # 5. Weight decay (L2)
+        # 5. Hyperedge global SSL (v14): trains u_hyper/i_hyper directly
+        if (
+            self.lambda_hyper_ssl > 0
+            and hyperedges is not None
+            and hyperedges.get("u") is not None
+            and hyperedges.get("u_dist") is not None
+        ):
+            l_h_u = self.hyper_ssl(hyperedges["u"], hyperedges["u_dist"])
+            l_h_i = self.hyper_ssl(hyperedges["i"], hyperedges["i_dist"])
+            l_hyper = l_h_u + l_h_i
+            total = total + self.lambda_hyper_ssl * l_hyper
+            log_dict["loss/hyper_ssl"] = l_hyper.item()
+        else:
+            log_dict["loss/hyper_ssl"] = 0.0
+
+        # 6. Weight decay (L2)
         if self.lambda_wd > 0 and model_params is not None:
             l_wd = self.lambda_wd * model_params.float()
             total = total + l_wd

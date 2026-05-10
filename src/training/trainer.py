@@ -81,6 +81,8 @@ class TrainConfig:
     bpr_alpha: float = 0.5          # exponent in w_b = (N_p / N_b) ** alpha
     bpr_w_min: float = 0.05         # floor for w_b
     cl_every_k: int = 1             # 1 = every step, K>1 = run CL every K steps
+    lambda_hyper_ssl: float = 0.0   # v14: hyperedge global SSL weight
+    hyper_ssl_tau: float = 1.0      # v14: temperature for hyperedge SSL
     use_bf16: bool = True
     max_view_triplets: int = -1
 
@@ -118,6 +120,7 @@ class TrainConfig:
         w = cfg.get("wandb", {})
         e = cfg.get("evaluation", {})
         hcl = cfg.get("hierarchy_cl", {})
+        hssl = cfg.get("hyper_ssl", {})
         a100 = cfg.get("a100", {})
 
         eval_ks = e.get("ks", [10, 20, 50])
@@ -157,6 +160,8 @@ class TrainConfig:
             funnel_margin=loss.get("funnel_margin", cls.funnel_margin),
             bpr_alpha=loss.get("alpha", cls.bpr_alpha),
             bpr_w_min=loss.get("w_min", cls.bpr_w_min),
+            lambda_hyper_ssl=loss.get("lambda_hyper_ssl", cls.lambda_hyper_ssl),
+            hyper_ssl_tau=float(hssl.get("tau", cls.hyper_ssl_tau)),
             cl_every_k=int(t.get("cl_every_k", a100.get("cl_every_k", cls.cl_every_k))),
             use_bf16=t.get("use_bf16", cls.use_bf16),
             max_view_triplets=t.get("max_view_triplets", cls.max_view_triplets),
@@ -319,12 +324,22 @@ def train_epoch(
         optimizer.zero_grad(set_to_none=True)
 
         _amp_dtype = torch.bfloat16 if use_bf16 else torch.float16
+        want_hyper = loss_fn.lambda_hyper_ssl > 0
         with torch.amp.autocast("cuda", dtype=_amp_dtype, enabled=amp and device.type == "cuda"):
-            user_emb, item_emb, beh_embs = model(
-                subgraph,
-                return_beh_embs=True,
-                ref_time=ref_time,
-            )
+            if want_hyper:
+                user_emb, item_emb, beh_embs, hyperedges = model(
+                    subgraph,
+                    return_beh_embs=True,
+                    ref_time=ref_time,
+                    return_hyperedges=True,
+                )
+            else:
+                user_emb, item_emb, beh_embs = model(
+                    subgraph,
+                    return_beh_embs=True,
+                    ref_time=ref_time,
+                )
+                hyperedges = None
 
             user_x = subgraph["user"].x.contiguous()
             u_loc = torch.searchsorted(user_x, users_g.contiguous())
@@ -429,6 +444,7 @@ def train_epoch(
             scores=funnel_scores,
             lambdas=lambdas_dict,
             model_params=model_l2,
+            hyperedges=hyperedges,
         )
 
         if amp:
@@ -662,12 +678,15 @@ def train(
         cl_hard_k=cfg.hierarchy_cl_hard_k,
         cl_min_pair_overlap=cfg.hierarchy_cl_min_pair_overlap,
         cl_pair_weights=cfg.hierarchy_cl_pair_weights,
+        lambda_hyper_ssl=cfg.lambda_hyper_ssl,
+        hyper_ssl_tau=cfg.hyper_ssl_tau,
     ).to(device)
     logger.info(
-        "Loss: BPR(alpha=%.2f, w_min=%.2f, weights=%s) + lambda_cl=%.3f + lambda_conv=%.3f + lambda_mono=%.3f + lambda_wd=%.1e",
+        "Loss: BPR(alpha=%.2f, w_min=%.2f, weights=%s) + lambda_cl=%.3f + lambda_conv=%.3f + lambda_mono=%.3f + lambda_hyper_ssl=%.3f(tau=%.2f) + lambda_wd=%.1e",
         cfg.bpr_alpha, cfg.bpr_w_min,
         loss_fn.bpr.task_weights.tolist(),
-        loss_fn.lambda_cl, loss_fn.lambda_conv, loss_fn.lambda_mono, loss_fn.lambda_wd,
+        loss_fn.lambda_cl, loss_fn.lambda_conv, loss_fn.lambda_mono,
+        loss_fn.lambda_hyper_ssl, cfg.hyper_ssl_tau, loss_fn.lambda_wd,
     )
 
     history_ptr, history_item = build_user_history_csr(train_triplets, n_users=n_users)

@@ -446,27 +446,52 @@ class HyperPropagation(nn.Module):
         i_emb: Tensor,
         u_emb_0: Tensor,
         i_emb_0: Tensor,
-    ) -> Tuple[Tensor, Tensor]:
-        # Soft hyperedge assignment (giong MixRec uuHyper = uEmbed0 @ uhyper).
-        uuH = u_emb_0 @ self.u_hyper       # [Nu, H]
-        iiH = i_emb_0 @ self.i_hyper       # [Ni, H]
+        return_hyperedges: bool = False,
+    ):
+        # Fix C: detach u_emb_0/i_emb_0 in hyper assignment path so BPR khong
+        # day u_emb_0 -> uuH -> u_hyper. u_hyper duoc train doc quyen boi SSL.
+        uuH = u_emb_0.detach() @ self.u_hyper       # [Nu, H]
+        iiH = i_emb_0.detach() @ self.i_hyper       # [Ni, H]
 
         wu = F.softmax(self.beh_w_u, dim=0)
         wi = F.softmax(self.beh_w_i, dim=0)
 
         u_res = u_emb.new_zeros(u_emb.shape)
         i_res = i_emb.new_zeros(i_emb.shape)
-        for b in range(len(self.BEHAVIORS)):
+        edges_u: Dict[str, Tensor] = {}
+        edges_i: Dict[str, Tensor] = {}
+        for b, beh in enumerate(self.BEHAVIORS):
             # User hyperedge: edge = FC(ReLU(uuH^T @ u_emb))
             edge_u = F.relu(uuH.transpose(0, 1) @ u_emb)   # [H, dim]
             edge_u = self.fc_u[b](edge_u.transpose(0, 1)).transpose(0, 1)  # [H, dim]
+            edges_u[beh] = edge_u
             u_res = u_res + wu[b] * (uuH @ edge_u)         # [Nu, dim]
 
             edge_i = F.relu(iiH.transpose(0, 1) @ i_emb)   # [H, dim]
             edge_i = self.fc_i[b](edge_i.transpose(0, 1)).transpose(0, 1)
+            edges_i[beh] = edge_i
             i_res = i_res + wi[b] * (iiH @ edge_i)
 
-        return u_res, i_res
+        if not return_hyperedges:
+            return u_res, i_res
+
+        # Fix B: disturbed hyperedges (random shuffle uuH/iiH along node dim).
+        with torch.no_grad():
+            perm_u = torch.randperm(uuH.size(0), device=uuH.device)
+            perm_i = torch.randperm(iiH.size(0), device=iiH.device)
+        uuH_dist = uuH[perm_u]
+        iiH_dist = iiH[perm_i]
+        edges_u_dist: Dict[str, Tensor] = {}
+        edges_i_dist: Dict[str, Tensor] = {}
+        for b, beh in enumerate(self.BEHAVIORS):
+            edge_u_d = F.relu(uuH_dist.transpose(0, 1) @ u_emb)
+            edge_u_d = self.fc_u[b](edge_u_d.transpose(0, 1)).transpose(0, 1)
+            edges_u_dist[beh] = edge_u_d
+            edge_i_d = F.relu(iiH_dist.transpose(0, 1) @ i_emb)
+            edge_i_d = self.fc_i[b](edge_i_d.transpose(0, 1)).transpose(0, 1)
+            edges_i_dist[beh] = edge_i_d
+
+        return u_res, i_res, edges_u, edges_i, edges_u_dist, edges_i_dist
 
 
 class BPATMPLayer(nn.Module):
@@ -504,6 +529,12 @@ class BPATMPLayer(nn.Module):
             [HyperPropagation(dim=dims[i + 1], hyper_num=hyper_num) for i in range(n_layers)]
         )
         self.dropout = nn.Dropout(dropout)
+        # Last-layer hyperedge cache (for HyperEdgeSSL). Set by forward when
+        # collect_hyperedges=True; consumer must read immediately after forward.
+        self.last_hyperedges_u: Optional[Dict[str, Tensor]] = None
+        self.last_hyperedges_i: Optional[Dict[str, Tensor]] = None
+        self.last_hyperedges_u_dist: Optional[Dict[str, Tensor]] = None
+        self.last_hyperedges_i_dist: Optional[Dict[str, Tensor]] = None
 
     def forward(
         self,
@@ -512,11 +543,18 @@ class BPATMPLayer(nn.Module):
         edge_attr_dict: Optional[Dict[Tuple, Tensor]] = None,
         edge_ts_dict: Optional[Dict[Tuple, Tensor]] = None,
         ref_time: Optional[float] = None,
+        collect_hyperedges: bool = False,
     ) -> Tuple[Dict[str, Tensor], Dict[str, Tensor]]:
         BEH_KEYS = ["view", "cart", "purchase"]
         h = x_dict
         beh_user_agg: Dict[str, Tensor] = {}
         all_h: list = [x_dict]  # h^0 included for LightGCN-style mean pooling
+
+        # Reset cache every forward call.
+        self.last_hyperedges_u = None
+        self.last_hyperedges_i = None
+        self.last_hyperedges_u_dist = None
+        self.last_hyperedges_i_dist = None
 
         # MixRec hypergraph dung embedding GOC (h^0) lam soft assignment.
         u0 = x_dict.get("user")
@@ -550,7 +588,17 @@ class BPATMPLayer(nn.Module):
 
             # Hypergraph residual (giong MixRec: ulats[i+1] = ulat + hyperULat + ulats[i]).
             if u0 is not None and "user" in h and i0 is not None and "product" in h:
-                u_res, i_res = self.hypers[i](h["user"], h["product"], u0, i0)
+                is_last = i == len(self.convs) - 1
+                if collect_hyperedges and is_last:
+                    u_res, i_res, eu, ei, eu_d, ei_d = self.hypers[i](
+                        h["user"], h["product"], u0, i0, return_hyperedges=True
+                    )
+                    self.last_hyperedges_u = eu
+                    self.last_hyperedges_i = ei
+                    self.last_hyperedges_u_dist = eu_d
+                    self.last_hyperedges_i_dist = ei_d
+                else:
+                    u_res, i_res = self.hypers[i](h["user"], h["product"], u0, i0)
                 h = dict(h)
                 h["user"] = h["user"] + u_res
                 h["product"] = h["product"] + i_res
@@ -692,6 +740,7 @@ class BPATMPModel(nn.Module):
         subgraph,
         return_beh_embs: bool = False,
         ref_time: Optional[float] = None,
+        return_hyperedges: bool = False,
     ) -> Tuple[Tensor, Tensor, Optional[Dict[str, Tensor]]]:
         x_dict = {}
         for ntype, emb in self.input_proj.items():
@@ -719,11 +768,28 @@ class BPATMPModel(nn.Module):
             edge_attr_dict if edge_attr_dict else None,
             edge_ts_dict if edge_ts_dict else None,
             ref_time,
+            collect_hyperedges=return_hyperedges,
         )
         h_dict = self.intent_codebook(h_dict)
 
         user_emb = h_dict.get("user", torch.zeros(0, self.embed_dim))
         item_emb = h_dict.get("product", torch.zeros(0, self.embed_dim))
+
+        hyperedges_dict: Optional[Dict[str, Dict[str, Tensor]]] = None
+        if return_hyperedges and self.encoder.last_hyperedges_u is not None:
+            hyperedges_dict = {
+                "u": self.encoder.last_hyperedges_u,
+                "i": self.encoder.last_hyperedges_i,
+                "u_dist": self.encoder.last_hyperedges_u_dist,
+                "i_dist": self.encoder.last_hyperedges_i_dist,
+            }
+
+        if return_beh_embs and return_hyperedges:
+            beh_embs = {
+                beh: self.beh_proj[beh](beh_user_agg.get(beh, torch.zeros_like(user_emb)))
+                for beh in ("view", "cart", "purchase")
+            }
+            return user_emb, item_emb, beh_embs, hyperedges_dict
 
         if return_beh_embs:
             beh_embs = {
@@ -731,5 +797,8 @@ class BPATMPModel(nn.Module):
                 for beh in ("view", "cart", "purchase")
             }
             return user_emb, item_emb, beh_embs
+
+        if return_hyperedges:
+            return user_emb, item_emb, hyperedges_dict
 
         return user_emb, item_emb
