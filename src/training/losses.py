@@ -210,43 +210,61 @@ def sample_aligned_negatives_local(
         pop_local, B * n_pop, replacement=True
     ).view(B, n_pop)
 
-    if n_hard > 0:
-        with torch.no_grad():
-            scores = user_emb_b @ item_emb_local.T
-            scores = scores.scatter(
-                1, pp_b.unsqueeze(1), float("-inf")
-            )
-            k = min(n_hard, N_items - 1)
-            _, hard_negs = scores.topk(k, dim=-1)
-            if k < n_hard:
-                pad = torch.randint(
-                    0, N_items, (B, n_hard - k), device=device
-                )
-                hard_negs = torch.cat([hard_negs, pad], dim=-1)
-    else:
-        hard_negs = torch.empty((B, 0), dtype=torch.long, device=device)
-
-    negs_local = torch.cat([rand_negs, pop_negs, hard_negs], dim=-1)
-
+    # Build user history (global ids) once; reused for hard-neg pre-masking and post-filter.
     starts = history_ptr[user_b_global]
     ends = history_ptr[user_b_global + 1]
     lens = ends - starts
     max_len = int(lens.max().item()) if lens.numel() > 0 else 0
 
+    seen = None
     if max_len > 0:
         offsets = torch.arange(max_len, device=device)
         pad_idx = (starts.unsqueeze(1) + offsets.unsqueeze(0)).clamp(
             max=history_item.size(0) - 1
         )
         valid = offsets.unsqueeze(0) < lens.unsqueeze(1)
-        seen = history_item[pad_idx]
+        seen = history_item[pad_idx]       # (B, max_len) global ids
         seen = seen.masked_fill(~valid, -1)
 
+    if n_hard > 0:
+        with torch.no_grad():
+            scores = user_emb_b @ item_emb_local.T  # (B, N_items)
+            scores.scatter_(1, pp_b.unsqueeze(1), float("-inf"))
+
+            # Mask full user history in subgraph BEFORE topk to avoid false negatives.
+            # Without this, hard negatives are selected from high-scoring items that are
+            # likely in the user's history (subgraph is neighborhood-biased), causing
+            # contradictory gradients once embeddings become meaningful (~epoch 3).
+            if seen is not None:
+                sorted_px, sort_ord = prod_x.sort()
+                flat_seen = seen.reshape(-1)                                    # (B*max_len,)
+                valid_flat = flat_seen >= 0
+                pos = torch.searchsorted(
+                    sorted_px, flat_seen.clamp(min=0)
+                ).clamp(max=N_items - 1)
+                in_sub = (sorted_px[pos] == flat_seen) & valid_flat            # (B*max_len,)
+                safe_local = sort_ord[pos].view(B, max_len)
+                in_sub_2d = in_sub.view(B, max_len)
+                safe_local = safe_local.masked_fill(~in_sub_2d, 0)
+                hist_mask = torch.zeros(B, N_items, dtype=torch.bool, device=device)
+                hist_mask.scatter_(1, safe_local, in_sub_2d)
+                scores.masked_fill_(hist_mask, float("-inf"))
+
+            k = min(n_hard, N_items - 1)
+            _, hard_negs = scores.topk(k, dim=-1)
+            if k < n_hard:
+                pad = torch.randint(0, N_items, (B, n_hard - k), device=device)
+                hard_negs = torch.cat([hard_negs, pad], dim=-1)
+    else:
+        hard_negs = torch.empty((B, 0), dtype=torch.long, device=device)
+
+    negs_local = torch.cat([rand_negs, pop_negs, hard_negs], dim=-1)
+
+    # Post-filter: catch any remaining false negatives in rand/pop negs.
+    if seen is not None:
         for _ in range(2):
             negs_global = prod_x[negs_local.clamp(max=N_items - 1).long()]
-            bad = (
-                negs_global.unsqueeze(2) == seen.unsqueeze(1)
-            ).any(dim=-1)
+            bad = (negs_global.unsqueeze(2) == seen.unsqueeze(1)).any(dim=-1)
             if not bad.any():
                 break
             repl = torch.randint(0, N_items, bad.shape, device=device)

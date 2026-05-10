@@ -446,6 +446,7 @@ class BPATMPLayer(nn.Module):
         BEH_KEYS = ["view", "cart", "purchase"]
         h = x_dict
         beh_user_agg: Dict[str, Tensor] = {}
+        all_h: list = [x_dict]  # h^0 included for LightGCN-style mean pooling
 
         for i, conv in enumerate(self.convs):
             if self.training and self.use_checkpoint:
@@ -473,10 +474,18 @@ class BPATMPLayer(nn.Module):
             else:
                 h, beh_user_agg = conv(h, edge_index_dict, edge_attr_dict, edge_ts_dict, ref_time)
 
+            all_h.append(h)
+
             if i < len(self.convs) - 1:
                 h = {t: self.dropout(v) for t, v in h.items()}
 
-        return h, beh_user_agg
+        # Mean pooling across h^0 .. h^L (LightGCN-style aggregation)
+        h_out: Dict[str, Tensor] = {}
+        for t in all_h[-1].keys():
+            layers = [lh[t] for lh in all_h if t in lh]
+            h_out[t] = torch.stack(layers, dim=0).mean(dim=0)
+
+        return h_out, beh_user_agg
     
 class IntentCodebook(nn.Module):
     """Shared low-rank intent codebook. Per-node attention over a small set
@@ -557,10 +566,14 @@ class BPATMPModel(nn.Module):
 
         self.intent_codebook = IntentCodebook(n_intents=n_intents, dim=embed_dim)
 
+        self.item_bias = nn.Embedding(num_nodes_dict["product"], 1)
+        nn.init.zeros_(self.item_bias.weight)
+
     def embedding_l2_norm(self) -> Tensor:
         total = torch.tensor(0.0, device=next(self.parameters()).device)
         for emb in self.input_proj.values():
             total = total + emb.weight.pow(2).sum()
+        total = total + self.item_bias.weight.pow(2).sum()
         return total
 
     def forward(
