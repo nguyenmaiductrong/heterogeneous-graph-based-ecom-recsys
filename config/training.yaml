@@ -54,7 +54,7 @@ training:
   warmup_epochs: 3
   max_grad_norm: 1.0
   cl_every_k: 2 # raise to 2 since deeper model; keep CL quality high without per-step overhead
-  max_view_triplets: 5000000
+  max_view_triplets: 2000000
   num_neg: 32
   num_workers: 8
   patience: 10
