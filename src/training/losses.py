@@ -4,47 +4,6 @@ import torch.nn.functional as F
 from torch.amp import autocast
 
 
-class PopularityBiasedNegativeSampler:
-    def __init__(
-        self,
-        item_counts: dict[str, torch.Tensor],
-        num_items: int,
-        alpha: float = 0.75,
-        device: str = "cpu",
-    ):
-        self.num_items = num_items
-        self.alpha = alpha
-        self.device = device
-        self._distributions: dict[str, torch.Tensor] = {}
-
-        for beh_name, counts in item_counts.items():
-            assert counts.shape[0] == num_items, (
-                f"item_counts['{beh_name}'] has {counts.shape[0]} entries, expected {num_items}"
-            )
-            smoothed = (counts.float() + 1.0).pow(alpha)
-            prob = smoothed / smoothed.sum()
-            self._distributions[beh_name] = prob.to(device)
-
-        if not self._distributions:
-            self._distributions["global"] = torch.full(
-                (self.num_items,), 1.0 / self.num_items, device=self.device
-            )
-        else:
-            global_prob = torch.stack(list(self._distributions.values())).mean(dim=0)
-            self._distributions["global"] = (global_prob / global_prob.sum()).to(device)
-
-    def sample(
-        self,
-        batch_size: int,
-        num_neg: int = 1,
-        behavior: str | None = None,
-        exclude_pos: torch.Tensor | None = None,
-    ) -> torch.Tensor:
-        key = behavior if behavior and behavior in self._distributions else "global"
-        neg_flat = torch.multinomial(self._distributions[key], batch_size * num_neg, replacement=True)
-        return neg_flat.view(batch_size, num_neg)
-
-
 def bpr_loss(
     pos_scores: torch.Tensor,
     neg_scores: torch.Tensor,
