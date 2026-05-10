@@ -38,10 +38,10 @@ hierarchy_cl:
 training:
   amp: true
   use_bf16: true
-  batch_size: 8192
+  batch_size: 4096
   device: cuda
   epochs: 25
-  eval_batch_size: 8192
+  eval_batch_size: 4096
   eval_every: 1
   eval_subsample: 60000
   eval_seed: 42
