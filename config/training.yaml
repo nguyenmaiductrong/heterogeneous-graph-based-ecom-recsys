@@ -46,7 +46,7 @@ training:
   eval_subsample: 60000
   eval_seed: 42
   l2_lambda: 1.0e-05
-  lr: 3.0e-04
+  lr: 1.0e-04
   min_lr: 1.0e-06
   warmup_epochs: 5
   max_grad_norm: 1.0
