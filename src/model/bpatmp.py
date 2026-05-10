@@ -399,6 +399,76 @@ class BPATMPConv(nn.Module):
         out_dict = self.behavior_agg(agg_pb, x_dict)
         return out_dict, beh_user_agg
 
+class HyperPropagation(nn.Module):
+    """MixRec-style hypergraph propagation, per-behavior, applied per GNN layer.
+
+    Cong thuc:
+        uuH = u_emb_0 @ u_hyper                         # [N_user, hyper_num]
+        edge_b = ReLU(uuH^T @ u_emb)                    # [hyper_num, dim]
+        edge_b = FC_b(edge_b)                           # per-behavior transform
+        residual_b = uuH @ edge_b                       # [N_user, dim]
+        out = sum_b w_b * residual_b                    # mix theo behavior
+
+    Tao non-local global communication: moi user "thuoc" hyperNum hyperedge
+    voi soft assignment, message di tu user -> hyperedge -> tat ca user khac.
+    Day la chia khoa MixRec dat 0.109 NDCG@20.
+    """
+
+    BEHAVIORS = ("view", "cart", "purchase")
+
+    def __init__(self, dim: int, hyper_num: int = 128) -> None:
+        super().__init__()
+        self.dim = dim
+        self.hyper_num = hyper_num
+        self.u_hyper = nn.Parameter(torch.empty(dim, hyper_num))
+        self.i_hyper = nn.Parameter(torch.empty(dim, hyper_num))
+        nn.init.xavier_uniform_(self.u_hyper)
+        nn.init.xavier_uniform_(self.i_hyper)
+        # Per-behavior FC tren hyperedge (giong MixRec FC sau hyperEdge agg).
+        # Init nho (std=0.02) thay vi xavier default: residual luc dau co magnitude
+        # nho de khong destabilize, NHUNG khac 0 de gradient van flow den u_hyper.
+        # Zero-init -> u_hyper.grad=0 vinh vien (verified) -> sai.
+        self.fc_u = nn.ModuleList(
+            [nn.Linear(hyper_num, hyper_num, bias=False) for _ in self.BEHAVIORS]
+        )
+        self.fc_i = nn.ModuleList(
+            [nn.Linear(hyper_num, hyper_num, bias=False) for _ in self.BEHAVIORS]
+        )
+        for fc in list(self.fc_u) + list(self.fc_i):
+            nn.init.normal_(fc.weight, mean=0.0, std=2e-2)
+        # Mix weights per behavior (softmax). Init bias purchase nang hon.
+        self.beh_w_u = nn.Parameter(torch.tensor([0.0, 0.2, 0.4]))
+        self.beh_w_i = nn.Parameter(torch.tensor([0.0, 0.2, 0.4]))
+
+    def forward(
+        self,
+        u_emb: Tensor,
+        i_emb: Tensor,
+        u_emb_0: Tensor,
+        i_emb_0: Tensor,
+    ) -> Tuple[Tensor, Tensor]:
+        # Soft hyperedge assignment (giong MixRec uuHyper = uEmbed0 @ uhyper).
+        uuH = u_emb_0 @ self.u_hyper       # [Nu, H]
+        iiH = i_emb_0 @ self.i_hyper       # [Ni, H]
+
+        wu = F.softmax(self.beh_w_u, dim=0)
+        wi = F.softmax(self.beh_w_i, dim=0)
+
+        u_res = u_emb.new_zeros(u_emb.shape)
+        i_res = i_emb.new_zeros(i_emb.shape)
+        for b in range(len(self.BEHAVIORS)):
+            # User hyperedge: edge = FC(ReLU(uuH^T @ u_emb))
+            edge_u = F.relu(uuH.transpose(0, 1) @ u_emb)   # [H, dim]
+            edge_u = self.fc_u[b](edge_u.transpose(0, 1)).transpose(0, 1)  # [H, dim]
+            u_res = u_res + wu[b] * (uuH @ edge_u)         # [Nu, dim]
+
+            edge_i = F.relu(iiH.transpose(0, 1) @ i_emb)   # [H, dim]
+            edge_i = self.fc_i[b](edge_i.transpose(0, 1)).transpose(0, 1)
+            i_res = i_res + wi[b] * (iiH @ edge_i)
+
+        return u_res, i_res
+
+
 class BPATMPLayer(nn.Module):
     def __init__(
         self,
@@ -411,6 +481,7 @@ class BPATMPLayer(nn.Module):
         use_checkpoint: bool = True,
         n_freqs: int = 16,
         tau: float = 7.0,
+        hyper_num: int = 128,
     ) -> None:
         super().__init__()
         assert n_layers >= 1
@@ -428,6 +499,10 @@ class BPATMPLayer(nn.Module):
                 for i in range(n_layers)
             ]
         )
+        # Hypergraph propagation per layer (MixRec hyperPropagate).
+        self.hypers = nn.ModuleList(
+            [HyperPropagation(dim=dims[i + 1], hyper_num=hyper_num) for i in range(n_layers)]
+        )
         self.dropout = nn.Dropout(dropout)
 
     def forward(
@@ -442,6 +517,10 @@ class BPATMPLayer(nn.Module):
         h = x_dict
         beh_user_agg: Dict[str, Tensor] = {}
         all_h: list = [x_dict]  # h^0 included for LightGCN-style mean pooling
+
+        # MixRec hypergraph dung embedding GOC (h^0) lam soft assignment.
+        u0 = x_dict.get("user")
+        i0 = x_dict.get("product")
 
         for i, conv in enumerate(self.convs):
             if self.training and self.use_checkpoint:
@@ -468,6 +547,13 @@ class BPATMPLayer(nn.Module):
                 beh_user_agg = {k: out_all[n + j] for j, k in enumerate(BEH_KEYS)}
             else:
                 h, beh_user_agg = conv(h, edge_index_dict, edge_attr_dict, edge_ts_dict, ref_time)
+
+            # Hypergraph residual (giong MixRec: ulats[i+1] = ulat + hyperULat + ulats[i]).
+            if u0 is not None and "user" in h and i0 is not None and "product" in h:
+                u_res, i_res = self.hypers[i](h["user"], h["product"], u0, i0)
+                h = dict(h)
+                h["user"] = h["user"] + u_res
+                h["product"] = h["product"] + i_res
 
             all_h.append(h)
 

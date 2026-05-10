@@ -691,6 +691,7 @@ def train(
     FUNC_PARAM_PATTERNS = (
         "z_beta", "raw_lambda", "raw_mu", "raw_omega",
         "b_rho", "c_rho_beta", "r_rho_beta",
+        "beh_w_u", "beh_w_i", "beh_w_user", "beh_w_item",
     )
     functional_params = []
     functional_ids: set[int] = set()
