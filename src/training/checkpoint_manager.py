@@ -329,21 +329,34 @@ class CheckpointManager:
             return None
 
         candidates: list[tuple[int, object]] = []
-        for artifact in artifacts:
-            try:
-                state = getattr(artifact, "state", "UNKNOWN").upper()
-                if state not in ("COMMITTED", "READY"):
-                    continue
-                candidates.append((self._artifact_epoch(artifact), artifact))
-            except Exception as exc:
-                _log_warn(f"Skipping unreadable artifact version: {exc}")
+        try:
+            for artifact in artifacts:
+                try:
+                    state = getattr(artifact, "state", "UNKNOWN").upper()
+                    if state not in ("COMMITTED", "READY"):
+                        continue
+                    candidates.append((self._artifact_epoch(artifact), artifact))
+                except Exception as exc:
+                    _log_warn(f"Skipping unreadable artifact version: {exc}")
+        except Exception as exc:
+            logger.info(
+                "No committed W&B artifact versions found for %s (%s: %s).",
+                collection,
+                type(exc).__name__,
+                exc,
+            )
+            return None
 
         if not candidates:
             logger.info("No committed W&B checkpoint found — starting from epoch 0.")
             return None
 
         _epoch, artifact = max(candidates, key=lambda x: x[0])
-        dl_dir = Path(artifact.download(root=str(self.local_dir)))
+        try:
+            dl_dir = Path(artifact.download(root=str(self.local_dir)))
+        except Exception as exc:
+            _log_warn(f"Failed to download newest committed W&B checkpoint: {exc}")
+            return None
         pt_files = list(dl_dir.glob("*.pt")) + list(dl_dir.glob("*.pth"))
         if not pt_files:
             logger.warning("No .pt file in downloaded artifact dir: %s", dl_dir)
