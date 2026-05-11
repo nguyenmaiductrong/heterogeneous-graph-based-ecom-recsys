@@ -8,7 +8,7 @@ data:
   struct_dir: /content/data/node_mappings
 
 model:
-  dropout: 0.2
+  dropout: 0.15
   embed_dim: 256
   n_layers: 3
   rank: 64
@@ -20,17 +20,13 @@ sampler:
   hop2_budget: 8
   hop1_sample_replace: true
 
-# Run A: train from scratch with slower ranking-focused optimization.
-# The previous run peaked early at epoch 3, then train loss kept improving
-# while NDCG@20 fell. This config lowers LR/CL/prior pressure and uses more
-# negatives to sharpen top-k ranking.
 loss:
-  lambda_cl: 0.08
-  lambda_conv: 0.05
-  lambda_mono: 0.01
+  lambda_cl: 0.05
+  lambda_conv: 0.02
+  lambda_mono: 0.0
   funnel_margin: 0.1
-  alpha: 0.6
-  w_min: 0.03
+  alpha: 0.5
+  w_min: 0.05
 
 hierarchy_cl:
   enabled: true
@@ -44,23 +40,23 @@ training:
   use_bf16: true
   batch_size: 8192
   device: cuda
-  epochs: 25
+  epochs: 30
   eval_batch_size: 8192
   eval_every: 1
   eval_subsample: 60000
   eval_seed: 42
   l2_lambda: 1.0e-05
-  lr: 4.0e-04
-  min_lr: 5.0e-05
+  lr: 6.0e-04
+  min_lr: 1.0e-05
   warmup_epochs: 4
   max_grad_norm: 1.0
   cl_every_k: 2
   max_view_triplets: 3000000
-  num_neg: 48
+  num_neg: 64
   num_workers: 8
-  patience: 6
-  save_dir: checkpoints-v3-l2-fixuseragg-runa
-  weight_decay: 1.0e-02
+  patience: 12
+  save_dir: checkpoints-v3-runb
+  weight_decay: 1.0e-04
   pin_memory: true
   persistent_workers: true
   prefetch_factor: 4
@@ -72,11 +68,11 @@ evaluation:
   metrics: ["HR@10", "HR@20", "HR@50", "NDCG@10", "NDCG@20", "NDCG@50"]
 
 wandb:
-  artifact_name: bpatmp-checkpoint-v3-l2-fixuseragg-runa
+  artifact_name: bpatmp-checkpoint-v3-runb
   enabled: true
   entity: nguyenmaiductrong37-h-c-vi-n-c-ng-ngh-b-u-ch-nh-vi-n-th-ng
   project: bpatmp-recsys
-  run_name: bpatmp-v3-l2-fixuseragg-runa
+  run_name: bpatmp-v3-runb
   save_every: 1
 
 a100:
