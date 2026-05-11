@@ -40,7 +40,7 @@ training:
   use_bf16: true
   batch_size: 8192
   device: cuda
-  epochs: 40
+  epochs: 8
   eval_batch_size: 8192
   eval_every: 1
   eval_subsample: 20000
@@ -55,8 +55,8 @@ training:
   num_neg: 32
   num_workers: 8
   patience: 10
-  save_dir: checkpoints-v3-l2-fixuseragg
-  weight_decay: 1.0e-02
+  save_dir: checkpoints-v3-l2-wdprobe
+  weight_decay: 1.0e-03
   pin_memory: true
   persistent_workers: true
   prefetch_factor: 4
@@ -68,11 +68,11 @@ evaluation:
   metrics: ["HR@10", "HR@20", "HR@50", "NDCG@10", "NDCG@20", "NDCG@50"]
 
 wandb:
-  artifact_name: bpatmp-checkpoint-v3-l2-fixuseragg
+  artifact_name: bpatmp-checkpoint-v3-l2-wdprobe
   enabled: true
   entity: nguyenmaiductrong37-h-c-vi-n-c-ng-ngh-b-u-ch-nh-vi-n-th-ng
   project: bpatmp-recsys
-  run_name: bpatmp-v3-l2-fixuseragg
+  run_name: bpatmp-v3-l2-wdprobe
   save_every: 1
 
 a100:
