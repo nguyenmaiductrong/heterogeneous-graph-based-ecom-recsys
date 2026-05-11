@@ -16,7 +16,7 @@ model:
   n_intents: 64
 
 sampler:
-  hop1_budget: 12
+  hop1_budget: 10
   hop2_budget: 4
   hop1_sample_replace: true
 
@@ -39,10 +39,10 @@ hierarchy_cl:
 training:
   amp: true
   use_bf16: true
-  batch_size: 4096
+  batch_size: 6144
   device: cuda
   epochs: 35
-  eval_batch_size: 4096
+  eval_batch_size: 6144
   eval_every: 3
   eval_subsample: 10000
   eval_seed: 42
