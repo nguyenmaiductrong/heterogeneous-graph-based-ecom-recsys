@@ -41,7 +41,6 @@ class CheckpointManager:
         verify_timeout_secs: int = 300,
         verify_poll_secs: int = 30,
         verify_on_save: bool = True,
-        model_only: bool = False,
     ):
         self.project              = project
         self.entity               = entity
@@ -52,7 +51,6 @@ class CheckpointManager:
         self.verify_timeout_secs  = verify_timeout_secs
         self.verify_poll_secs     = verify_poll_secs
         self.verify_on_save       = verify_on_save
-        self.model_only           = model_only
 
         self.local_dir.mkdir(parents=True, exist_ok=True)
 
@@ -87,7 +85,9 @@ class CheckpointManager:
 
         ckpt_path = self._download_latest_artifact()
         if ckpt_path is None:
-            logger.info("No checkpoint found on W&B — starting from epoch 0.")
+            ckpt_path = self._find_latest_local_checkpoint()
+        if ckpt_path is None:
+            logger.info("No checkpoint found on W&B or local disk — starting from epoch 0.")
             return 0
 
         ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
@@ -124,15 +124,7 @@ class CheckpointManager:
         if self.run is None:
             raise RuntimeError("Call init_wandb() first.")
 
-        ckpt_path = self._save_local(
-            model,
-            optimizer,
-            scaler,
-            epoch,
-            loss,
-            metrics,
-            model_only=self.model_only,
-        )
+        ckpt_path = self._save_local(model, optimizer, scaler, epoch, loss, metrics)
         logged_artifact = self._upload_artifact(ckpt_path, epoch, loss, metrics)
 
         self._last_logged_artifact = logged_artifact
@@ -230,22 +222,19 @@ class CheckpointManager:
         epoch: int,
         loss: float,
         metrics: dict | None,
-        model_only: bool = False,
     ) -> Path:
         path = self.local_dir / f"epoch_{epoch:03d}.pt"
         state: dict = {
             "epoch": epoch,
             "model_state_dict": model.state_dict(),
+            "optimizer_state_dict": optimizer.state_dict(),
             "loss": loss,
             "metrics": metrics or {},
         }
-        if not model_only:
-            state["optimizer_state_dict"] = optimizer.state_dict()
-        if scaler is not None and not model_only:
+        if scaler is not None:
             state["scaler_state_dict"] = scaler.state_dict()
         torch.save(state, path)
-        mode = "model-only" if model_only else "full"
-        logger.info("Saved local %s checkpoint: %s (%.1f MB)", mode, path, path.stat().st_size / 1e6)
+        logger.info("Saved local checkpoint: %s (%.1f MB)", path, path.stat().st_size / 1e6)
         return path
 
     def _upload_artifact(
@@ -299,16 +288,16 @@ class CheckpointManager:
         try:
             dl_dir = Path(self.run.use_artifact(ref, type="model").download(root=str(self.local_dir)))
         except wandb.errors.CommError:
-            logger.info("Artifact %s not found — fresh start.", ref)
-            return None
+            logger.info("Artifact %s not found — trying newest committed version.", ref)
+            return self._download_newest_committed_artifact()
         except Exception as exc:
             msg = str(exc).lower()
             if "not committed" in msg or "400" in msg:
                 _log_warn(
                     f"Artifact {ref} exists but was not committed (upload interrupted). "
-                    "Starting from epoch 0."
+                    "Falling back to newest committed version."
                 )
-                return None
+                return self._download_newest_committed_artifact()
             raise
 
         pt_files = list(dl_dir.glob("*.pt")) + list(dl_dir.glob("*.pth"))
@@ -316,6 +305,75 @@ class CheckpointManager:
             logger.warning("No .pt file in downloaded artifact dir: %s", dl_dir)
             return None
         return max(pt_files, key=lambda p: p.stat().st_mtime)
+
+    def _find_latest_local_checkpoint(self) -> Path | None:
+        ckpts = sorted(self.local_dir.glob("epoch_*.pt"))
+        if not ckpts:
+            ckpts = sorted(self.local_dir.glob("epoch_*.pth"))
+        if not ckpts:
+            return None
+        latest = ckpts[-1]
+        logger.info("Using latest local checkpoint: %s", latest)
+        return latest
+
+    def _download_newest_committed_artifact(self) -> Path | None:
+        collection = f"{self.entity}/{self.project}/{self.artifact_name}"
+        try:
+            api = wandb.Api(timeout=60)
+            try:
+                artifacts = api.artifacts(type_name="model", name=collection, per_page=100)
+            except TypeError:
+                artifacts = api.artifacts("model", collection)
+        except wandb.errors.CommError:
+            logger.info("No committed W&B artifact collection found: %s", collection)
+            return None
+
+        candidates: list[tuple[int, object]] = []
+        for artifact in artifacts:
+            try:
+                state = getattr(artifact, "state", "UNKNOWN").upper()
+                if state not in ("COMMITTED", "READY"):
+                    continue
+                candidates.append((self._artifact_epoch(artifact), artifact))
+            except Exception as exc:
+                _log_warn(f"Skipping unreadable artifact version: {exc}")
+
+        if not candidates:
+            logger.info("No committed W&B checkpoint found — starting from epoch 0.")
+            return None
+
+        _epoch, artifact = max(candidates, key=lambda x: x[0])
+        dl_dir = Path(artifact.download(root=str(self.local_dir)))
+        pt_files = list(dl_dir.glob("*.pt")) + list(dl_dir.glob("*.pth"))
+        if not pt_files:
+            logger.warning("No .pt file in downloaded artifact dir: %s", dl_dir)
+            return None
+        logger.info(
+            "Using newest committed W&B checkpoint: %s epoch=%s",
+            getattr(artifact, "name", self.artifact_name),
+            _epoch if _epoch >= 0 else "?",
+        )
+        return max(pt_files, key=lambda p: p.stat().st_mtime)
+
+    @staticmethod
+    def _artifact_epoch(artifact: object) -> int:
+        metadata = getattr(artifact, "metadata", None) or {}
+        epoch = metadata.get("epoch")
+        if epoch is not None:
+            try:
+                return int(epoch)
+            except (TypeError, ValueError):
+                pass
+
+        aliases = getattr(artifact, "aliases", []) or []
+        for alias in aliases:
+            alias_str = str(alias)
+            if alias_str.startswith("epoch-"):
+                try:
+                    return int(alias_str.removeprefix("epoch-"))
+                except ValueError:
+                    continue
+        return -1
 
     def _cleanup_old_checkpoints(self, keep: Path) -> None:
         for pt in list(self.local_dir.glob("*.pt")) + list(self.local_dir.glob("*.pth")):

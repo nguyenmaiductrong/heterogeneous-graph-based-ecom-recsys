@@ -79,7 +79,6 @@ wandb:
   run_name: bpatmp-v10-fixed
   save_every: 1
   verify_checkpoints: false
-  model_only_checkpoints: true
 
 a100:
   allow_tf32: true

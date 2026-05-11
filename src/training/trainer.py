@@ -75,7 +75,6 @@ class TrainConfig:
     wandb_artifact_name: str = "bpatmp-checkpoint"
     wandb_save_every: int = 5
     wandb_verify_checkpoints: bool = True
-    wandb_model_only_checkpoints: bool = False
 
     # Loss: L_total = L_BPR + lambda_cl*L_CL + lambda_conv*L_conv + lambda_mono*L_mono + lambda_wd*||theta||^2
     cl_weight: float = 0.1          # lambda_cl
@@ -159,9 +158,6 @@ class TrainConfig:
             wandb_save_every=w.get("save_every", cls.wandb_save_every),
             wandb_verify_checkpoints=bool(
                 w.get("verify_checkpoints", cls.wandb_verify_checkpoints)
-            ),
-            wandb_model_only_checkpoints=bool(
-                w.get("model_only_checkpoints", cls.wandb_model_only_checkpoints)
             ),
 
             # Loss
@@ -900,7 +896,6 @@ def train(
             save_every_n_epochs=cfg.wandb_save_every,
             local_dir=str(save_dir),
             verify_on_save=cfg.wandb_verify_checkpoints,
-            model_only=cfg.wandb_model_only_checkpoints,
         )
         wandb_run = wandb_manager.init_wandb(
             config={
@@ -914,7 +909,6 @@ def train(
                 "cl_weight": cfg.cl_weight,
                 "wandb_save_every": cfg.wandb_save_every,
                 "wandb_verify_checkpoints": cfg.wandb_verify_checkpoints,
-                "wandb_model_only_checkpoints": cfg.wandb_model_only_checkpoints,
             }
         )
         logger.info("W&B enabled — project=%s run=%s", cfg.wandb_project, wandb_run.id)
