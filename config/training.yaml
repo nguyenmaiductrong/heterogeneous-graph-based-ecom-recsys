@@ -12,7 +12,7 @@ model:
   embed_dim: 256
   n_layers: 3
   rank: 64
-  use_grad_checkpoint: false
+  use_grad_checkpoint: true
   n_intents: 64
 
 sampler:

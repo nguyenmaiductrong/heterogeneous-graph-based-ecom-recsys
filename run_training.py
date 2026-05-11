@@ -8,8 +8,11 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import pickle
 from pathlib import Path
+
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
 import numpy as np
 import pandas as pd

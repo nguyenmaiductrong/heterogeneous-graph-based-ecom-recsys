@@ -208,30 +208,30 @@ class BehaviorAwareNeighborSampler:
         assert edge_index_dict is not None
         dev = device or next(iter(edge_index_dict.values())).device
         self._device = dev
-        self._edge_index_dict = {
-            k: v.to(device=dev, dtype=torch.long) for k, v in edge_index_dict.items()
-        }
-        self._edge_ts_dict = {
-            k: v.to(device=dev, dtype=torch.long).view(-1) for k, v in edge_ts_dict.items()
-        }
 
-        self._num_nodes = _infer_num_nodes(self._edge_index_dict, num_nodes_dict)
+        self._num_nodes = _infer_num_nodes(edge_index_dict, num_nodes_dict)
 
         for er in _USER_BEHAVIOR_RELS:
-            if er not in self._edge_index_dict:
+            if er not in edge_index_dict:
                 raise KeyError(f"Missing required edge type {er}.")
-        if _PRODUCT_TO_CATEGORY not in self._edge_index_dict:
+        if _PRODUCT_TO_CATEGORY not in edge_index_dict:
             raise KeyError(f"Missing required edge type {_PRODUCT_TO_CATEGORY}.")
 
         self._csr: dict[tuple[str, str, str], tuple[Tensor, Tensor]] = {}
         self._csr_edge_ts: dict[tuple[str, str, str], Tensor] = {}
-        for key, ei in self._edge_index_dict.items():
+        for key, edge_index_cpu in edge_index_dict.items():
+            ei = edge_index_cpu.to(device=dev, dtype=torch.long)
             src_type = key[0]
             n_src = self._num_nodes.get(src_type, 0)
             if ei.numel() > 0:
                 n_src = max(n_src, int(ei[0].max().item()) + 1)
                 self._num_nodes[src_type] = max(self._num_nodes.get(src_type, 0), n_src)
-            edge_ts = self._edge_ts_dict.get(key)
+            edge_ts_src = edge_ts_dict.get(key)
+            edge_ts = (
+                edge_ts_src.to(device=dev, dtype=torch.long).view(-1)
+                if edge_ts_src is not None
+                else None
+            )
             ptr, cols, ts_vals = _edge_index_to_csr_with_values(
                 ei,
                 n_src,
@@ -305,24 +305,44 @@ class BehaviorAwareNeighborSampler:
         valid_seed = product_nodes >= 0
         safe_seeds = torch.where(valid_seed, product_nodes, torch.zeros_like(product_nodes))
 
-        sampled, vmask = _batch_sample_csr(
-            ptr,
-            cols,
-            safe_seeds,
-            h2,
-            generator,
-            replace=True,
-        )
+        lo = ptr[safe_seeds]
+        hi = ptr[safe_seeds + 1]
+        deg = (hi - lo).masked_fill(~valid_seed, 0)
+        max_deg = int(deg.max().item()) if deg.numel() > 0 else 0
+
+        if max_deg == 0 or h2 <= 0:
+            width = 0
+            sampled = torch.empty((n, 0), dtype=torch.long, device=self._device)
+            vmask = torch.zeros((n, 0), dtype=torch.bool, device=self._device)
+        elif max_deg <= h2:
+            # Structural degrees are usually 1 (one category/brand). Returning
+            # each neighbor once avoids multiplying identical hop-2 edges by
+            # hop2_budget, which otherwise dominates BPATMP attention memory.
+            width = max_deg
+            offsets = torch.arange(width, device=self._device, dtype=torch.long)
+            vmask = offsets.unsqueeze(0) < deg.unsqueeze(1)
+            col_idx = (lo.unsqueeze(1) + offsets.unsqueeze(0)).clamp(max=cols.size(0) - 1)
+            sampled = cols[col_idx].masked_fill(~vmask, -1)
+        else:
+            sampled, vmask = _batch_sample_csr(
+                ptr,
+                cols,
+                safe_seeds,
+                h2,
+                generator,
+                replace=True,
+            )
+            width = sampled.size(1)
 
         sampled = torch.where(valid_seed.unsqueeze(1), sampled, torch.full_like(sampled, -1))
         vmask = vmask & valid_seed.unsqueeze(1)
 
         dev = product_nodes.device
-        ot = origin_tags.to(device=dev, dtype=torch.int8).view(n, 1).expand(n, h2).clone()
+        ot = origin_tags.to(device=dev, dtype=torch.int8).view(n, 1).expand(n, width).clone()
         ot = torch.where(vmask, ot, torch.full_like(ot, -1))
         ts_out = None
         if origin_ts is not None:
-            ts_out = origin_ts.to(device=dev, dtype=torch.long).view(n, 1).expand(n, h2).clone()
+            ts_out = origin_ts.to(device=dev, dtype=torch.long).view(n, 1).expand(n, width).clone()
             ts_out = torch.where(vmask, ts_out, torch.full_like(ts_out, -1))
         return sampled, vmask, ot, ts_out
 
@@ -356,6 +376,17 @@ class BehaviorAwareNeighborSampler:
         bib = bi_all[ridx]
         tag = orig[ridx, cidx].long()
         ts = sampled_ts[ridx, cidx].long() if sampled_ts is not None else None
+
+        key_parts = [ploc, ng, bib, tag]
+        if ts is not None:
+            key_parts.append(ts)
+        edge_keys = torch.stack(key_parts, dim=1)
+        edge_keys = torch.unique(edge_keys, dim=0)
+        ploc = edge_keys[:, 0]
+        ng = edge_keys[:, 1]
+        bib = edge_keys[:, 2]
+        tag = edge_keys[:, 3]
+        ts = edge_keys[:, 4] if ts is not None else None
 
         keys = torch.stack([ng, bib], dim=1)
         uniq, inv = torch.unique(keys, dim=0, return_inverse=True)
