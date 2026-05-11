@@ -8,7 +8,7 @@ data:
   struct_dir: /content/data/node_mappings
 
 model:
-  dropout: 0.15
+  dropout: 0.3
   embed_dim: 256
   n_layers: 3
   rank: 64
@@ -21,7 +21,7 @@ sampler:
   hop1_sample_replace: true
 
 loss:
-  lambda_cl: 0.05
+  lambda_cl: 0.1
   lambda_conv: 0.02
   lambda_mono: 0.0
   funnel_margin: 0.1
@@ -40,14 +40,14 @@ training:
   use_bf16: true
   batch_size: 8192
   device: cuda
-  epochs: 8
+  epochs: 30
   eval_batch_size: 8192
   eval_every: 1
   eval_subsample: 60000
   eval_seed: 42
   l2_lambda: 1.0e-05
-  lr: 6.0e-04
-  min_lr: 1.0e-05
+  lr: 3.0e-04
+  min_lr: 5.0e-06
   warmup_epochs: 4
   max_grad_norm: 1.0
   cl_every_k: 2
@@ -55,7 +55,7 @@ training:
   num_neg: 64
   num_workers: 8
   patience: 12
-  save_dir: checkpoints-v3-runb
+  save_dir: checkpoints-v3-runc
   weight_decay: 1.0e-04
   pin_memory: true
   persistent_workers: true
@@ -68,11 +68,11 @@ evaluation:
   metrics: ["HR@10", "HR@20", "HR@50", "NDCG@10", "NDCG@20", "NDCG@50"]
 
 wandb:
-  artifact_name: bpatmp-checkpoint-v3-runb
+  artifact_name: bpatmp-checkpoint-v3-runc
   enabled: true
   entity: nguyenmaiductrong37-h-c-vi-n-c-ng-ngh-b-u-ch-nh-vi-n-th-ng
   project: bpatmp-recsys
-  run_name: bpatmp-v3-runb
+  run_name: bpatmp-v3-runc
   save_every: 1
 
 a100:
