@@ -30,7 +30,6 @@ STRUCTURAL_EDGES = [
 ALL_EDGE_TYPES = BEHAVIOR_EDGES + STRUCTURAL_EDGES
 
 BEHAVIOR_ORIGIN: Dict[str, int] = {"view": 0, "cart": 1, "purchase": 2}
-USER_TO_PRODUCT_BEHAVIOR = set(BEHAVIOR_ORIGIN)
 
 _REL_IDX: Dict[Tuple[str, str, str], int] = {et: i for i, et in enumerate(ALL_EDGE_TYPES)}
 
@@ -427,15 +426,26 @@ class BehaviorNormalizedAgg(nn.Module):
                     out[t] = x_dict[t]
                 continue
 
-            # Normalize only over buckets that are present in this subgraph.
-            # Otherwise absent buckets, especially "struct" for user nodes, can
-            # consume softmax mass and silently shrink behavior messages.
-            present_idx = [i for i, _ in present]
-            w_present = F.softmax(self.beh_w[t][present_idx], dim=0)
-            mixed = sum(
-                w_present[j] * self.norms[f"{t}__{b}"](agg_pb[t][b])
-                for j, (_, b) in enumerate(present)
-            )
+            if t == "user":
+                # User nodes do not receive structural messages directly here.
+                # Normalize across present behavior buckets only, so an absent
+                # "struct" bucket cannot consume probability mass.
+                present_idx = [i for i, _ in present]
+                w_present = F.softmax(self.beh_w[t][present_idx], dim=0)
+                mixed = sum(
+                    w_present[j] * self.norms[f"{t}__{b}"](agg_pb[t][b])
+                    for j, (_, b) in enumerate(present)
+                )
+            else:
+                # Keep non-user bucket weights on the global 4-way scale. In
+                # product-only eval, behavior buckets are absent; renormalizing
+                # structural messages to weight 1.0 makes item embeddings drift
+                # away from the training surface.
+                w = F.softmax(self.beh_w[t], dim=0)
+                mixed = sum(
+                    w[i] * self.norms[f"{t}__{b}"](agg_pb[t][b])
+                    for i, b in present
+                )
             if t in x_dict and x_dict[t].shape == mixed.shape:
                 mixed = mixed + x_dict[t]
             out[t] = F.elu(mixed)
@@ -501,13 +511,6 @@ class BPATMPConv(nn.Module):
                 continue
             if edge_index.numel() == 0:
                 continue
-            if src_type == "user" and dst_type == "product" and edge_name in USER_TO_PRODUCT_BEHAVIOR:
-                # Keep item embeddings independent of the current sampled users.
-                # Training scores and full-rank eval both need product vectors
-                # from item/structural context, while users consume behavior
-                # history through the reverse product -> user edges.
-                continue
-
             src_idx, dst_idx = edge_index
             h_src = x_dict[src_type][src_idx]
             h_dst = x_dict[dst_type][dst_idx]
