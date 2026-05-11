@@ -1,0 +1,44 @@
+wandb: Downloading large artifact bagnn-checkpoint-v2:v0, 243.15MB. 1 files... 
+wandb:   1 of 1 files downloaded.  
+Done. 0:0:0.5
+[epoch_000.pt]  Recall@10=0.0895 | Recall@20=0.1254 | Recall@50=0.1927 | NDCG@10=0.0501 | NDCG@20=0.0591 | NDCG@50=0.0724
+wandb: Downloading large artifact bagnn-checkpoint-v2:v1, 243.15MB. 1 files... 
+wandb:   1 of 1 files downloaded.  
+Done. 0:0:0.6
+[epoch_001.pt]  Recall@10=0.1070 | Recall@20=0.1443 | Recall@50=0.2113 | NDCG@10=0.0619 | NDCG@20=0.0713 | NDCG@50=0.0845
+wandb: Downloading large artifact bagnn-checkpoint-v2:v2, 243.15MB. 1 files... 
+wandb:   1 of 1 files downloaded.  
+Done. 0:0:0.2
+[epoch_002.pt]  Recall@10=0.1166 | Recall@20=0.1539 | Recall@50=0.2199 | NDCG@10=0.0689 | NDCG@20=0.0783 | NDCG@50=0.0913
+wandb: Downloading large artifact bagnn-checkpoint-v2:v3, 243.15MB. 1 files... 
+wandb:   1 of 1 files downloaded.  
+Done. 0:0:0.2
+[epoch_003.pt]  Recall@10=0.1230 | Recall@20=0.1623 | Recall@50=0.2265 | NDCG@10=0.0748 | NDCG@20=0.0847 | NDCG@50=0.0973
+wandb: Downloading large artifact bagnn-checkpoint-v2:v4, 243.15MB. 1 files... 
+wandb:   1 of 1 files downloaded.  
+Done. 0:0:0.2
+[epoch_004.pt]  Recall@10=0.1316 | Recall@20=0.1692 | Recall@50=0.2338 | NDCG@10=0.0819 | NDCG@20=0.0914 | NDCG@50=0.1042
+wandb: Downloading large artifact bagnn-checkpoint-v2:v5, 243.15MB. 1 files... 
+wandb:   1 of 1 files downloaded.  
+Done. 0:0:0.3
+[epoch_005.pt]  Recall@10=0.1414 | Recall@20=0.1786 | Recall@50=0.2458 | NDCG@10=0.0894 | NDCG@20=0.0988 | NDCG@50=0.1121
+wandb: Downloading large artifact bagnn-checkpoint-v2:v6, 243.15MB. 1 files... 
+wandb:   1 of 1 files downloaded.  
+Done. 0:0:0.2
+[epoch_006.pt]  Recall@10=0.1419 | Recall@20=0.1811 | Recall@50=0.2497 | NDCG@10=0.0897 | NDCG@20=0.0996 | NDCG@50=0.1132
+wandb: Downloading large artifact bagnn-checkpoint-v2:v7, 243.15MB. 1 files... 
+wandb:   1 of 1 files downloaded.  
+Done. 0:0:0.2
+[epoch_007.pt]  Recall@10=0.1365 | Recall@20=0.1775 | Recall@50=0.2477 | NDCG@10=0.0849 | NDCG@20=0.0952 | NDCG@50=0.1091
+wandb: Downloading large artifact bagnn-checkpoint-v2:v8, 243.15MB. 1 files... 
+wandb:   1 of 1 files downloaded.  
+Done. 0:0:0.3
+[epoch_008.pt]  Recall@10=0.1466 | Recall@20=0.1880 | Recall@50=0.2590 | NDCG@10=0.0906 | NDCG@20=0.1011 | NDCG@50=0.1150
+wandb: Downloading large artifact bagnn-checkpoint-v2:v9, 243.15MB. 1 files... 
+wandb:   1 of 1 files downloaded.  
+Done. 0:0:0.2
+[epoch_009.pt]  Recall@10=0.1516 | Recall@20=0.1936 | Recall@50=0.2658 | NDCG@10=0.0922 | NDCG@20=0.1028 | NDCG@50=0.1171
+wandb: Downloading large artifact bagnn-checkpoint-v2:v10, 243.15MB. 1 files... 
+wandb:   1 of 1 files downloaded.  
+Done. 0:0:0.2
+[epoch_010.pt]  Recall@10=0.1508 | Recall@20=0.1923 | Recall@50=0.2670 | NDCG@10=0.0923 | NDCG@20=0.1028 | NDCG@50=0.1175

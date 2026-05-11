@@ -136,6 +136,7 @@ class TemporalSplitEvaluator:
         eval_input: EvalInput,
         batch_size: int = 512,
         mode: str | None = None,
+        seed: int = 42,
     ) -> dict[str, float]:
         if mode is not None and mode not in ("full", "full_tiled"):
             logger.warning(
@@ -143,6 +144,9 @@ class TemporalSplitEvaluator:
                 mode,
             )
         return self.evaluate_full_ranking_tiled(eval_input, user_batch=batch_size)
+
+
+FullRankingEvaluator = TemporalSplitEvaluator
 
 
 def run_testpass() -> None:

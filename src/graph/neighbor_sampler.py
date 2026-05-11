@@ -532,6 +532,165 @@ class BehaviorAwareNeighborSampler:
 
         return _pack_hetero_subgraph(device, node_data, edge_data)
 
+    def _sample_user_seeds_legacy(
+        self,
+        user_seeds: Tensor,
+        generator: torch.Generator | None,
+    ) -> HeteroData:
+        bsz = user_seeds.numel()
+        h1, h2 = self._cfg.hop1_budget, self._cfg.hop2_budget
+        device = self._device
+        _empty2 = torch.empty((2, 0), dtype=torch.long, device=device)
+        _empty1 = torch.empty((0,), dtype=torch.long, device=device)
+
+        user_rows: list[int] = []
+        user_batch: list[int] = []
+        prod_rows: list[int] = []
+        prod_batch: list[int] = []
+        cat_rows: list[int] = []
+        cat_batch: list[int] = []
+        brand_rows: list[int] = []
+        brand_batch: list[int] = []
+
+        e_view: list[tuple[int, int]] = []
+        e_cart: list[tuple[int, int]] = []
+        e_purchase: list[tuple[int, int]] = []
+        e_pc: list[tuple[int, int, int]] = []
+        e_pb: list[tuple[int, int, int]] = []
+
+        user_g2l: dict[tuple[int, int], int] = {}
+        prod_g2l: dict[tuple[int, int], int] = {}
+        cat_g2l: dict[tuple[int, int], int] = {}
+        brand_g2l: dict[tuple[int, int], int] = {}
+
+        def ensure_user(ug: int, bi: int) -> int:
+            k = (ug, bi)
+            if k not in user_g2l:
+                user_g2l[k] = len(user_rows)
+                user_rows.append(ug)
+                user_batch.append(bi)
+            return user_g2l[k]
+
+        def ensure_product(pg: int, bi: int) -> int:
+            k = (pg, bi)
+            if k not in prod_g2l:
+                prod_g2l[k] = len(prod_rows)
+                prod_rows.append(pg)
+                prod_batch.append(bi)
+            return prod_g2l[k]
+
+        def ensure_category(cg: int, bi: int) -> int:
+            k = (cg, bi)
+            if k not in cat_g2l:
+                cat_g2l[k] = len(cat_rows)
+                cat_rows.append(cg)
+                cat_batch.append(bi)
+            return cat_g2l[k]
+
+        def ensure_brand(bg: int, bi: int) -> int:
+            k = (bg, bi)
+            if k not in brand_g2l:
+                brand_g2l[k] = len(brand_rows)
+                brand_rows.append(bg)
+                brand_batch.append(bi)
+            return brand_g2l[k]
+
+        beh_edges = {"view": e_view, "cart": e_cart, "purchase": e_purchase}
+        produced_by_csr = self._has_csr(_PRODUCT_TO_BRAND)
+
+        for bi in range(bsz):
+            u_global = int(user_seeds[bi].item())
+            ul = ensure_user(u_global, bi)
+
+            for beh in BEHAVIOR_TYPES:
+                rel = ("user", beh, "product")
+                ptr, cols = self._csr[rel]
+                lo = int(ptr[u_global].item())
+                hi = int(ptr[u_global + 1].item())
+                neigh = cols[lo:hi]
+                picked = _sample_without_replacement(neigh, h1, generator)
+                bid = BEHAVIOR_TO_ID[beh]
+
+                for pg in picked.tolist():
+                    pl = ensure_product(pg, bi)
+                    beh_edges[beh].append((ul, pl))
+
+                    p_ptr, p_cols = self._csr[_PRODUCT_TO_CATEGORY]
+                    lo2 = int(p_ptr[pg].item())
+                    hi2 = int(p_ptr[pg + 1].item())
+                    c_neigh = p_cols[lo2:hi2]
+                    c_picked = _sample_without_replacement(c_neigh, h2, generator)
+                    for cg in c_picked.tolist():
+                        cl = ensure_category(cg, bi)
+                        e_pc.append((pl, cl, bid))
+
+                    if produced_by_csr:
+                        b_ptr, b_cols = self._csr[_PRODUCT_TO_BRAND]
+                        lo3 = int(b_ptr[pg].item())
+                        hi3 = int(b_ptr[pg + 1].item())
+                        b_neigh = b_cols[lo3:hi3]
+                        b_picked = _sample_without_replacement(b_neigh, h2, generator)
+                        for bg in b_picked.tolist():
+                            bl = ensure_brand(bg, bi)
+                            e_pb.append((pl, bl, bid))
+
+        def _l2t(lst: list[int]) -> Tensor:
+            if not lst:
+                return _empty1
+            return torch.tensor(lst, dtype=torch.long, device=device)
+
+        def _pairs_ei(pairs: list[tuple[int, int]]) -> Tensor:
+            if not pairs:
+                return _empty2
+            return torch.tensor(pairs, dtype=torch.long, device=device).t().contiguous()
+
+        def _triples_unpack(
+            triples: list[tuple[int, int, int]],
+        ) -> tuple[Tensor, Tensor, Tensor]:
+            if not triples:
+                return _empty1, _empty1, _empty1
+            src = torch.tensor([a for a, _, _ in triples], dtype=torch.long, device=device)
+            dst = torch.tensor([b for _, b, _ in triples], dtype=torch.long, device=device)
+            tag = torch.tensor([c for _, _, c in triples], dtype=torch.long, device=device)
+            return src, dst, tag
+
+        ev = _pairs_ei(e_view)
+        ec = _pairs_ei(e_cart)
+        ep = _pairs_ei(e_purchase)
+        pc_s, pc_d, pc_t = _triples_unpack(e_pc)
+        pb_s, pb_d, pb_t = _triples_unpack(e_pb)
+
+        def _ei(src: Tensor, dst: Tensor) -> Tensor:
+            if src.numel() == 0:
+                return _empty2
+            return torch.stack([src, dst], dim=0)
+
+        def _attr(tag: Tensor) -> Tensor | None:
+            if tag.numel() == 0:
+                return None
+            return tag.view(-1, 1)
+
+        node_data = {
+            "user": (_l2t(user_rows), _l2t(user_batch)),
+            "product": (_l2t(prod_rows), _l2t(prod_batch)),
+            "category": (_l2t(cat_rows), _l2t(cat_batch)),
+            "brand": (_l2t(brand_rows), _l2t(brand_batch)),
+        }
+        edge_data: dict[tuple[str, str, str], tuple[Tensor, Tensor | None]] = {
+            ("user", "view", "product"): (ev, None),
+            ("user", "cart", "product"): (ec, None),
+            ("user", "purchase", "product"): (ep, None),
+            ("product", "rev_view", "user"): (ev.flip(0) if ev.size(1) > 0 else _empty2, None),
+            ("product", "rev_cart", "user"): (ec.flip(0) if ec.size(1) > 0 else _empty2, None),
+            ("product", "rev_purchase", "user"): (ep.flip(0) if ep.size(1) > 0 else _empty2, None),
+            ("product", "belongs_to", "category"): (_ei(pc_s, pc_d), _attr(pc_t)),
+            ("category", "contains", "product"): (_ei(pc_d, pc_s), _attr(pc_t)),
+            ("product", "producedBy", "brand"): (_ei(pb_s, pb_d), _attr(pb_t)),
+            ("brand", "brands", "product"): (_ei(pb_d, pb_s), _attr(pb_t)),
+        }
+
+        return _pack_hetero_subgraph(device, node_data, edge_data)
+
     def _sample_product_seeds_vectorized(
         self,
         product_seeds: Tensor,
@@ -655,3 +814,4 @@ def collate_hetero_subgraphs(batch: list[HeteroData]) -> Batch:
     return Batch.from_data_list(batch)
 
 
+HeteroNeighborSampler = BehaviorAwareNeighborSampler
