@@ -701,7 +701,7 @@ def export_embeddings(
     sampler_seed: int | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     model.eval()
-    d = model.embed_dim
+    d = model.output_dim
     _amp_dtype = torch.bfloat16 if use_bf16 else torch.float16
     sampler_generator = _make_generator(device, sampler_seed)
 
