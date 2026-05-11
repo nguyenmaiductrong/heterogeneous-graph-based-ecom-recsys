@@ -425,8 +425,16 @@ class BehaviorNormalizedAgg(nn.Module):
                 if t in x_dict:
                     out[t] = x_dict[t]
                 continue
-            w = F.softmax(self.beh_w[t], dim=0)
-            mixed = sum(w[i] * self.norms[f"{t}__{b}"](agg_pb[t][b]) for i, b in present)
+
+            # Normalize only over buckets that are present in this subgraph.
+            # Otherwise absent buckets, especially "struct" for user nodes, can
+            # consume softmax mass and silently shrink behavior messages.
+            present_idx = [i for i, _ in present]
+            w_present = F.softmax(self.beh_w[t][present_idx], dim=0)
+            mixed = sum(
+                w_present[j] * self.norms[f"{t}__{b}"](agg_pb[t][b])
+                for j, (_, b) in enumerate(present)
+            )
             if t in x_dict and x_dict[t].shape == mixed.shape:
                 mixed = mixed + x_dict[t]
             out[t] = F.elu(mixed)

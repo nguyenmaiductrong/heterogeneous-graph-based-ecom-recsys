@@ -347,7 +347,12 @@ def _collect_model_diagnostics(model: BPATMPModel) -> dict[str, float]:
             out[f"debug/model/L{i}/z_beta_norm/{bucket}"] = float(z_norm[j].item())
 
         for ntype in ("user", "product"):
-            weights = F.softmax(conv.behavior_agg.beh_w[ntype], dim=0).detach().float()
+            if ntype == "user":
+                weights = lam.new_zeros(len(BEH_BUCKETS))
+                weights[:3] = F.softmax(conv.behavior_agg.beh_w[ntype][:3], dim=0)
+                weights = weights.detach().float()
+            else:
+                weights = F.softmax(conv.behavior_agg.beh_w[ntype], dim=0).detach().float()
             for j, bucket in enumerate(BEH_BUCKETS):
                 out[f"debug/model/L{i}/agg_weight/{ntype}/{bucket}"] = float(
                     weights[j].item()
