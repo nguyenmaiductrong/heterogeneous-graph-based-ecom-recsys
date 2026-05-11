@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
+from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -11,7 +13,7 @@ import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
 from tqdm import tqdm
 
-from src.model.bpatmp import BPATMPModel
+from src.model.bpatmp import BEH_BUCKETS, BPATMPModel
 from src.core.contracts import BEHAVIOR_TYPES, EvalInput
 from src.graph.neighbor_sampler import BehaviorAwareNeighborSampler
 from src.training.losses import (
@@ -88,6 +90,14 @@ class TrainConfig:
     log_every: int = 50
     empty_cache_freq: int = 0
 
+    # Debug diagnostics
+    debug_enabled: bool = False
+    debug_eval_repeats: int = 1
+    debug_eval_seed_stride: int = 9973
+    debug_rerun_eval_on_drop: bool = True
+    debug_primary_drop_threshold: float = 0.005
+    debug_log_model_stats: bool = True
+
     @classmethod
     def from_yaml(cls, cfg: dict) -> "TrainConfig":
         t = cfg.get("training", {})
@@ -96,6 +106,7 @@ class TrainConfig:
         e = cfg.get("evaluation", {})
         hcl = cfg.get("hierarchy_cl", {})
         a100 = cfg.get("a100", {})
+        dbg = cfg.get("debug", {})
 
         eval_ks = e.get("ks", [10, 20, 50])
         primary_metric = str(e.get("primary_metric", cls.primary_metric))
@@ -166,6 +177,22 @@ class TrainConfig:
             prefetch_factor=t.get("prefetch_factor", cls.prefetch_factor),
             log_every=w.get("log_every", cls.log_every),
             empty_cache_freq=a100.get("empty_cache_freq", cls.empty_cache_freq),
+
+            # Debug diagnostics
+            debug_enabled=bool(dbg.get("enabled", cls.debug_enabled)),
+            debug_eval_repeats=max(1, int(dbg.get("eval_repeats", cls.debug_eval_repeats))),
+            debug_eval_seed_stride=int(
+                dbg.get("eval_seed_stride", cls.debug_eval_seed_stride)
+            ),
+            debug_rerun_eval_on_drop=bool(
+                dbg.get("rerun_eval_on_drop", cls.debug_rerun_eval_on_drop)
+            ),
+            debug_primary_drop_threshold=float(
+                dbg.get("primary_drop_threshold", cls.debug_primary_drop_threshold)
+            ),
+            debug_log_model_stats=bool(
+                dbg.get("log_model_stats", cls.debug_log_model_stats)
+            ),
         )
 
 
@@ -256,6 +283,110 @@ def _extract_per_behavior_lambdas(model: BPATMPModel) -> dict[str, torch.Tensor]
     return {beh: means[i] for i, beh in enumerate(BEHAVIOR_TYPES)}
 
 
+def _unwrap_model(model: BPATMPModel) -> BPATMPModel:
+    return model._orig_mod if hasattr(model, "_orig_mod") else model
+
+
+def _as_float(value: float | torch.Tensor) -> float:
+    if isinstance(value, torch.Tensor):
+        value = value.detach().float().item()
+    return float(value)
+
+
+def _safe_div(num: float, denom: float) -> float:
+    return float(num) / float(denom) if denom else 0.0
+
+
+def _format_metric_pairs(metrics: dict[str, float], keys: list[str]) -> str:
+    parts = []
+    for key in keys:
+        if key in metrics:
+            parts.append(f"{key}={metrics[key]:.4f}")
+    return " | ".join(parts)
+
+
+def _format_main_metrics(metrics: dict[str, float]) -> str:
+    return " | ".join(
+        f"{k}={v:.4f}"
+        for k, v in metrics.items()
+        if not k.startswith("debug/")
+    )
+
+
+def _make_generator(device: torch.device, seed: int | None) -> torch.Generator | None:
+    if seed is None:
+        return None
+    try:
+        gen = torch.Generator(device=device)
+    except RuntimeError as exc:
+        if device.type == "cuda":
+            logger.warning(
+                "Could not create CUDA sampler generator for deterministic eval (%s); "
+                "falling back to the default sampler RNG.",
+                exc,
+            )
+            return None
+        gen = torch.Generator()
+    gen.manual_seed(int(seed))
+    return gen
+
+
+@torch.no_grad()
+def _collect_model_diagnostics(model: BPATMPModel) -> dict[str, float]:
+    base = _unwrap_model(model)
+    out: dict[str, float] = {}
+
+    for i, conv in enumerate(base.encoder.convs):
+        lam = F.softplus(conv.temporal_attn.raw_lambda).detach().float()
+        mu = F.softplus(conv.temporal_attn.raw_mu).detach().float()
+        z_norm = conv.baw.z_beta.detach().float().norm(dim=1)
+
+        for j, bucket in enumerate(BEH_BUCKETS):
+            out[f"debug/model/L{i}/lambda/{bucket}"] = float(lam[j].item())
+            out[f"debug/model/L{i}/mu/{bucket}"] = float(mu[j].item())
+            out[f"debug/model/L{i}/z_beta_norm/{bucket}"] = float(z_norm[j].item())
+
+        for ntype in ("user", "product"):
+            weights = F.softmax(conv.behavior_agg.beh_w[ntype], dim=0).detach().float()
+            for j, bucket in enumerate(BEH_BUCKETS):
+                out[f"debug/model/L{i}/agg_weight/{ntype}/{bucket}"] = float(
+                    weights[j].item()
+                )
+
+    for ntype in ("user", "product"):
+        emb = base.input_proj[ntype].weight.detach().float()
+        row_norm = emb.norm(dim=1)
+        out[f"debug/model/embedding_norm/{ntype}/mean"] = float(row_norm.mean().item())
+        out[f"debug/model/embedding_norm/{ntype}/max"] = float(row_norm.max().item())
+
+    return out
+
+
+def _eval_dataset_diagnostics(
+    eval_user_ids: torch.Tensor,
+    ground_truth: dict[int, int | list[int]],
+    exclude_items: dict[int, list[int]],
+) -> dict[str, float]:
+    gt_total = 0
+    excl_total = 0
+    overlap_total = 0
+    for uid in eval_user_ids.tolist():
+        gt_items = set(EvalInput._as_item_list(ground_truth[int(uid)]))
+        excl = set(int(x) for x in exclude_items.get(int(uid), []))
+        gt_total += len(gt_items)
+        excl_total += len(excl)
+        overlap_total += len(gt_items & excl)
+
+    n_users = int(eval_user_ids.numel())
+    return {
+        "debug/eval/n_users": float(n_users),
+        "debug/eval/gt_items_total": float(gt_total),
+        "debug/eval/gt_items_per_user": _safe_div(gt_total, n_users),
+        "debug/eval/exclude_items_per_user": _safe_div(excl_total, n_users),
+        "debug/eval/gt_exclude_overlap": float(overlap_total),
+    }
+
+
 def train_epoch(
     model: BPATMPModel,
     sampler: BehaviorAwareNeighborSampler,
@@ -273,13 +404,29 @@ def train_epoch(
     history_item: torch.Tensor | None = None,
     pop_dist: torch.Tensor | None = None,
     scheduler: torch.optim.lr_scheduler._LRScheduler | None = None,
+    debug_enabled: bool = False,
 ) -> dict[str, float]:
     model.train()
     total_loss = 0.0
     total_cl_loss = 0.0
+    total_cl_active_loss = 0.0
     n_steps = 0
+    n_cl_steps = 0
     n_skipped = 0  # batches dropped because no positive items found in subgraph
     purchase_id = BEHAVIOR_TYPES.index("purchase")
+
+    total_examples = 0
+    kept_examples = 0
+    per_beh_total = {b: 0 for b in BEHAVIOR_TYPES}
+    per_beh_kept = {b: 0 for b in BEHAVIOR_TYPES}
+    stat_sums: dict[str, float] = defaultdict(float)
+    stat_counts: dict[str, float] = defaultdict(float)
+
+    def add_stat(key: str, value: float | torch.Tensor, n: int | float = 1) -> None:
+        val = _as_float(value)
+        if math.isfinite(val):
+            stat_sums[key] += val * float(n)
+            stat_counts[key] += float(n)
 
     pbar = tqdm(dataloader, desc="train", leave=False, dynamic_ncols=True)
     for step, raw_batch in enumerate(pbar):
@@ -287,6 +434,13 @@ def train_epoch(
         users_g = raw_batch[:, 0]
         items_g = raw_batch[:, 1]
         beh_ids = raw_batch[:, 2]
+        batch_examples = int(users_g.numel())
+        total_examples += batch_examples
+        if debug_enabled:
+            beh_total = torch.bincount(beh_ids.detach().long().cpu(), minlength=len(BEHAVIOR_TYPES))
+            for beh_id, beh_name in enumerate(BEHAVIOR_TYPES):
+                per_beh_total[beh_name] += int(beh_total[beh_id].item())
+
         # ref_time = batch_min: every t_e < min(batch_ts) <= t_pos for ALL positives
         # in the batch, so no future leakage. Tradeoff: late-batch positives lose
         # access to recent context within (min, t_pos). Mitigated by large
@@ -320,6 +474,19 @@ def train_epoch(
             if not found_p.any():
                 n_skipped += 1
                 continue
+
+            kept_now = int(found_p.sum().item())
+            kept_examples += kept_now
+            if debug_enabled:
+                beh_kept = torch.bincount(
+                    beh_ids[found_p].detach().long().cpu(),
+                    minlength=len(BEHAVIOR_TYPES),
+                )
+                for beh_id, beh_name in enumerate(BEHAVIOR_TYPES):
+                    per_beh_kept[beh_name] += int(beh_kept[beh_id].item())
+                add_stat("debug/train/subgraph_users", float(user_emb.size(0)))
+                add_stat("debug/train/subgraph_items", float(item_emb.size(0)))
+                add_stat("debug/train/batch_kept_pos_frac", kept_now / max(batch_examples, 1))
 
             u_loc = u_loc[found_p]
             pp_loc = pp_loc[found_p]
@@ -367,6 +534,28 @@ def train_epoch(
                 neg_s = torch.bmm(neg_emb_b, u_emb_b.unsqueeze(-1)).squeeze(-1)
                 behavior_losses[beh_name] = bpr_loss(pos_s, neg_s)
 
+                if debug_enabled:
+                    pos_f = pos_s.detach().float()
+                    neg_f = neg_s.detach().float()
+                    top_neg = neg_f.max(dim=1, keepdim=True).values
+                    add_stat(f"debug/score/{beh_name}/pos_mean", pos_f.mean(), B_b)
+                    add_stat(f"debug/score/{beh_name}/neg_mean", neg_f.mean(), B_b)
+                    add_stat(
+                        f"debug/score/{beh_name}/gap_mean",
+                        (pos_f - neg_f.mean(dim=1, keepdim=True)).mean(),
+                        B_b,
+                    )
+                    add_stat(
+                        f"debug/score/{beh_name}/pos_le_topneg_frac",
+                        (pos_f <= top_neg).float().mean(),
+                        B_b,
+                    )
+                    add_stat(
+                        f"debug/negative/{beh_name}/same_pos_frac",
+                        (neg_loc == pp_b.unsqueeze(1)).float().mean(),
+                        B_b,
+                    )
+
             users_per_beh = {b: u_loc[bev == bid].unique() for bid, b in enumerate(BEHAVIOR_TYPES)}
 
             # Funnel scores on the SHARED set of purchase positives so the
@@ -407,17 +596,40 @@ def train_epoch(
             lambdas=lambdas_dict,
             model_params=model_l2,
         )
+        if not torch.isfinite(loss):
+            raise FloatingPointError(
+                f"Non-finite training loss at step={step}: "
+                + ", ".join(f"{k}={v}" for k, v in log.items())
+            )
+
+        if debug_enabled:
+            for key, value in log.items():
+                add_stat(f"debug/{key}", value)
+            if run_cl:
+                n_cl_steps += 1
+                total_cl_active_loss += float(log.get("loss/cl", 0.0))
 
         if amp:
             scaler.scale(loss).backward()
             scaler.unscale_(optimizer)
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
+            grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
             scaler.step(optimizer)
             scaler.update()
         else:
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
+            grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
             optimizer.step()
+
+        if debug_enabled:
+            grad_norm_v = _as_float(grad_norm)
+            if math.isfinite(grad_norm_v):
+                add_stat("debug/train/grad_norm", grad_norm_v)
+                stat_sums["debug/train/grad_norm_max"] = max(
+                    stat_sums["debug/train/grad_norm_max"],
+                    grad_norm_v,
+                )
+                stat_counts["debug/train/grad_norm_max"] = 1.0
+                add_stat("debug/train/grad_clip_frac", float(grad_norm_v > max_grad_norm))
 
         if scheduler is not None:
             scheduler.step()
@@ -438,6 +650,33 @@ def train_epoch(
         )
 
     return {
+        **(
+            {
+                "debug/train/kept_pos_frac": _safe_div(kept_examples, total_examples),
+                "debug/train/dropped_pos_frac": 1.0
+                - _safe_div(kept_examples, total_examples),
+                "debug/train/cl_active_loss": _safe_div(total_cl_active_loss, n_cl_steps),
+                "debug/train/cl_step_frac": _safe_div(n_cl_steps, n_steps),
+                **{
+                    f"debug/train/kept_pos_frac/{b}": _safe_div(
+                        per_beh_kept[b], per_beh_total[b]
+                    )
+                    for b in BEHAVIOR_TYPES
+                },
+                **{
+                    k: _safe_div(v, stat_counts[k])
+                    for k, v in stat_sums.items()
+                    if stat_counts.get(k, 0.0) > 0 and k != "debug/train/grad_norm_max"
+                },
+                **(
+                    {"debug/train/grad_norm_max": stat_sums["debug/train/grad_norm_max"]}
+                    if "debug/train/grad_norm_max" in stat_sums
+                    else {}
+                ),
+            }
+            if debug_enabled
+            else {}
+        ),
         "train/loss": total_loss / max(n_steps, 1),
         "train/cl_loss": total_cl_loss / max(n_steps, 1),
         "train/skipped_batches": float(n_skipped),
@@ -454,16 +693,22 @@ def export_embeddings(
     batch_size: int = 512,
     use_bf16: bool = True,
     ref_time: float | None = None,
+    sampler_seed: int | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     model.eval()
     d = model.embed_dim
     _amp_dtype = torch.bfloat16 if use_bf16 else torch.float16
+    sampler_generator = _make_generator(device, sampler_seed)
 
     item_emb = torch.zeros(n_items, d)
     for start in range(0, n_items, batch_size):
         end = min(start + batch_size, n_items)
         seeds = torch.arange(start, end, device=device)
-        sub = sampler.sample(seeds, seed_type="product").to(device)
+        sub = sampler.sample(
+            seeds,
+            seed_type="product",
+            generator=sampler_generator,
+        ).to(device)
         with torch.amp.autocast("cuda", dtype=_amp_dtype, enabled=device.type == "cuda"):
             _, item_local = model(sub, ref_time=ref_time)
         item_emb[start:end] = item_local.float().cpu()
@@ -472,7 +717,11 @@ def export_embeddings(
     for start in range(0, len(user_ids), batch_size):
         end = min(start + batch_size, len(user_ids))
         seeds = user_ids[start:end].to(device)
-        sub = sampler.sample(seeds, seed_type="user").to(device)
+        sub = sampler.sample(
+            seeds,
+            seed_type="user",
+            generator=sampler_generator,
+        ).to(device)
         with torch.amp.autocast("cuda", dtype=_amp_dtype, enabled=device.type == "cuda"):
             u_local, _ = model(sub, ref_time=ref_time)
         user_emb[start:end] = u_local.float().cpu()
@@ -494,7 +743,9 @@ def eval_epoch(
     use_bf16: bool = True,
     subsample: int = 0,
     seed: int = 42,
+    sampler_seed: int | None = None,
     ref_time: float | None = None,
+    return_diagnostics: bool = False,
 ) -> dict[str, float]:
     valid_users = list(ground_truth.keys())
 
@@ -508,6 +759,15 @@ def eval_epoch(
     eval_user_ids_filtered = torch.tensor(
         valid_users, dtype=torch.long, device=eval_user_ids.device
     )
+    diagnostics = (
+        _eval_dataset_diagnostics(eval_user_ids_filtered, ground_truth, exclude_items)
+        if return_diagnostics
+        else {}
+    )
+    if return_diagnostics:
+        diagnostics["debug/eval/user_subsample"] = float(len(valid_users))
+        diagnostics["debug/eval/user_seed"] = float(seed)
+        diagnostics["debug/eval/sampler_seed"] = float(seed if sampler_seed is None else sampler_seed)
 
     user_emb, item_emb = export_embeddings(
         model,
@@ -518,6 +778,7 @@ def eval_epoch(
         batch_size,
         use_bf16=use_bf16,
         ref_time=ref_time,
+        sampler_seed=seed if sampler_seed is None else sampler_seed,
     )
 
     eval_input = EvalInput(
@@ -528,7 +789,9 @@ def eval_epoch(
         exclude_items=exclude_items,
     )
 
-    return evaluator.evaluate(eval_input, batch_size=batch_size, mode="full_tiled")
+    metrics = evaluator.evaluate(eval_input, batch_size=batch_size, mode="full_tiled")
+    metrics.update(diagnostics)
+    return metrics
 
 
 def _setup_a100_optimizations(cfg: TrainConfig, device: torch.device) -> None:
@@ -717,6 +980,7 @@ def train(
 
     pm = cfg.primary_metric
     best_primary = -1.0
+    prev_primary: float | None = None
     no_improve = 0
     metrics = {}
 
@@ -739,33 +1003,103 @@ def train(
             history_item=history_item,
             pop_dist=pop_dist,
             scheduler=scheduler,
+            debug_enabled=cfg.debug_enabled,
         )
         train_loss = train_log["train/loss"]
         train_log["train/lr"] = float(optimizer.param_groups[0]["lr"])
+        model_diag = (
+            _collect_model_diagnostics(model)
+            if cfg.debug_enabled and cfg.debug_log_model_stats
+            else {}
+        )
+        train_log.update(model_diag)
 
-        row = f"Epoch {epoch:03d} | " + " | ".join(f"{k}={v:.4f}" for k, v in train_log.items())
+        row = f"Epoch {epoch:03d} | " + _format_main_metrics(train_log)
 
         postfix: dict[str, str] = {"loss": f"{train_loss:.4f}"}
 
         if (epoch + 1) % cfg.eval_every == 0:
-            metrics = eval_epoch(
-                model,
-                sampler,
-                eval_user_ids,
-                ground_truth,
-                exclude_items,
-                n_items,
-                evaluator,
-                device,
-                cfg.eval_batch_size,
-                use_bf16=cfg.use_bf16,
-                subsample=cfg.eval_subsample,
-                seed=cfg.eval_seed,
-                ref_time=eval_ref_time,
-            )
-            row += " | " + " | ".join(f"{k}={v:.4f}" for k, v in metrics.items())
+            eval_runs: list[dict[str, float]] = []
+            for repeat_idx in range(cfg.debug_eval_repeats if cfg.debug_enabled else 1):
+                sampler_seed = cfg.eval_seed + repeat_idx * cfg.debug_eval_seed_stride
+                run_metrics = eval_epoch(
+                    model,
+                    sampler,
+                    eval_user_ids,
+                    ground_truth,
+                    exclude_items,
+                    n_items,
+                    evaluator,
+                    device,
+                    cfg.eval_batch_size,
+                    use_bf16=cfg.use_bf16,
+                    subsample=cfg.eval_subsample,
+                    seed=cfg.eval_seed,
+                    sampler_seed=sampler_seed,
+                    ref_time=eval_ref_time,
+                    return_diagnostics=cfg.debug_enabled and repeat_idx == 0,
+                )
+                eval_runs.append(run_metrics)
+
+            metrics = dict(eval_runs[0])
+            if cfg.debug_enabled and len(eval_runs) > 1:
+                metric_keys = [
+                    k for k in eval_runs[0].keys() if not k.startswith("debug/")
+                ]
+                for key in metric_keys:
+                    vals = torch.tensor([m[key] for m in eval_runs], dtype=torch.float32)
+                    metrics[f"debug/eval/repeat_mean/{key}"] = float(vals.mean().item())
+                    metrics[f"debug/eval/repeat_std/{key}"] = float(
+                        vals.std(unbiased=False).item()
+                    )
+
+            row += " | " + _format_main_metrics(metrics)
 
             primary_val = metrics.get(pm, -1.0)
+            if cfg.debug_enabled:
+                primary_delta = 0.0 if prev_primary is None else primary_val - prev_primary
+                metrics["debug/eval/primary_delta_prev"] = primary_delta
+                metrics["debug/eval/primary_delta_best"] = (
+                    0.0 if best_primary < 0 else primary_val - best_primary
+                )
+                if (
+                    prev_primary is not None
+                    and cfg.debug_rerun_eval_on_drop
+                    and primary_delta <= -cfg.debug_primary_drop_threshold
+                ):
+                    rerun_seed = cfg.eval_seed + cfg.debug_eval_seed_stride * (epoch + 1)
+                    rerun_metrics = eval_epoch(
+                        model,
+                        sampler,
+                        eval_user_ids,
+                        ground_truth,
+                        exclude_items,
+                        n_items,
+                        evaluator,
+                        device,
+                        cfg.eval_batch_size,
+                        use_bf16=cfg.use_bf16,
+                        subsample=cfg.eval_subsample,
+                        seed=cfg.eval_seed,
+                        sampler_seed=rerun_seed,
+                        ref_time=eval_ref_time,
+                        return_diagnostics=False,
+                    )
+                    rerun_primary = rerun_metrics.get(pm, -1.0)
+                    metrics[f"debug/eval/drop_rerun/{pm}"] = rerun_primary
+                    metrics["debug/eval/drop_rerun_delta"] = rerun_primary - primary_val
+                    logger.warning(
+                        "Epoch %03d EVAL_DROP | %s prev=%.4f now=%.4f delta=%.4f | rerun_sampler_seed=%d rerun=%.4f rerun_delta=%.4f",
+                        epoch,
+                        pm,
+                        prev_primary,
+                        primary_val,
+                        primary_delta,
+                        rerun_seed,
+                        rerun_primary,
+                        rerun_primary - primary_val,
+                    )
+
             postfix[pm.replace("@", "_")] = f"{primary_val:.4f}"
             postfix["best_primary"] = f"{max(best_primary, primary_val):.4f}"
 
@@ -785,6 +1119,7 @@ def train(
                 row += "  <- best"
             else:
                 no_improve += 1
+            prev_primary = primary_val
 
         epoch_pbar.set_postfix(postfix)
         _save_checkpoint(save_dir, epoch, model, optimizer, scaler, train_loss, metrics)
@@ -807,6 +1142,77 @@ def train(
                 )
 
         logger.info(row)
+        if cfg.debug_enabled:
+            train_diag = _format_metric_pairs(
+                train_log,
+                [
+                    "debug/train/kept_pos_frac",
+                    "debug/train/dropped_pos_frac",
+                    "debug/train/kept_pos_frac/view",
+                    "debug/train/kept_pos_frac/cart",
+                    "debug/train/kept_pos_frac/purchase",
+                    "debug/loss/bpr",
+                    "debug/loss/conv",
+                    "debug/loss/mono",
+                    "debug/loss/wd",
+                    "debug/train/grad_norm",
+                    "debug/train/grad_norm_max",
+                    "debug/train/grad_clip_frac",
+                    "debug/train/cl_active_loss",
+                    "debug/train/cl_step_frac",
+                ],
+            )
+            if train_diag:
+                logger.info("Epoch %03d TRAIN_DIAG | %s", epoch, train_diag)
+
+            score_diag = _format_metric_pairs(
+                train_log,
+                [
+                    "debug/score/purchase/gap_mean",
+                    "debug/score/purchase/pos_le_topneg_frac",
+                    "debug/score/cart/gap_mean",
+                    "debug/score/view/gap_mean",
+                    "debug/negative/purchase/same_pos_frac",
+                ],
+            )
+            if score_diag:
+                logger.info("Epoch %03d SCORE_DIAG | %s", epoch, score_diag)
+
+            model_diag_line = _format_metric_pairs(
+                train_log,
+                [
+                    "debug/model/L0/lambda/view",
+                    "debug/model/L0/lambda/cart",
+                    "debug/model/L0/lambda/purchase",
+                    "debug/model/L0/z_beta_norm/view",
+                    "debug/model/L0/z_beta_norm/cart",
+                    "debug/model/L0/z_beta_norm/purchase",
+                    "debug/model/L0/agg_weight/user/view",
+                    "debug/model/L0/agg_weight/user/cart",
+                    "debug/model/L0/agg_weight/user/purchase",
+                    "debug/model/embedding_norm/user/mean",
+                    "debug/model/embedding_norm/product/mean",
+                ],
+            )
+            if model_diag_line:
+                logger.info("Epoch %03d MODEL_DIAG | %s", epoch, model_diag_line)
+
+            eval_diag = _format_metric_pairs(
+                metrics,
+                [
+                    "debug/eval/n_users",
+                    "debug/eval/gt_items_per_user",
+                    "debug/eval/exclude_items_per_user",
+                    "debug/eval/gt_exclude_overlap",
+                    "debug/eval/primary_delta_prev",
+                    "debug/eval/primary_delta_best",
+                    f"debug/eval/drop_rerun/{pm}",
+                    "debug/eval/drop_rerun_delta",
+                    f"debug/eval/repeat_std/{pm}",
+                ],
+            )
+            if eval_diag:
+                logger.info("Epoch %03d EVAL_DIAG | %s", epoch, eval_diag)
 
         if no_improve >= cfg.patience:
             logger.info(
@@ -834,11 +1240,14 @@ def train(
             cfg.eval_batch_size,
             use_bf16=cfg.use_bf16,
             subsample=0,
+            seed=cfg.eval_seed,
+            sampler_seed=cfg.eval_seed,
             ref_time=eval_ref_time,
+            return_diagnostics=cfg.debug_enabled,
         )
         logger.info(
             "FINAL VAL full-rank eval on best.pt: %s",
-            " | ".join(f"{k}={v:.4f}" for k, v in final_val_metrics.items()),
+            _format_main_metrics(final_val_metrics),
         )
         with open(save_dir / "final_val_metrics.json", "w") as f:
             json.dump(final_val_metrics, f, indent=2)
@@ -857,4 +1266,3 @@ def train(
         best_primary,
         save_dir / "best.pt",
     )
-
