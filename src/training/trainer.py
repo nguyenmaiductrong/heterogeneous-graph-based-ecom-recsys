@@ -936,6 +936,13 @@ def train(
         num_training_steps,
         cfg.lr,
     )
+    logger.info(
+        "Debug diagnostics: enabled=%s eval_repeats=%d rerun_eval_on_drop=%s drop_threshold=%.4f",
+        cfg.debug_enabled,
+        cfg.debug_eval_repeats,
+        cfg.debug_rerun_eval_on_drop,
+        cfg.debug_primary_drop_threshold,
+    )
     evaluator = TemporalSplitEvaluator(ks=list(cfg.eval_ks), device=str(device))
 
     save_dir = Path(cfg.save_dir)
@@ -1122,25 +1129,6 @@ def train(
             prev_primary = primary_val
 
         epoch_pbar.set_postfix(postfix)
-        _save_checkpoint(save_dir, epoch, model, optimizer, scaler, train_loss, metrics)
-
-        if wandb_manager is not None:
-            wandb_run.log({**train_log, **metrics, "epoch": epoch})
-            cloud_ok = wandb_manager.save_checkpoint(
-                model,
-                optimizer,
-                epoch,
-                scaler=scaler,
-                loss=train_loss,
-                metrics=metrics,
-            )
-            if not cloud_ok:
-                logger.error(
-                    "Epoch %d: W&B checkpoint NOT verified. "
-                    "Local file preserved. DO NOT close Colab yet.",
-                    epoch,
-                )
-
         logger.info(row)
         if cfg.debug_enabled:
             train_diag = _format_metric_pairs(
@@ -1213,6 +1201,25 @@ def train(
             )
             if eval_diag:
                 logger.info("Epoch %03d EVAL_DIAG | %s", epoch, eval_diag)
+
+        _save_checkpoint(save_dir, epoch, model, optimizer, scaler, train_loss, metrics)
+
+        if wandb_manager is not None:
+            wandb_run.log({**train_log, **metrics, "epoch": epoch})
+            cloud_ok = wandb_manager.save_checkpoint(
+                model,
+                optimizer,
+                epoch,
+                scaler=scaler,
+                loss=train_loss,
+                metrics=metrics,
+            )
+            if not cloud_ok:
+                logger.error(
+                    "Epoch %d: W&B checkpoint NOT verified. "
+                    "Local file preserved. DO NOT close Colab yet.",
+                    epoch,
+                )
 
         if no_improve >= cfg.patience:
             logger.info(
