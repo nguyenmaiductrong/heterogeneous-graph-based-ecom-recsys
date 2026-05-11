@@ -1862,3 +1862,254 @@ epochs:  10%|█         | 4/40 [52:54<6:27:23, 645.65s/it, loss=1.9886, NDCG_20
 2026-05-11 04:11:02,555 - src.training.trainer - INFO - Epoch 004 | train/loss=1.9886 | train/cl_loss=4.3537 | train/skipped_batches=0.0000 | train/lr=0.0008 | HR@10=0.1560 | NDCG@10=0.0600 | HR@20=0.2122 | NDCG@20=0.0719 | HR@50=0.3021 | NDCG@50=0.0888
 2026-05-11 11:11:02
 epochs:  12%|█▎        | 5/40 [55:58<6:31:51, 671.75s/it, loss=1.9886, NDCG_20=0.0719, best_primary=0.0817]
+
+## Model v3-l2-fixuseragg
+### Config
+data:
+  data_dir: /content/data/
+  node_counts:
+    brand: 1919
+    category: 14
+    product: 29892
+    user: 203063
+  struct_dir: /content/data/node_mappings
+
+model:
+  dropout: 0.2
+  embed_dim: 256
+  n_layers: 3
+  rank: 64
+  use_grad_checkpoint: false
+  n_intents: 64
+
+sampler:
+  hop1_budget: 16
+  hop2_budget: 8
+  hop1_sample_replace: true
+
+# Total loss:
+#   L = L_BPR + lambda_cl*L_CL + lambda_conv*L_conv + lambda_mono*L_mono + lambda_wd*||theta||^2
+# Per-behavior BPR weights: w_b = clip((N_purchase / N_b) ** alpha, w_min, 1.0)
+loss:
+  lambda_cl: 0.15 # contrastive (HierarchicalMBCL)
+  lambda_conv: 0.1 # funnel prior s_view < s_cart < s_purchase (0 = off)
+  lambda_mono: 0.05 # monotonic decay prior lam_view >= lam_cart >= lam_purchase (0 = off)
+  funnel_margin: 0.1
+  alpha: 0.5 # exponent in (N_p / N_b) ** alpha; alpha in [0.25, 0.5]
+  w_min: 0.05 # floor for view/cart weight
+
+hierarchy_cl:
+  enabled: true
+  tau: 0.1
+  hard_k: 64
+  min_pair_overlap: 4
+  pair_weights: null # null = auto progressive (view -> cart -> purchase)
+
+training:
+  amp: true
+  use_bf16: true
+  batch_size: 8192
+  device: cuda
+  epochs: 40
+  eval_batch_size: 8192
+  eval_every: 1
+  eval_subsample: 20000 # 0 = full eval each cycle
+  eval_seed: 42
+  l2_lambda: 1.0e-05 # lambda_wd
+  lr: 8.0e-04
+  min_lr: 1.0e-06
+  warmup_epochs: 3
+  max_grad_norm: 1.0
+  cl_every_k: 2 # raise to 2 since deeper model; keep CL quality high without per-step overhead
+  max_view_triplets: 3000000
+  num_neg: 32
+  num_workers: 8
+  patience: 10
+  save_dir: checkpoints-v3-l2-fixuseragg
+  weight_decay: 1.0e-02
+  pin_memory: true
+  persistent_workers: true
+  prefetch_factor: 4
+
+evaluation:
+  full_ranking: true
+  primary_metric: "NDCG@20"
+  ks: [10, 20, 50]
+  metrics: ["HR@10", "HR@20", "HR@50", "NDCG@10", "NDCG@20", "NDCG@50"]
+
+wandb:
+  artifact_name: bpatmp-checkpoint-v3-l2-fixuseragg
+  enabled: true
+  entity: nguyenmaiductrong37-h-c-vi-n-c-ng-ngh-b-u-ch-nh-vi-n-th-ng
+  project: bpatmp-recsys
+  run_name: bpatmp-v3-l2-fixuseragg
+  save_every: 1
+
+# A100 optimizations
+a100:
+  allow_tf32: true
+  cudnn_benchmark: true
+  use_fused_adamw: true
+  compile_model: false
+  empty_cache_freq: 0
+
+debug:
+  enabled: true
+  eval_repeats: 1 # set 2 to measure eval sampler variance on every epoch
+  eval_seed_stride: 9973
+  rerun_eval_on_drop: true
+  primary_drop_threshold: 0.005
+  log_model_stats: true
+### Log
+2026-05-11 19:05:55
+2026-05-11 12:05:55,995 - src.training.checkpoint_manager - INFO - No checkpoint found on W&B — starting from epoch 0.
+2026-05-11 19:05:55
+epochs:   0%|          | 0/40 [09:59<?, ?it/s, loss=2.5287, NDCG_20=0.0001, best_primary=0.0001]2026-05-11 12:15:55,027 - src.training.trainer - INFO - Epoch 000 | train/loss=2.5287 | train/cl_loss=4.3563 | train/skipped_batches=0.0000 | train/lr=0.0003 | HR@10=0.0001 | NDCG@10=0.0000 | HR@20=0.0004 | NDCG@20=0.0001 | HR@50=0.0008 | NDCG@50=0.0001  <- best
+2026-05-11 19:05:55
+2026-05-11 12:15:55,027 - src.training.trainer - INFO - Epoch 000 TRAIN_DIAG | debug/train/kept_pos_frac=0.9840 | debug/train/dropped_pos_frac=0.0160 | debug/train/kept_pos_frac/view=0.9587 | debug/train/kept_pos_frac/cart=0.9958 | debug/train/kept_pos_frac/purchase=0.9965 | debug/loss/bpr=1.8689 | debug/loss/conv=0.0100 | debug/loss/mono=0.0000 | debug/loss/wd=0.0054 | debug/train/grad_norm=0.1349 | debug/train/grad_norm_max=4.9905 | debug/train/grad_clip_frac=0.0203 | debug/train/cl_active_loss=8.7049 | debug/train/cl_step_frac=0.5004
+2026-05-11 19:15:55
+2026-05-11 12:15:55,027 - src.training.trainer - INFO - Epoch 000 SCORE_DIAG | debug/score/purchase/gap_mean=0.0002 | debug/score/purchase/pos_le_topneg_frac=0.8342 | debug/score/cart/gap_mean=0.0002 | debug/score/view/gap_mean=-0.0010 | debug/negative/purchase/same_pos_frac=0.0000
+2026-05-11 19:15:55
+2026-05-11 12:15:55,028 - src.training.trainer - INFO - Epoch 000 MODEL_DIAG | debug/model/L0/lambda/view=0.6957 | debug/model/L0/lambda/cart=0.6942 | debug/model/L0/lambda/purchase=0.6950 | debug/model/L0/z_beta_norm/view=7.9812 | debug/model/L0/z_beta_norm/cart=7.9820 | debug/model/L0/z_beta_norm/purchase=7.9781 | debug/model/L0/agg_weight/user/view=0.2344 | debug/model/L0/agg_weight/user/cart=0.2901 | debug/model/L0/agg_weight/user/purchase=0.4755 | debug/model/embedding_norm/user/mean=0.0384 | debug/model/embedding_norm/product/mean=0.0350
+2026-05-11 19:15:55
+2026-05-11 12:15:55,028 - src.training.trainer - INFO - Epoch 000 EVAL_DIAG | debug/eval/n_users=20000.0000 | debug/eval/gt_items_per_user=2.3874 | debug/eval/exclude_items_per_user=8.1441 | debug/eval/gt_exclude_overlap=0.0000 | debug/eval/primary_delta_prev=0.0000 | debug/eval/primary_delta_best=0.0000
+2026-05-11 19:16:01
+2026-05-11 12:16:01,576 - src.training.checkpoint_manager - INFO - Saved local: checkpoints-v3-l2-fixuseragg/epoch_000.pt (764.8 MB)
+2026-05-11 19:16:03
+2026-05-11 12:16:03,540 - src.training.checkpoint_manager - INFO - Artifact enqueued: bpatmp-checkpoint-v3-l2-fixuseragg epoch-000
+2026-05-11 19:16:17
+2026-05-11 12:16:17,811 - src.training.checkpoint_manager - INFO - Size OK: 764.85 MB (diff 0.00%)
+2026-05-11 19:16:17
+2026-05-11 12:16:17,811 - src.training.checkpoint_manager - INFO - [OK] Checkpoint epoch 0 -> vv0 confirmed (state=COMMITTED, 764.8 MB). Safe to close Colab.
+2026-05-11 19:16:17
+2026-05-11 12:16:17,899 - src.training.checkpoint_manager - INFO - Removed old checkpoint: checkpoints-v3-l2-fixuseragg/best.pt
+2026-05-11 19:16:17
+epochs:   2%|▎         | 1/40 [20:19<6:44:14, 621.90s/it, loss=2.3941, NDCG_20=0.0293, best_primary=0.0293]2026-05-11 12:26:15,173 - src.training.trainer - INFO - Epoch 001 | train/loss=2.3941 | train/cl_loss=4.3571 | train/skipped_batches=0.0000 | train/lr=0.0005 | HR@10=0.0645 | NDCG@10=0.0234 | HR@20=0.0920 | NDCG@20=0.0293 | HR@50=0.1250 | NDCG@50=0.0359  <- best
+2026-05-11 19:16:17
+2026-05-11 12:26:15,174 - src.training.trainer - INFO - Epoch 001 TRAIN_DIAG | debug/train/kept_pos_frac=0.9841 | debug/train/dropped_pos_frac=0.0159 | debug/train/kept_pos_frac/view=0.9587 | debug/train/kept_pos_frac/cart=0.9959 | debug/train/kept_pos_frac/purchase=0.9966 | debug/loss/bpr=1.6794 | debug/loss/conv=0.0101 | debug/loss/mono=0.0000 | debug/loss/wd=0.0601 | debug/train/grad_norm=0.2577 | debug/train/grad_norm_max=6.7056 | debug/train/grad_clip_frac=0.0273 | debug/train/cl_active_loss=8.7065 | debug/train/cl_step_frac=0.5004
+2026-05-11 19:26:15
+2026-05-11 12:26:15,174 - src.training.trainer - INFO - Epoch 001 SCORE_DIAG | debug/score/purchase/gap_mean=0.3625 | debug/score/purchase/pos_le_topneg_frac=0.8636 | debug/score/cart/gap_mean=0.3488 | debug/score/view/gap_mean=0.1928 | debug/negative/purchase/same_pos_frac=0.0000
+2026-05-11 19:26:15
+2026-05-11 12:26:15,174 - src.training.trainer - INFO - Epoch 001 MODEL_DIAG | debug/model/L0/lambda/view=0.7023 | debug/model/L0/lambda/cart=0.6927 | debug/model/L0/lambda/purchase=0.6893 | debug/model/L0/z_beta_norm/view=7.7792 | debug/model/L0/z_beta_norm/cart=7.6634 | debug/model/L0/z_beta_norm/purchase=7.7834 | debug/model/L0/agg_weight/user/view=0.2472 | debug/model/L0/agg_weight/user/cart=0.2894 | debug/model/L0/agg_weight/user/purchase=0.4634 | debug/model/embedding_norm/user/mean=0.2010 | debug/model/embedding_norm/product/mean=0.1448
+2026-05-11 19:26:15
+2026-05-11 12:26:15,174 - src.training.trainer - INFO - Epoch 001 EVAL_DIAG | debug/eval/n_users=20000.0000 | debug/eval/gt_items_per_user=2.3874 | debug/eval/exclude_items_per_user=8.1441 | debug/eval/gt_exclude_overlap=0.0000 | debug/eval/primary_delta_prev=0.0293 | debug/eval/primary_delta_best=0.0293
+2026-05-11 19:26:17
+2026-05-11 12:26:17,756 - src.training.checkpoint_manager - INFO - Saved local: checkpoints-v3-l2-fixuseragg/epoch_001.pt (764.8 MB)
+2026-05-11 19:26:22
+2026-05-11 12:26:22,688 - src.training.checkpoint_manager - INFO - Artifact enqueued: bpatmp-checkpoint-v3-l2-fixuseragg epoch-001
+2026-05-11 19:26:30
+2026-05-11 12:26:30,950 - src.training.checkpoint_manager - INFO - Size OK: 764.85 MB (diff 0.00%)
+2026-05-11 19:26:30
+2026-05-11 12:26:30,950 - src.training.checkpoint_manager - INFO - [OK] Checkpoint epoch 1 -> vv1 confirmed (state=COMMITTED, 764.8 MB). Safe to close Colab.
+2026-05-11 19:26:31
+2026-05-11 12:26:31,038 - src.training.checkpoint_manager - INFO - Removed old checkpoint: checkpoints-v3-l2-fixuseragg/epoch_000.pt
+2026-05-11 19:26:31
+2026-05-11 12:26:31,127 - src.training.checkpoint_manager - INFO - Removed old checkpoint: checkpoints-v3-l2-fixuseragg/best.pt
+2026-05-11 19:26:31
+epochs:   5%|▌         | 2/40 [30:32<6:30:38, 616.80s/it, loss=2.2444, NDCG_20=0.0770, best_primary=0.0770]2026-05-11 12:36:28,631 - src.training.trainer - INFO - Epoch 002 | train/loss=2.2444 | train/cl_loss=4.3539 | train/skipped_batches=0.0000 | train/lr=0.0008 | HR@10=0.1655 | NDCG@10=0.0650 | HR@20=0.2203 | NDCG@20=0.0770 | HR@50=0.3003 | NDCG@50=0.0933  <- best
+2026-05-11 19:26:31
+2026-05-11 12:36:28,631 - src.training.trainer - INFO - Epoch 002 TRAIN_DIAG | debug/train/kept_pos_frac=0.9840 | debug/train/dropped_pos_frac=0.0160 | debug/train/kept_pos_frac/view=0.9585 | debug/train/kept_pos_frac/cart=0.9958 | debug/train/kept_pos_frac/purchase=0.9965 | debug/loss/bpr=1.4685 | debug/loss/conv=0.0104 | debug/loss/mono=0.0000 | debug/loss/wd=0.1218 | debug/train/grad_norm=0.4069 | debug/train/grad_norm_max=7.0098 | debug/train/grad_clip_frac=0.0511 | debug/train/cl_active_loss=8.7001 | debug/train/cl_step_frac=0.5004
+2026-05-11 19:36:28
+2026-05-11 12:36:28,631 - src.training.trainer - INFO - Epoch 002 SCORE_DIAG | debug/score/purchase/gap_mean=0.9053 | debug/score/purchase/pos_le_topneg_frac=0.8390 | debug/score/cart/gap_mean=0.8793 | debug/score/view/gap_mean=0.5328 | debug/negative/purchase/same_pos_frac=0.0000
+2026-05-11 19:36:28
+2026-05-11 12:36:28,632 - src.training.trainer - INFO - Epoch 002 MODEL_DIAG | debug/model/L0/lambda/view=0.7032 | debug/model/L0/lambda/cart=0.6950 | debug/model/L0/lambda/purchase=0.6889 | debug/model/L0/z_beta_norm/view=7.5561 | debug/model/L0/z_beta_norm/cart=7.3843 | debug/model/L0/z_beta_norm/purchase=7.6429 | debug/model/L0/agg_weight/user/view=0.2693 | debug/model/L0/agg_weight/user/cart=0.2631 | debug/model/L0/agg_weight/user/purchase=0.4677 | debug/model/embedding_norm/user/mean=0.2313 | debug/model/embedding_norm/product/mean=0.1584
+2026-05-11 19:36:28
+2026-05-11 12:36:28,632 - src.training.trainer - INFO - Epoch 002 EVAL_DIAG | debug/eval/n_users=20000.0000 | debug/eval/gt_items_per_user=2.3874 | debug/eval/exclude_items_per_user=8.1441 | debug/eval/gt_exclude_overlap=0.0000 | debug/eval/primary_delta_prev=0.0477 | debug/eval/primary_delta_best=0.0477
+2026-05-11 19:36:33
+2026-05-11 12:36:33,508 - src.training.checkpoint_manager - INFO - Saved local: checkpoints-v3-l2-fixuseragg/epoch_002.pt (764.8 MB)
+2026-05-11 19:36:35
+2026-05-11 12:36:35,797 - src.training.checkpoint_manager - INFO - Artifact enqueued: bpatmp-checkpoint-v3-l2-fixuseragg epoch-002
+2026-05-11 19:36:44
+2026-05-11 12:36:44,435 - src.training.checkpoint_manager - INFO - Size OK: 764.85 MB (diff 0.00%)
+2026-05-11 19:36:44
+2026-05-11 12:36:44,435 - src.training.checkpoint_manager - INFO - [OK] Checkpoint epoch 2 -> vv2 confirmed (state=COMMITTED, 764.8 MB). Safe to close Colab.
+2026-05-11 19:36:44
+2026-05-11 12:36:44,527 - src.training.checkpoint_manager - INFO - Removed old checkpoint: checkpoints-v3-l2-fixuseragg/epoch_001.pt
+2026-05-11 19:36:44
+2026-05-11 12:36:44,624 - src.training.checkpoint_manager - INFO - Removed old checkpoint: checkpoints-v3-l2-fixuseragg/best.pt
+2026-05-11 19:36:44
+epochs:   8%|▊         | 3/40 [40:47<6:19:25, 615.29s/it, loss=2.1127, NDCG_20=0.0822, best_primary=0.0822]2026-05-11 12:46:43,606 - src.training.trainer - INFO - Epoch 003 | train/loss=2.1127 | train/cl_loss=4.3499 | train/skipped_batches=0.0000 | train/lr=0.0008 | HR@10=0.1737 | NDCG@10=0.0695 | HR@20=0.2338 | NDCG@20=0.0822 | HR@50=0.3209 | NDCG@50=0.0998  <- best
+2026-05-11 19:36:44
+2026-05-11 12:46:43,606 - src.training.trainer - INFO - Epoch 003 TRAIN_DIAG | debug/train/kept_pos_frac=0.9840 | debug/train/dropped_pos_frac=0.0160 | debug/train/kept_pos_frac/view=0.9586 | debug/train/kept_pos_frac/cart=0.9958 | debug/train/kept_pos_frac/purchase=0.9964 | debug/loss/bpr=1.3011 | debug/loss/conv=0.0100 | debug/loss/mono=0.0000 | debug/loss/wd=0.1582 | debug/train/grad_norm=0.4064 | debug/train/grad_norm_max=6.9705 | debug/train/grad_clip_frac=0.0449 | debug/train/cl_active_loss=8.6922 | debug/train/cl_step_frac=0.5004
+2026-05-11 19:46:43
+2026-05-11 12:46:43,606 - src.training.trainer - INFO - Epoch 003 SCORE_DIAG | debug/score/purchase/gap_mean=1.3764 | debug/score/purchase/pos_le_topneg_frac=0.7615 | debug/score/cart/gap_mean=1.3529 | debug/score/view/gap_mean=0.8338 | debug/negative/purchase/same_pos_frac=0.0000
+2026-05-11 19:46:43
+2026-05-11 12:46:43,607 - src.training.trainer - INFO - Epoch 003 MODEL_DIAG | debug/model/L0/lambda/view=0.7026 | debug/model/L0/lambda/cart=0.7022 | debug/model/L0/lambda/purchase=0.6892 | debug/model/L0/z_beta_norm/view=7.4481 | debug/model/L0/z_beta_norm/cart=7.1417 | debug/model/L0/z_beta_norm/purchase=7.5498 | debug/model/L0/agg_weight/user/view=0.2841 | debug/model/L0/agg_weight/user/cart=0.2503 | debug/model/L0/agg_weight/user/purchase=0.4656 | debug/model/embedding_norm/user/mean=0.2597 | debug/model/embedding_norm/product/mean=0.1807
+2026-05-11 19:46:43
+2026-05-11 12:46:43,607 - src.training.trainer - INFO - Epoch 003 EVAL_DIAG | debug/eval/n_users=20000.0000 | debug/eval/gt_items_per_user=2.3874 | debug/eval/exclude_items_per_user=8.1441 | debug/eval/gt_exclude_overlap=0.0000 | debug/eval/primary_delta_prev=0.0051 | debug/eval/primary_delta_best=0.0051
+2026-05-11 19:46:46
+2026-05-11 12:46:46,348 - src.training.checkpoint_manager - INFO - Saved local: checkpoints-v3-l2-fixuseragg/epoch_003.pt (764.8 MB)
+2026-05-11 19:46:48
+2026-05-11 12:46:48,361 - src.training.checkpoint_manager - INFO - Artifact enqueued: bpatmp-checkpoint-v3-l2-fixuseragg epoch-003
+2026-05-11 19:46:56
+2026-05-11 12:46:56,876 - src.training.checkpoint_manager - INFO - Size OK: 764.85 MB (diff 0.00%)
+2026-05-11 19:46:56
+2026-05-11 12:46:56,877 - src.training.checkpoint_manager - INFO - [OK] Checkpoint epoch 3 -> vv3 confirmed (state=COMMITTED, 764.8 MB). Safe to close Colab.
+2026-05-11 19:46:56
+2026-05-11 12:46:56,966 - src.training.checkpoint_manager - INFO - Removed old checkpoint: checkpoints-v3-l2-fixuseragg/epoch_002.pt
+2026-05-11 19:46:57
+2026-05-11 12:46:57,062 - src.training.checkpoint_manager - INFO - Removed old checkpoint: checkpoints-v3-l2-fixuseragg/best.pt
+2026-05-11 19:46:57
+epochs:  10%|█         | 4/40 [50:58<6:08:29, 614.17s/it, loss=2.0095, NDCG_20=0.0802, best_primary=0.0822]2026-05-11 12:56:54,454 - src.training.trainer - INFO - Epoch 004 | train/loss=2.0095 | train/cl_loss=4.3601 | train/skipped_batches=0.0000 | train/lr=0.0008 | HR@10=0.1827 | NDCG@10=0.0677 | HR@20=0.2418 | NDCG@20=0.0802 | HR@50=0.3083 | NDCG@50=0.0937
+2026-05-11 19:46:57
+2026-05-11 12:56:54,454 - src.training.trainer - INFO - Epoch 004 TRAIN_DIAG | debug/train/kept_pos_frac=0.9841 | debug/train/dropped_pos_frac=0.0159 | debug/train/kept_pos_frac/view=0.9587 | debug/train/kept_pos_frac/cart=0.9958 | debug/train/kept_pos_frac/purchase=0.9965 | debug/loss/bpr=1.1723 | debug/loss/conv=0.0133 | debug/loss/mono=0.0000 | debug/loss/wd=0.1819 | debug/train/grad_norm=0.4439 | debug/train/grad_norm_max=23.9402 | debug/train/grad_clip_frac=0.0537 | debug/train/cl_active_loss=8.7124 | debug/train/cl_step_frac=0.5004
+2026-05-11 19:56:54
+2026-05-11 12:56:54,454 - src.training.trainer - INFO - Epoch 004 SCORE_DIAG | debug/score/purchase/gap_mean=1.7716 | debug/score/purchase/pos_le_topneg_frac=0.7200 | debug/score/cart/gap_mean=1.7482 | debug/score/view/gap_mean=1.1034 | debug/negative/purchase/same_pos_frac=0.0000
+2026-05-11 19:56:54
+2026-05-11 12:56:54,455 - src.training.trainer - INFO - Epoch 004 MODEL_DIAG | debug/model/L0/lambda/view=0.7132 | debug/model/L0/lambda/cart=0.6959 | debug/model/L0/lambda/purchase=0.6856 | debug/model/L0/z_beta_norm/view=7.4201 | debug/model/L0/z_beta_norm/cart=6.9624 | debug/model/L0/z_beta_norm/purchase=7.3194 | debug/model/L0/agg_weight/user/view=0.3016 | debug/model/L0/agg_weight/user/cart=0.2335 | debug/model/L0/agg_weight/user/purchase=0.4649 | debug/model/embedding_norm/user/mean=0.2656 | debug/model/embedding_norm/product/mean=0.1972
+2026-05-11 19:56:54
+2026-05-11 12:56:54,455 - src.training.trainer - INFO - Epoch 004 EVAL_DIAG | debug/eval/n_users=20000.0000 | debug/eval/gt_items_per_user=2.3874 | debug/eval/exclude_items_per_user=8.1441 | debug/eval/gt_exclude_overlap=0.0000 | debug/eval/primary_delta_prev=-0.0020 | debug/eval/primary_delta_best=-0.0020
+2026-05-11 19:56:57
+2026-05-11 12:56:57,181 - src.training.checkpoint_manager - INFO - Saved local: checkpoints-v3-l2-fixuseragg/epoch_004.pt (764.8 MB)
+2026-05-11 19:56:59
+2026-05-11 12:56:59,149 - src.training.checkpoint_manager - INFO - Artifact enqueued: bpatmp-checkpoint-v3-l2-fixuseragg epoch-004
+2026-05-11 19:57:08
+2026-05-11 12:57:08,068 - src.training.checkpoint_manager - INFO - Size OK: 764.85 MB (diff 0.00%)
+2026-05-11 19:57:08
+2026-05-11 12:57:08,068 - src.training.checkpoint_manager - INFO - [OK] Checkpoint epoch 4 -> vv4 confirmed (state=COMMITTED, 764.8 MB). Safe to close Colab.
+2026-05-11 19:57:08
+2026-05-11 12:57:08,158 - src.training.checkpoint_manager - INFO - Removed old checkpoint: checkpoints-v3-l2-fixuseragg/epoch_003.pt
+2026-05-11 19:57:08
+epochs:  12%|█▎        | 5/40 [51:12<5:57:37, 613.06s/it, loss=2.0095, NDCG_20=0.02026-05-11 13:07:08,527 - src.training.trainer - WARNING - Epoch 005 EVAL_DROP | NDCG@20 prev=0.0802 now=0.0722 delta=-0.0080 | rerun_sampler_seed=59880 rerun=0.0717 rerun_delta=-0.0005
+2026-05-11 19:57:08
+epochs:  12%|█▎        | 5/40 [1:01:12<5:57:37, 613.06s/it, loss=1.9486, NDCG_20=0.0722, best_primary=0.0822]2026-05-11 13:07:08,528 - src.training.trainer - INFO - Epoch 005 | train/loss=1.9486 | train/cl_loss=4.3540 | train/skipped_batches=0.0000 | train/lr=0.0008 | HR@10=0.1619 | NDCG@10=0.0614 | HR@20=0.2127 | NDCG@20=0.0722 | HR@50=0.2819 | NDCG@50=0.0852
+2026-05-11 20:07:08
+2026-05-11 13:07:08,528 - src.training.trainer - INFO - Epoch 005 TRAIN_DIAG | debug/train/kept_pos_frac=0.9840 | debug/train/dropped_pos_frac=0.0160 | debug/train/kept_pos_frac/view=0.9585 | debug/train/kept_pos_frac/cart=0.9958 | debug/train/kept_pos_frac/purchase=0.9965 | debug/loss/bpr=1.1052 | debug/loss/conv=0.0100 | debug/loss/mono=0.0000 | debug/loss/wd=0.1894 | debug/train/grad_norm=0.4425 | debug/train/grad_norm_max=7.5785 | debug/train/grad_clip_frac=0.0581 | debug/train/cl_active_loss=8.7003 | debug/train/cl_step_frac=0.5004
+2026-05-11 20:07:08
+2026-05-11 13:07:08,529 - src.training.trainer - INFO - Epoch 005 SCORE_DIAG | debug/score/purchase/gap_mean=1.9885 | debug/score/purchase/pos_le_topneg_frac=0.6960 | debug/score/cart/gap_mean=1.9655 | debug/score/view/gap_mean=1.2597 | debug/negative/purchase/same_pos_frac=0.0000
+2026-05-11 20:07:08
+2026-05-11 13:07:08,529 - src.training.trainer - INFO - Epoch 005 MODEL_DIAG | debug/model/L0/lambda/view=0.7133 | debug/model/L0/lambda/cart=0.7050 | debug/model/L0/lambda/purchase=0.6829 | debug/model/L0/z_beta_norm/view=7.3907 | debug/model/L0/z_beta_norm/cart=6.7914 | debug/model/L0/z_beta_norm/purchase=7.2211 | debug/model/L0/agg_weight/user/view=0.3265 | debug/model/L0/agg_weight/user/cart=0.2232 | debug/model/L0/agg_weight/user/purchase=0.4503 | debug/model/embedding_norm/user/mean=0.2687 | debug/model/embedding_norm/product/mean=0.2142
+2026-05-11 20:07:08
+2026-05-11 13:07:08,529 - src.training.trainer - INFO - Epoch 005 EVAL_DIAG | debug/eval/n_users=20000.0000 | debug/eval/gt_items_per_user=2.3874 | debug/eval/exclude_items_per_user=8.1441 | debug/eval/gt_exclude_overlap=0.0000 | debug/eval/primary_delta_prev=-0.0080 | debug/eval/primary_delta_best=-0.0099 | debug/eval/drop_rerun/NDCG@20=0.0717 | debug/eval/drop_rerun_delta=-0.0005
+2026-05-11 20:07:11
+2026-05-11 13:07:11,305 - src.training.checkpoint_manager - INFO - Saved local: checkpoints-v3-l2-fixuseragg/epoch_005.pt (764.8 MB)
+2026-05-11 20:07:13
+2026-05-11 13:07:13,302 - src.training.checkpoint_manager - INFO - Artifact enqueued: bpatmp-checkpoint-v3-l2-fixuseragg epoch-005
+2026-05-11 20:07:21
+2026-05-11 13:07:21,469 - src.training.checkpoint_manager - INFO - Size OK: 764.85 MB (diff 0.00%)
+2026-05-11 20:07:21
+2026-05-11 13:07:21,470 - src.training.checkpoint_manager - INFO - [OK] Checkpoint epoch 5 -> vv5 confirmed (state=COMMITTED, 764.8 MB). Safe to close Colab.
+2026-05-11 20:07:21
+2026-05-11 13:07:21,566 - src.training.checkpoint_manager - INFO - Removed old checkpoint: checkpoints-v3-l2-fixuseragg/epoch_004.pt
+2026-05-11 20:07:21
+epochs:  15%|█▌        | 6/40 [1:01:25<5:47:28, 613.18s/it, loss=1.9486, NDCG_20=02026-05-11 13:17:25,742 - src.training.trainer - WARNING - Epoch 006 EVAL_DROP | NDCG@20 prev=0.0722 now=0.0615 delta=-0.0107 | rerun_sampler_seed=69853 rerun=0.0608 rerun_delta=-0.0007
+2026-05-11 20:07:21
+epochs:  15%|█▌        | 6/40 [1:11:29<5:47:28, 613.18s/it, loss=1.9023, NDCG_20=0.0615, best_primary=0.0822]2026-05-11 13:17:25,742 - src.training.trainer - INFO - Epoch 006 | train/loss=1.9023 | train/cl_loss=4.3537 | train/skipped_batches=0.0000 | train/lr=0.0008 | HR@10=0.1333 | NDCG@10=0.0512 | HR@20=0.1842 | NDCG@20=0.0615 | HR@50=0.2680 | NDCG@50=0.0764
+2026-05-11 20:17:25
+2026-05-11 13:17:25,743 - src.training.trainer - INFO - Epoch 006 TRAIN_DIAG | debug/train/kept_pos_frac=0.9841 | debug/train/dropped_pos_frac=0.0159 | debug/train/kept_pos_frac/view=0.9588 | debug/train/kept_pos_frac/cart=0.9959 | debug/train/kept_pos_frac/purchase=0.9965 | debug/loss/bpr=1.0537 | debug/loss/conv=0.0100 | debug/loss/mono=0.0000 | debug/loss/wd=0.1945 | debug/train/grad_norm=0.4135 | debug/train/grad_norm_max=3.3693 | debug/train/grad_clip_frac=0.0449 | debug/train/cl_active_loss=8.6997 | debug/train/cl_step_frac=0.5004
+2026-05-11 20:17:25
+2026-05-11 13:17:25,743 - src.training.trainer - INFO - Epoch 006 SCORE_DIAG | debug/score/purchase/gap_mean=2.1611 | debug/score/purchase/pos_le_topneg_frac=0.6781 | debug/score/cart/gap_mean=2.1406 | debug/score/view/gap_mean=1.3902 | debug/negative/purchase/same_pos_frac=0.0000
+2026-05-11 20:17:25
+2026-05-11 13:17:25,743 - src.training.trainer - INFO - Epoch 006 MODEL_DIAG | debug/model/L0/lambda/view=0.7105 | debug/model/L0/lambda/cart=0.6990 | debug/model/L0/lambda/purchase=0.6869 | debug/model/L0/z_beta_norm/view=7.3000 | debug/model/L0/z_beta_norm/cart=6.5041 | debug/model/L0/z_beta_norm/purchase=7.0991 | debug/model/L0/agg_weight/user/view=0.3430 | debug/model/L0/agg_weight/user/cart=0.2159 | debug/model/L0/agg_weight/user/purchase=0.4410 | debug/model/embedding_norm/user/mean=0.2713 | debug/model/embedding_norm/product/mean=0.2296
+2026-05-11 20:17:25
+2026-05-11 13:17:25,744 - src.training.trainer - INFO - Epoch 006 EVAL_DIAG | debug/eval/n_users=20000.0000 | debug/eval/gt_items_per_user=2.3874 | debug/eval/exclude_items_per_user=8.1441 | debug/eval/gt_exclude_overlap=0.0000 | debug/eval/primary_delta_prev=-0.0107 | debug/eval/primary_delta_best=-0.0207 | debug/eval/drop_rerun/NDCG@20=0.0608 | debug/eval/drop_rerun_delta=-0.0007
+2026-05-11 20:17:28
+2026-05-11 13:17:28,487 - src.training.checkpoint_manager - INFO - Saved local: checkpoints-v3-l2-fixuseragg/epoch_006.pt (764.8 MB)
+2026-05-11 20:17:30
+2026-05-11 13:17:30,469 - src.training.checkpoint_manager - INFO - Artifact enqueued: bpatmp-checkpoint-v3-l2-fixuseragg epoch-006
+2026-05-11 20:17:38
+2026-05-11 13:17:38,449 - src.training.checkpoint_manager - INFO - Size OK: 764.85 MB (diff 0.00%)
+2026-05-11 20:17:38
+2026-05-11 13:17:38,449 - src.training.checkpoint_manager - INFO - [OK] Checkpoint epoch 6 -> vv6 confirmed (state=COMMITTED, 764.8 MB). Safe to close Colab.
+2026-05-11 20:17:38
+2026-05-11 13:17:38,542 - src.training.checkpoint_manager - INFO - Removed old checkpoint: checkpoints-v3-l2-fixuseragg/epoch_005.pt
