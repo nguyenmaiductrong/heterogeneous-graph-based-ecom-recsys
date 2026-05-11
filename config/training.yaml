@@ -16,7 +16,7 @@ model:
   n_intents: 64
 
 sampler:
-  hop1_budget: 10
+  hop1_budget: 8
   hop2_budget: 4
   hop1_sample_replace: true
 
