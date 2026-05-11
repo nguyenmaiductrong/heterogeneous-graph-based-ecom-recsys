@@ -30,6 +30,7 @@ STRUCTURAL_EDGES = [
 ALL_EDGE_TYPES = BEHAVIOR_EDGES + STRUCTURAL_EDGES
 
 BEHAVIOR_ORIGIN: Dict[str, int] = {"view": 0, "cart": 1, "purchase": 2}
+USER_TO_PRODUCT_BEHAVIOR = set(BEHAVIOR_ORIGIN)
 
 _REL_IDX: Dict[Tuple[str, str, str], int] = {et: i for i, et in enumerate(ALL_EDGE_TYPES)}
 
@@ -499,6 +500,12 @@ class BPATMPConv(nn.Module):
             if src_type not in x_dict or dst_type not in x_dict:
                 continue
             if edge_index.numel() == 0:
+                continue
+            if src_type == "user" and dst_type == "product" and edge_name in USER_TO_PRODUCT_BEHAVIOR:
+                # Keep item embeddings independent of the current sampled users.
+                # Training scores and full-rank eval both need product vectors
+                # from item/structural context, while users consume behavior
+                # history through the reverse product -> user edges.
                 continue
 
             src_idx, dst_idx = edge_index
