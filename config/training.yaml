@@ -11,12 +11,12 @@ model:
   dropout: 0.2
   embed_dim: 256
   n_layers: 3
-  rank: 32
+  rank: 64
   use_grad_checkpoint: false
-  n_intents: 32
+  n_intents: 64
 
 sampler:
-  hop1_budget: 8
+  hop1_budget: 12
   hop2_budget: 4
   hop1_sample_replace: true
 
@@ -51,9 +51,9 @@ training:
   min_lr: 1.0e-06
   warmup_epochs: 2
   max_grad_norm: 1.0
-  cl_every_k: 4
-  max_view_triplets: 1500000
-  num_neg: 32
+  cl_every_k: 2
+  max_view_triplets: 3000000
+  num_neg: 64
   hard_neg_candidates: 4096
   neg_history_cap: 256
   num_workers: 8
