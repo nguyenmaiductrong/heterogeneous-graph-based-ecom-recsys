@@ -20,45 +20,46 @@ sampler:
   hop2_budget: 8
   hop1_sample_replace: true
 
-# Total loss:
-#   L = L_BPR + lambda_cl*L_CL + lambda_conv*L_conv + lambda_mono*L_mono + lambda_wd*||theta||^2
-# Per-behavior BPR weights: w_b = clip((N_purchase / N_b) ** alpha, w_min, 1.0)
+# Run A: train from scratch with slower ranking-focused optimization.
+# The previous run peaked early at epoch 3, then train loss kept improving
+# while NDCG@20 fell. This config lowers LR/CL/prior pressure and uses more
+# negatives to sharpen top-k ranking.
 loss:
-  lambda_cl: 0.15 # contrastive (HierarchicalMBCL)
-  lambda_conv: 0.1 # funnel prior s_view < s_cart < s_purchase (0 = off)
-  lambda_mono: 0.05 # monotonic decay prior lam_view >= lam_cart >= lam_purchase (0 = off)
+  lambda_cl: 0.08
+  lambda_conv: 0.05
+  lambda_mono: 0.01
   funnel_margin: 0.1
-  alpha: 0.5 # exponent in (N_p / N_b) ** alpha; alpha in [0.25, 0.5]
-  w_min: 0.05 # floor for view/cart weight
+  alpha: 0.6
+  w_min: 0.03
 
 hierarchy_cl:
   enabled: true
   tau: 0.1
   hard_k: 64
   min_pair_overlap: 4
-  pair_weights: null # null = auto progressive (view -> cart -> purchase)
+  pair_weights: null
 
 training:
   amp: true
   use_bf16: true
   batch_size: 8192
   device: cuda
-  epochs: 40
+  epochs: 25
   eval_batch_size: 8192
   eval_every: 1
-  eval_subsample: 20000 # 0 = full eval each cycle
+  eval_subsample: 60000
   eval_seed: 42
-  l2_lambda: 1.0e-05 # lambda_wd
-  lr: 8.0e-04
-  min_lr: 1.0e-06
-  warmup_epochs: 3
+  l2_lambda: 1.0e-05
+  lr: 4.0e-04
+  min_lr: 5.0e-05
+  warmup_epochs: 4
   max_grad_norm: 1.0
-  cl_every_k: 2 # raise to 2 since deeper model; keep CL quality high without per-step overhead
+  cl_every_k: 2
   max_view_triplets: 3000000
-  num_neg: 32
+  num_neg: 48
   num_workers: 8
-  patience: 10
-  save_dir: checkpoints-v3-l2-fixuseragg
+  patience: 6
+  save_dir: checkpoints-v3-l2-fixuseragg-runa
   weight_decay: 1.0e-02
   pin_memory: true
   persistent_workers: true
@@ -71,14 +72,13 @@ evaluation:
   metrics: ["HR@10", "HR@20", "HR@50", "NDCG@10", "NDCG@20", "NDCG@50"]
 
 wandb:
-  artifact_name: bpatmp-checkpoint-v3-l2-fixuseragg
+  artifact_name: bpatmp-checkpoint-v3-l2-fixuseragg-runa
   enabled: true
   entity: nguyenmaiductrong37-h-c-vi-n-c-ng-ngh-b-u-ch-nh-vi-n-th-ng
   project: bpatmp-recsys
-  run_name: bpatmp-v3-l2-fixuseragg
+  run_name: bpatmp-v3-l2-fixuseragg-runa
   save_every: 1
 
-# A100 optimizations
 a100:
   allow_tf32: true
   cudnn_benchmark: true
@@ -88,7 +88,7 @@ a100:
 
 debug:
   enabled: true
-  eval_repeats: 1 # set 2 to measure eval sampler variance on every epoch
+  eval_repeats: 1
   eval_seed_stride: 9973
   rerun_eval_on_drop: true
   primary_drop_threshold: 0.005
