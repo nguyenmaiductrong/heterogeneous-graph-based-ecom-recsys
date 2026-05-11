@@ -5,7 +5,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch import Tensor
 from torch.utils.checkpoint import checkpoint as grad_checkpoint
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, Optional, Tuple
 
 from src.core.contracts import EMBED_DIM
 
@@ -623,11 +623,10 @@ class BPATMPLayer(nn.Module):
         edge_attr_dict: Optional[Dict[Tuple, Tensor]] = None,
         edge_ts_dict: Optional[Dict[Tuple, Tensor]] = None,
         ref_time: Optional[float] = None,
-    ) -> Tuple[Dict[str, Tensor], Dict[str, Tensor], List[Dict[str, Tensor]]]:
+    ) -> Tuple[Dict[str, Tensor], Dict[str, Tensor]]:
         BEH_KEYS = ["view", "cart", "purchase"]
         h = x_dict
         beh_user_agg: Dict[str, Tensor] = {}
-        h_per_layer: List[Dict[str, Tensor]] = [dict(x_dict)]
 
         for i, conv in enumerate(self.convs):
             if self.training and self.use_checkpoint:
@@ -658,9 +657,7 @@ class BPATMPLayer(nn.Module):
             if i < len(self.convs) - 1:
                 h = {t: self.dropout(v) for t, v in h.items()}
 
-            h_per_layer.append(h)
-
-        return h, beh_user_agg, h_per_layer
+        return h, beh_user_agg
     
 class IntentCodebook(nn.Module):
     """Shared low-rank intent codebook. Per-node attention over a small set
@@ -741,14 +738,6 @@ class BPATMPModel(nn.Module):
 
         self.intent_codebook = IntentCodebook(n_intents=n_intents, dim=embed_dim)
 
-        n_products = num_nodes_dict.get("product", 0)
-        self.item_bias = nn.Embedding(max(n_products, 1), 1)
-        nn.init.zeros_(self.item_bias.weight)
-
-    @property
-    def output_dim(self) -> int:
-        return self.embed_dim + 1
-
     def embedding_l2_norm(self) -> Tensor:
         total = torch.tensor(0.0, device=next(self.parameters()).device)
         for emb in self.input_proj.values():
@@ -781,64 +770,23 @@ class BPATMPModel(nn.Module):
                 if hasattr(store, "edge_attr"):
                     edge_attr_dict[edge_type] = store.edge_attr
 
-        h_dict, beh_user_agg, h_per_layer = self.encoder(
+        h_dict, beh_user_agg = self.encoder(
             x_dict,
             edge_index_dict,
             edge_attr_dict if edge_attr_dict else None,
             edge_ts_dict if edge_ts_dict else None,
             ref_time,
         )
+        h_dict = self.intent_codebook(h_dict)
 
-        def _sum_layers(t: str) -> Optional[Tensor]:
-            parts = [h_k[t] for h_k in h_per_layer if t in h_k]
-            if not parts:
-                return None
-            out = parts[0]
-            for p in parts[1:]:
-                out = out + p
-            return out
-
-        sum_dict: Dict[str, Tensor] = {}
-        for t in ("user", "product"):
-            s = _sum_layers(t)
-            if s is not None:
-                sum_dict[t] = s
-
-        sum_dict = self.intent_codebook(sum_dict)
-
-        sum_user = sum_dict.get("user")
-        sum_item = sum_dict.get("product")
-
-        if sum_user is None:
-            sum_user = torch.zeros(0, self.embed_dim)
-        if sum_item is None:
-            sum_item = torch.zeros(0, self.embed_dim)
-
-        n_users = sum_user.size(0)
-        n_items = sum_item.size(0)
-        device = sum_user.device
-        dtype = sum_user.dtype
-
-        if "product" in subgraph.node_types and hasattr(subgraph["product"], "x"):
-            prod_ids = subgraph["product"].x
-            bias_item = self.item_bias(prod_ids).to(dtype=dtype)
-        else:
-            bias_item = torch.zeros(n_items, 1, device=device, dtype=dtype)
-        ones_user = torch.ones(n_users, 1, device=device, dtype=dtype)
-
-        user_emb = torch.cat([sum_user, ones_user], dim=-1)
-        item_emb = torch.cat([sum_item, bias_item], dim=-1)
+        user_emb = h_dict.get("user", torch.zeros(0, self.embed_dim))
+        item_emb = h_dict.get("product", torch.zeros(0, self.embed_dim))
 
         if return_beh_embs:
-            beh_zero = torch.zeros(n_users, 1, device=device, dtype=dtype)
-            beh_embs: Dict[str, Tensor] = {}
-            for beh in ("view", "cart", "purchase"):
-                if beh in beh_user_agg:
-                    agg = beh_user_agg[beh]
-                else:
-                    agg = torch.zeros(n_users, self.embed_dim, device=device, dtype=dtype)
-                proj = self.beh_proj[beh](agg)
-                beh_embs[beh] = torch.cat([proj, beh_zero], dim=-1)
+            beh_embs = {
+                beh: self.beh_proj[beh](beh_user_agg.get(beh, torch.zeros_like(user_emb)))
+                for beh in ("view", "cart", "purchase")
+            }
             return user_emb, item_emb, beh_embs
 
         return user_emb, item_emb
