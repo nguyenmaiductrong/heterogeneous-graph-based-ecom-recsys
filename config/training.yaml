@@ -12,7 +12,7 @@ model:
   embed_dim: 256
   n_layers: 3
   rank: 64
-  use_grad_checkpoint: true
+  use_grad_checkpoint: false
   n_intents: 64
 
 sampler:
@@ -21,9 +21,9 @@ sampler:
   hop1_sample_replace: true
 
 loss:
-  lambda_cl: 0.15
-  lambda_conv: 0.1
-  lambda_mono: 0.05
+  lambda_cl: 0.05
+  lambda_conv: 0.0
+  lambda_mono: 0.0
   funnel_margin: 0.1
   alpha: 0.5
   w_min: 0.05
@@ -40,22 +40,22 @@ training:
   use_bf16: true
   batch_size: 8192
   device: cuda
-  epochs: 25
+  epochs: 35
   eval_batch_size: 8192
   eval_every: 1
-  eval_subsample: 60000
+  eval_subsample: 0
   eval_seed: 42
   l2_lambda: 1.0e-05
-  lr: 1.0e-04
+  lr: 8.0e-04
   min_lr: 1.0e-06
-  warmup_epochs: 5
+  warmup_epochs: 2
   max_grad_norm: 1.0
   cl_every_k: 2
   max_view_triplets: 3000000
-  num_neg: 32
+  num_neg: 64
   num_workers: 8
-  patience: 12
-  save_dir: checkpoints-v12
+  patience: 10
+  save_dir: checkpoints-v10-fixed
   weight_decay: 1.0e-02
   pin_memory: true
   persistent_workers: true
@@ -68,11 +68,11 @@ evaluation:
   metrics: ["HR@10", "HR@20", "HR@50", "NDCG@10", "NDCG@20", "NDCG@50"]
 
 wandb:
-  artifact_name: bpatmp-checkpoint-v12
+  artifact_name: bpatmp-checkpoint-v10-fixed
   enabled: true
   entity: nguyenmaiductrong37-h-c-vi-n-c-ng-ngh-b-u-ch-nh-vi-n-th-ng
   project: bpatmp-recsys
-  run_name: bpatmp-v12
+  run_name: bpatmp-v10-fixed
   save_every: 1
 
 a100:

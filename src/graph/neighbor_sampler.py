@@ -548,6 +548,66 @@ class BehaviorAwareNeighborSampler:
         inv_p = torch.arange(bsz, device=device, dtype=torch.long)
         origin_flat = torch.full((bsz,), bid, dtype=torch.int8, device=device)
 
+        h1 = self._cfg.hop1_budget
+        prod_broadcast = prod_b.unsqueeze(1).expand(bsz, h1)
+        user_chunks: list[Tensor] = []
+        rev_product_loc: dict[str, list[Tensor]] = {b: [] for b in BEHAVIOR_TYPES}
+        rev_user_global: dict[str, list[Tensor]] = {b: [] for b in BEHAVIOR_TYPES}
+        rev_edge_ts: dict[str, list[Tensor]] = {b: [] for b in BEHAVIOR_TYPES}
+
+        for beh in BEHAVIOR_TYPES:
+            rel = ("product", f"rev_{beh}", "user")
+            if rel not in self._csr or h1 <= 0:
+                continue
+
+            ptr, cols = self._csr[rel]
+            sampled, valid, positions = _batch_sample_csr(
+                ptr,
+                cols,
+                product_seeds,
+                h1,
+                generator,
+                replace=self._cfg.hop1_sample_replace,
+                return_positions=True,
+            )
+            if not valid.any():
+                continue
+
+            ploc = prod_broadcast[valid]
+            ug = sampled[valid]
+            rev_product_loc[beh].append(ploc)
+            rev_user_global[beh].append(ug)
+            user_chunks.append(ug)
+
+            ts_vals = self._csr_edge_ts.get(rel)
+            if ts_vals is not None:
+                rev_edge_ts[beh].append(ts_vals[positions.clamp(min=0)[valid]].long())
+
+        if user_chunks:
+            all_users = torch.cat(user_chunks, dim=0)
+            user_x, inv_all_users = torch.unique(all_users, sorted=True, return_inverse=True)
+            user_b = torch.zeros(user_x.size(0), dtype=torch.long, device=device)
+        else:
+            user_x = _empty1
+            user_b = _empty1
+            inv_all_users = _empty1
+
+        beh_edges: dict[str, list[Tensor]] = {b: [] for b in BEHAVIOR_TYPES}
+        beh_rev_edges: dict[str, list[Tensor]] = {b: [] for b in BEHAVIOR_TYPES}
+        beh_edge_ts: dict[str, list[Tensor]] = {b: [] for b in BEHAVIOR_TYPES}
+        offset = 0
+        for beh in BEHAVIOR_TYPES:
+            if not rev_user_global[beh]:
+                continue
+            ug = torch.cat(rev_user_global[beh], dim=0)
+            ploc = torch.cat(rev_product_loc[beh], dim=0)
+            u_loc = inv_all_users[offset : offset + ug.numel()]
+            offset += ug.numel()
+            beh_edges[beh].append(torch.stack([u_loc, ploc], dim=0))
+            beh_rev_edges[beh].append(torch.stack([ploc, u_loc], dim=0))
+            if rev_edge_ts[beh]:
+                beh_edge_ts[beh].append(torch.cat(rev_edge_ts[beh], dim=0))
+
         cat_x, cat_b, pc_src, pc_dst, pc_tag, pc_ts = self._process_hop2(
             product_seeds,
             prod_b,
@@ -577,19 +637,52 @@ class BehaviorAwareNeighborSampler:
                 return None
             return tag.view(-1, 1)
 
+        def _cat_e(parts: list[Tensor]) -> Tensor:
+            return torch.cat(parts, dim=1) if parts else _empty2
+
+        def _cat_ts(parts: list[Tensor]) -> Tensor | None:
+            return torch.cat(parts, dim=0) if parts else None
+
         node_data = {
-            "user": (_empty1, _empty1),
+            "user": (user_x, user_b),
             "product": (prod_x, prod_b),
             "category": (cat_x, cat_b),
             "brand": (brand_x, brand_b),
         }
-        edge_data: dict[tuple[str, str, str], tuple[Tensor, Tensor | None]] = {
-            ("user", "view", "product"): (_empty2, None),
-            ("user", "cart", "product"): (_empty2, None),
-            ("user", "purchase", "product"): (_empty2, None),
-            ("product", "rev_view", "user"): (_empty2, None),
-            ("product", "rev_cart", "user"): (_empty2, None),
-            ("product", "rev_purchase", "user"): (_empty2, None),
+        edge_data: dict[
+            tuple[str, str, str],
+            tuple[Tensor, Tensor | None] | tuple[Tensor, Tensor | None, Tensor | None],
+        ] = {
+            ("user", "view", "product"): (
+                _cat_e(beh_edges["view"]),
+                None,
+                _cat_ts(beh_edge_ts["view"]),
+            ),
+            ("user", "cart", "product"): (
+                _cat_e(beh_edges["cart"]),
+                None,
+                _cat_ts(beh_edge_ts["cart"]),
+            ),
+            ("user", "purchase", "product"): (
+                _cat_e(beh_edges["purchase"]),
+                None,
+                _cat_ts(beh_edge_ts["purchase"]),
+            ),
+            ("product", "rev_view", "user"): (
+                _cat_e(beh_rev_edges["view"]),
+                None,
+                _cat_ts(beh_edge_ts["view"]),
+            ),
+            ("product", "rev_cart", "user"): (
+                _cat_e(beh_rev_edges["cart"]),
+                None,
+                _cat_ts(beh_edge_ts["cart"]),
+            ),
+            ("product", "rev_purchase", "user"): (
+                _cat_e(beh_rev_edges["purchase"]),
+                None,
+                _cat_ts(beh_edge_ts["purchase"]),
+            ),
             ("product", "belongs_to", "category"): (_ei(pc_src, pc_dst), _attr(pc_tag), pc_ts),
             ("category", "contains", "product"): (_ei(pc_dst, pc_src), _attr(pc_tag), pc_ts),
             ("product", "producedBy", "brand"): (_ei(pb_src, pb_dst), _attr(pb_tag), pb_ts),
@@ -653,5 +746,3 @@ def _pack_hetero_subgraph(
 
 def collate_hetero_subgraphs(batch: list[HeteroData]) -> Batch:
     return Batch.from_data_list(batch)
-
-

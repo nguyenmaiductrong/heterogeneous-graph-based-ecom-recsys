@@ -1917,3 +1917,256 @@ epochs:  36%|███▌      | 9/25 [1:50:28<2:57:39, 666.24s/it, loss=1.4382,
 epochs:  40%|████      | 10/25 [1:51:22<2:46:37, 666.48s/it, loss=1.4382, NDCG_20=0.0543, best_primary=0.0665]
 2026-05-10 19:20:52
 train:  13%|█▎        | 150/1135 [01:20<08:30,  1.93it/s, cl=0.0000, loss=0.9554]
+
+## Model v12
+### Config
+data:
+  data_dir: /content/data/
+  node_counts:
+    brand: 1919
+    category: 14
+    product: 29892
+    user: 203063
+  struct_dir: /content/data/node_mappings
+
+model:
+  dropout: 0.2
+  embed_dim: 256
+  n_layers: 3
+  rank: 64
+  use_grad_checkpoint: true
+  n_intents: 64
+
+sampler:
+  hop1_budget: 16
+  hop2_budget: 8
+  hop1_sample_replace: true
+
+loss:
+  lambda_cl: 0.15
+  lambda_conv: 0.1
+  lambda_mono: 0.05
+  funnel_margin: 0.1
+  alpha: 0.5
+  w_min: 0.05
+
+hierarchy_cl:
+  enabled: true
+  tau: 0.1
+  hard_k: 64
+  min_pair_overlap: 4
+  pair_weights: null
+
+training:
+  amp: true
+  use_bf16: true
+  batch_size: 8192
+  device: cuda
+  epochs: 25
+  eval_batch_size: 8192
+  eval_every: 1
+  eval_subsample: 60000
+  eval_seed: 42
+  l2_lambda: 1.0e-05
+  lr: 1.0e-04
+  min_lr: 1.0e-06
+  warmup_epochs: 5
+  max_grad_norm: 1.0
+  cl_every_k: 2
+  max_view_triplets: 3000000
+  num_neg: 32
+  num_workers: 8
+  patience: 12
+  save_dir: checkpoints-v12
+  weight_decay: 1.0e-02
+  pin_memory: true
+  persistent_workers: true
+  prefetch_factor: 4
+
+evaluation:
+  full_ranking: true
+  primary_metric: "NDCG@20"
+  ks: [10, 20, 50]
+  metrics: ["HR@10", "HR@20", "HR@50", "NDCG@10", "NDCG@20", "NDCG@50"]
+
+wandb:
+  artifact_name: bpatmp-checkpoint-v12
+  enabled: true
+  entity: nguyenmaiductrong37-h-c-vi-n-c-ng-ngh-b-u-ch-nh-vi-n-th-ng
+  project: bpatmp-recsys
+  run_name: bpatmp-v12
+  save_every: 1
+
+a100:
+  allow_tf32: true
+  cudnn_benchmark: true
+  use_fused_adamw: true
+  compile_model: false
+  empty_cache_freq: 0
+### Log
+2026-05-11 00:13:16
+2026-05-10 17:13:16,204 - src.training.checkpoint_manager - INFO - [OK] Checkpoint epoch 0 -> vv6 confirmed (state=COMMITTED, 771.9 MB). Safe to close Colab.
+2026-05-11 00:13:16
+2026-05-10 17:13:16,293 - src.training.checkpoint_manager - INFO - Removed old checkpoint: checkpoints-v12/best.pt
+2026-05-11 00:13:16
+2026-05-10 17:13:16,294 - src.training.trainer - INFO - Epoch 000 | train/loss=2.5348 | train/cl_loss=4.3541 | train/skipped_batches=0.0000 | train/lr=0.0000 | HR@10=0.0025 | NDCG@10=0.0007 | HR@20=0.0043 | NDCG@20=0.0010 | HR@50=0.0090 | NDCG@50=0.0016  <- best | DIAG λ: L0_lambda_cart=0.974 L0_lambda_purchase=0.693 L0_lambda_struct=0.693 L0_lambda_view=1.314 L1_lambda_cart=0.974 L1_lambda_purchase=0.693 | DIAG z: baw0_zbeta_norm_cart=8.000 baw0_zbeta_norm_purchase=8.000 baw0_zbeta_norm_struct=8.000 baw0_zbeta_norm_view=8.000 baw1_zbeta_norm_cart=8.000 baw1_zbeta_norm_purchase=8.001
+2026-05-11 00:13:16
+epochs:   4%|▍         | 1/25 [32:18<6:38:23, 995.99s/it, loss=2.3263, NDCG_20=0.0110, best_primary=0.0110]2026-05-10 17:29:07,018 - src.training.checkpoint_manager - INFO - Saved local: checkpoints-v12/epoch_001.pt (771.9 MB)
+2026-05-11 00:13:16
+2026-05-10 17:29:10,917 - src.training.checkpoint_manager - INFO - Artifact enqueued: bpatmp-checkpoint-v12 epoch-001
+2026-05-11 00:29:57
+2026-05-10 17:29:57,169 - src.training.checkpoint_manager - INFO - Size OK: 771.94 MB (diff 0.00%)
+2026-05-11 00:29:57
+2026-05-10 17:29:57,170 - src.training.checkpoint_manager - INFO - [OK] Checkpoint epoch 1 -> vv7 confirmed (state=COMMITTED, 771.9 MB). Safe to close Colab.
+2026-05-11 00:29:57
+2026-05-10 17:29:57,260 - src.training.checkpoint_manager - INFO - Removed old checkpoint: checkpoints-v12/epoch_000.pt
+2026-05-11 00:29:57
+2026-05-10 17:29:57,347 - src.training.checkpoint_manager - INFO - Removed old checkpoint: checkpoints-v12/best.pt
+2026-05-11 00:29:57
+2026-05-10 17:29:57,348 - src.training.trainer - INFO - Epoch 001 | train/loss=2.3263 | train/cl_loss=4.3612 | train/skipped_batches=0.0000 | train/lr=0.0000 | HR@10=0.0269 | NDCG@10=0.0066 | HR@20=0.0487 | NDCG@20=0.0110 | HR@50=0.0741 | NDCG@50=0.0159  <- best | DIAG λ: L0_lambda_cart=0.974 L0_lambda_purchase=0.693 L0_lambda_struct=0.693 L0_lambda_view=1.313 L1_lambda_cart=0.974 L1_lambda_purchase=0.692 | DIAG z: baw0_zbeta_norm_cart=7.998 baw0_zbeta_norm_purchase=7.998 baw0_zbeta_norm_struct=8.000 baw0_zbeta_norm_view=7.998 baw1_zbeta_norm_cart=7.998 baw1_zbeta_norm_purchase=7.999
+2026-05-11 00:29:57
+epochs:   8%|▊         | 2/25 [48:57<6:22:56, 998.97s/it, loss=2.1273, NDCG_20=0.0105, best_primary=0.0110]2026-05-10 17:45:41,069 - src.training.checkpoint_manager - INFO - Saved local: checkpoints-v12/epoch_002.pt (771.9 MB)
+2026-05-11 00:29:57
+2026-05-10 17:45:43,385 - src.training.checkpoint_manager - INFO - Artifact enqueued: bpatmp-checkpoint-v12 epoch-002
+2026-05-11 00:46:32
+2026-05-10 17:46:32,108 - src.training.checkpoint_manager - INFO - Size OK: 771.94 MB (diff 0.00%)
+2026-05-11 00:46:32
+2026-05-10 17:46:32,108 - src.training.checkpoint_manager - INFO - [OK] Checkpoint epoch 2 -> vv8 confirmed (state=COMMITTED, 771.9 MB). Safe to close Colab.
+2026-05-11 00:46:32
+2026-05-10 17:46:32,199 - src.training.checkpoint_manager - INFO - Removed old checkpoint: checkpoints-v12/epoch_001.pt
+2026-05-11 00:46:32
+2026-05-10 17:46:32,199 - src.training.trainer - INFO - Epoch 002 | train/loss=2.1273 | train/cl_loss=4.3602 | train/skipped_batches=0.0000 | train/lr=0.0001 | HR@10=0.0240 | NDCG@10=0.0070 | HR@20=0.0412 | NDCG@20=0.0105 | HR@50=0.0646 | NDCG@50=0.0149 | DIAG λ: L0_lambda_cart=0.974 L0_lambda_purchase=0.693 L0_lambda_struct=0.693 L0_lambda_view=1.313 L1_lambda_cart=0.973 L1_lambda_purchase=0.692 | DIAG z: baw0_zbeta_norm_cart=7.993 baw0_zbeta_norm_purchase=7.993 baw0_zbeta_norm_struct=8.000 baw0_zbeta_norm_view=7.994 baw1_zbeta_norm_cart=7.999 baw1_zbeta_norm_purchase=8.000
+2026-05-11 00:46:32
+epochs:  12%|█▏        | 3/25 [1:05:30<6:05:35, 997.09s/it, loss=2.0545, NDCG_20=0.0064, best_primary=0.0110]2026-05-10 18:02:13,651 - src.training.checkpoint_manager - INFO - Saved local: checkpoints-v12/epoch_003.pt (771.9 MB)
+2026-05-11 00:46:32
+2026-05-10 18:02:16,155 - src.training.checkpoint_manager - INFO - Artifact enqueued: bpatmp-checkpoint-v12 epoch-003
+2026-05-11 01:03:08
+2026-05-10 18:03:08,107 - src.training.checkpoint_manager - INFO - Size OK: 771.94 MB (diff 0.00%)
+2026-05-11 01:03:08
+2026-05-10 18:03:08,107 - src.training.checkpoint_manager - INFO - [OK] Checkpoint epoch 3 -> vv9 confirmed (state=COMMITTED, 771.9 MB). Safe to close Colab.
+2026-05-11 01:03:08
+2026-05-10 18:03:08,197 - src.training.checkpoint_manager - INFO - Removed old checkpoint: checkpoints-v12/epoch_002.pt
+2026-05-11 01:03:08
+2026-05-10 18:03:08,197 - src.training.trainer - INFO - Epoch 003 | train/loss=2.0545 | train/cl_loss=4.3560 | train/skipped_batches=0.0000 | train/lr=0.0001 | HR@10=0.0143 | NDCG@10=0.0040 | HR@20=0.0282 | NDCG@20=0.0064 | HR@50=0.0558 | NDCG@50=0.0108 | DIAG λ: L0_lambda_cart=0.974 L0_lambda_purchase=0.692 L0_lambda_struct=0.693 L0_lambda_view=1.312 L1_lambda_cart=0.973 L1_lambda_purchase=0.692 | DIAG z: baw0_zbeta_norm_cart=7.988 baw0_zbeta_norm_purchase=7.989 baw0_zbeta_norm_struct=8.000 baw0_zbeta_norm_view=7.991 baw1_zbeta_norm_cart=8.000 baw1_zbeta_norm_purchase=8.001
+2026-05-11 01:03:08
+epochs:  16%|█▌        | 4/25 [1:22:08<5:48:49, 996.66s/it, loss=1.9938, NDCG_20=0.0108, best_primary=0.0110]2026-05-10 18:18:51,953 - src.training.checkpoint_manager - INFO - Saved local: checkpoints-v12/epoch_004.pt (771.9 MB)
+2026-05-11 01:03:08
+2026-05-10 18:18:54,227 - src.training.checkpoint_manager - INFO - Artifact enqueued: bpatmp-checkpoint-v12 epoch-004
+2026-05-11 01:19:43
+2026-05-10 18:19:43,200 - src.training.checkpoint_manager - INFO - Size OK: 771.94 MB (diff 0.00%)
+2026-05-11 01:19:43
+2026-05-10 18:19:43,201 - src.training.checkpoint_manager - INFO - [OK] Checkpoint epoch 4 -> vv10 confirmed (state=COMMITTED, 771.9 MB). Safe to close Colab.
+2026-05-11 01:19:43
+2026-05-10 18:19:43,297 - src.training.checkpoint_manager - INFO - Removed old checkpoint: checkpoints-v12/epoch_003.pt
+2026-05-11 01:19:43
+2026-05-10 18:19:43,297 - src.training.trainer - INFO - Epoch 004 | train/loss=1.9938 | train/cl_loss=4.3598 | train/skipped_batches=0.0000 | train/lr=0.0001 | HR@10=0.0246 | NDCG@10=0.0066 | HR@20=0.0470 | NDCG@20=0.0108 | HR@50=0.0800 | NDCG@50=0.0165 | DIAG λ: L0_lambda_cart=0.975 L0_lambda_purchase=0.692 L0_lambda_struct=0.693 L0_lambda_view=1.312 L1_lambda_cart=0.972 L1_lambda_purchase=0.693 | DIAG z: baw0_zbeta_norm_cart=7.971 baw0_zbeta_norm_purchase=7.979 baw0_zbeta_norm_struct=8.000 baw0_zbeta_norm_view=7.985 baw1_zbeta_norm_cart=8.000 baw1_zbeta_norm_purchase=8.007
+2026-05-11 01:19:43
+epochs:  20%|██        | 5/25 [1:38:43<5:32:01, 996.10s/it, loss=1.8903, NDCG_20=0.0091, best_primary=0.0110]2026-05-10 18:35:26,759 - src.training.checkpoint_manager - INFO - Saved local: checkpoints-v12/epoch_005.pt (771.9 MB)
+2026-05-11 01:19:43
+2026-05-10 18:35:30,450 - src.training.checkpoint_manager - INFO - Artifact enqueued: bpatmp-checkpoint-v12 epoch-005
+2026-05-11 01:36:15
+2026-05-10 18:36:15,242 - src.training.checkpoint_manager - INFO - Size OK: 771.94 MB (diff 0.00%)
+2026-05-11 01:36:15
+2026-05-10 18:36:15,242 - src.training.checkpoint_manager - INFO - [OK] Checkpoint epoch 5 -> vv11 confirmed (state=COMMITTED, 771.9 MB). Safe to close Colab.
+2026-05-11 01:36:15
+2026-05-10 18:36:15,334 - src.training.checkpoint_manager - INFO - Removed old checkpoint: checkpoints-v12/epoch_004.pt
+2026-05-11 01:36:15
+2026-05-10 18:36:15,334 - src.training.trainer - INFO - Epoch 005 | train/loss=1.8903 | train/cl_loss=4.3586 | train/skipped_batches=0.0000 | train/lr=0.0001 | HR@10=0.0261 | NDCG@10=0.0073 | HR@20=0.0364 | NDCG@20=0.0091 | HR@50=0.0573 | NDCG@50=0.0121 | DIAG λ: L0_lambda_cart=0.974 L0_lambda_purchase=0.692 L0_lambda_struct=0.693 L0_lambda_view=1.313 L1_lambda_cart=0.971 L1_lambda_purchase=0.694 | DIAG z: baw0_zbeta_norm_cart=7.944 baw0_zbeta_norm_purchase=7.965 baw0_zbeta_norm_struct=8.000 baw0_zbeta_norm_view=7.986 baw1_zbeta_norm_cart=8.006 baw1_zbeta_norm_purchase=8.014
+2026-05-11 01:36:15
+epochs:  24%|██▍       | 6/25 [1:55:17<5:14:59, 994.72s/it, loss=1.7630, NDCG_20=0.0051, best_primary=0.0110]2026-05-10 18:52:00,323 - src.training.checkpoint_manager - INFO - Saved local: checkpoints-v12/epoch_006.pt (771.9 MB)
+2026-05-11 01:36:15
+2026-05-10 18:52:02,463 - src.training.checkpoint_manager - INFO - Artifact enqueued: bpatmp-checkpoint-v12 epoch-006
+2026-05-11 01:52:48
+2026-05-10 18:52:48,844 - src.training.checkpoint_manager - INFO - Size OK: 771.94 MB (diff 0.00%)
+2026-05-11 01:52:48
+2026-05-10 18:52:48,844 - src.training.checkpoint_manager - INFO - [OK] Checkpoint epoch 6 -> vv12 confirmed (state=COMMITTED, 771.9 MB). Safe to close Colab.
+2026-05-11 01:52:48
+2026-05-10 18:52:48,935 - src.training.checkpoint_manager - INFO - Removed old checkpoint: checkpoints-v12/epoch_005.pt
+2026-05-11 01:52:48
+2026-05-10 18:52:48,936 - src.training.trainer - INFO - Epoch 006 | train/loss=1.7630 | train/cl_loss=4.3541 | train/skipped_batches=0.0000 | train/lr=0.0001 | HR@10=0.0157 | NDCG@10=0.0034 | HR@20=0.0263 | NDCG@20=0.0051 | HR@50=0.0464 | NDCG@50=0.0078 | DIAG λ: L0_lambda_cart=0.975 L0_lambda_purchase=0.691 L0_lambda_struct=0.693 L0_lambda_view=1.312 L1_lambda_cart=0.971 L1_lambda_purchase=0.694 | DIAG z: baw0_zbeta_norm_cart=7.911 baw0_zbeta_norm_purchase=7.949 baw0_zbeta_norm_struct=8.000 baw0_zbeta_norm_view=7.979 baw1_zbeta_norm_cart=8.003 baw1_zbeta_norm_purchase=8.025
+2026-05-11 01:52:48
+epochs:  28%|██▊       | 7/25 [2:11:52<4:58:18, 994.35s/it, loss=1.5990, NDCG_20=0.0038, best_primary=0.0110]2026-05-10 19:08:35,735 - src.training.checkpoint_manager - INFO - Saved local: checkpoints-v12/epoch_007.pt (771.9 MB)
+2026-05-11 01:52:48
+2026-05-10 19:08:37,911 - src.training.checkpoint_manager - INFO - Artifact enqueued: bpatmp-checkpoint-v12 epoch-007
+2026-05-11 02:09:29
+2026-05-10 19:09:29,600 - src.training.checkpoint_manager - INFO - Size OK: 771.94 MB (diff 0.00%)
+2026-05-11 02:09:29
+2026-05-10 19:09:29,600 - src.training.checkpoint_manager - INFO - [OK] Checkpoint epoch 7 -> vv13 confirmed (state=COMMITTED, 771.9 MB). Safe to close Colab.
+2026-05-11 02:09:29
+2026-05-10 19:09:29,691 - src.training.checkpoint_manager - INFO - Removed old checkpoint: checkpoints-v12/epoch_006.pt
+2026-05-11 02:09:29
+2026-05-10 19:09:29,692 - src.training.trainer - INFO - Epoch 007 | train/loss=1.5990 | train/cl_loss=4.3586 | train/skipped_batches=0.0000 | train/lr=0.0001 | HR@10=0.0111 | NDCG@10=0.0026 | HR@20=0.0193 | NDCG@20=0.0038 | HR@50=0.0390 | NDCG@50=0.0062 | DIAG λ: L0_lambda_cart=0.976 L0_lambda_purchase=0.691 L0_lambda_struct=0.693 L0_lambda_view=1.310 L1_lambda_cart=0.971 L1_lambda_purchase=0.694 | DIAG z: baw0_zbeta_norm_cart=7.882 baw0_zbeta_norm_purchase=7.927 baw0_zbeta_norm_struct=8.000 baw0_zbeta_norm_view=7.966 baw1_zbeta_norm_cart=8.002 baw1_zbeta_norm_purchase=8.031
+2026-05-11 02:09:29
+epochs:  32%|███▏      | 8/25 [2:28:30<4:42:18, 996.39s/it, loss=1.4503, NDCG_20=0.0047, best_primary=0.0110]2026-05-10 19:25:13,619 - src.training.checkpoint_manager - INFO - Saved local: checkpoints-v12/epoch_008.pt (771.9 MB)
+2026-05-11 02:09:29
+2026-05-10 19:25:15,925 - src.training.checkpoint_manager - INFO - Artifact enqueued: bpatmp-checkpoint-v12 epoch-008
+2026-05-11 02:26:01
+2026-05-10 19:26:01,608 - src.training.checkpoint_manager - INFO - Size OK: 771.94 MB (diff 0.00%)
+2026-05-11 02:26:01
+2026-05-10 19:26:01,608 - src.training.checkpoint_manager - INFO - [OK] Checkpoint epoch 8 -> vv14 confirmed (state=COMMITTED, 771.9 MB). Safe to close Colab.
+2026-05-11 02:26:01
+2026-05-10 19:26:01,702 - src.training.checkpoint_manager - INFO - Removed old checkpoint: checkpoints-v12/epoch_007.pt
+2026-05-11 02:26:01
+2026-05-10 19:26:01,702 - src.training.trainer - INFO - Epoch 008 | train/loss=1.4503 | train/cl_loss=4.3555 | train/skipped_batches=0.0000 | train/lr=0.0001 | HR@10=0.0147 | NDCG@10=0.0038 | HR@20=0.0220 | NDCG@20=0.0047 | HR@50=0.0356 | NDCG@50=0.0063 | DIAG λ: L0_lambda_cart=0.978 L0_lambda_purchase=0.690 L0_lambda_struct=0.693 L0_lambda_view=1.311 L1_lambda_cart=0.970 L1_lambda_purchase=0.694 | DIAG z: baw0_zbeta_norm_cart=7.855 baw0_zbeta_norm_purchase=7.912 baw0_zbeta_norm_struct=8.000 baw0_zbeta_norm_view=7.959 baw1_zbeta_norm_cart=7.997 baw1_zbeta_norm_purchase=8.034
+2026-05-11 02:26:01
+epochs:  36%|███▌      | 9/25 [2:45:00<4:25:20, 995.02s/it, loss=1.3320, NDCG_20=0.0036, best_primary=0.0110]2026-05-10 19:41:43,506 - src.training.checkpoint_manager - INFO - Saved local: checkpoints-v12/epoch_009.pt (771.9 MB)
+2026-05-11 02:26:01
+2026-05-10 19:41:45,695 - src.training.checkpoint_manager - INFO - Artifact enqueued: bpatmp-checkpoint-v12 epoch-009
+2026-05-11 02:42:35
+2026-05-10 19:42:35,792 - src.training.checkpoint_manager - INFO - Size OK: 771.94 MB (diff 0.00%)
+2026-05-11 02:42:35
+2026-05-10 19:42:35,793 - src.training.checkpoint_manager - INFO - [OK] Checkpoint epoch 9 -> vv15 confirmed (state=COMMITTED, 771.9 MB). Safe to close Colab.
+2026-05-11 02:42:35
+2026-05-10 19:42:35,884 - src.training.checkpoint_manager - INFO - Removed old checkpoint: checkpoints-v12/epoch_008.pt
+2026-05-11 02:42:35
+2026-05-10 19:42:35,884 - src.training.trainer - INFO - Epoch 009 | train/loss=1.3320 | train/cl_loss=4.3548 | train/skipped_batches=0.0000 | train/lr=0.0001 | HR@10=0.0100 | NDCG@10=0.0023 | HR@20=0.0188 | NDCG@20=0.0036 | HR@50=0.0327 | NDCG@50=0.0052 | DIAG λ: L0_lambda_cart=0.977 L0_lambda_purchase=0.690 L0_lambda_struct=0.693 L0_lambda_view=1.313 L1_lambda_cart=0.970 L1_lambda_purchase=0.694 | DIAG z: baw0_zbeta_norm_cart=7.834 baw0_zbeta_norm_purchase=7.909 baw0_zbeta_norm_struct=8.000 baw0_zbeta_norm_view=7.957 baw1_zbeta_norm_cart=7.996 baw1_zbeta_norm_purchase=8.039
+2026-05-11 02:42:35
+epochs:  40%|████      | 10/25 [3:01:35<4:08:41, 994.76s/it, loss=1.2325, NDCG_20=0.0028, best_primary=0.0110]2026-05-10 19:58:18,205 - src.training.checkpoint_manager - INFO - Saved local: checkpoints-v12/epoch_010.pt (771.9 MB)
+2026-05-11 02:42:35
+2026-05-10 19:58:21,706 - src.training.checkpoint_manager - INFO - Artifact enqueued: bpatmp-checkpoint-v12 epoch-010
+2026-05-11 02:59:08
+2026-05-10 19:59:08,412 - src.training.checkpoint_manager - INFO - Size OK: 771.94 MB (diff 0.00%)
+2026-05-11 02:59:08
+2026-05-10 19:59:08,412 - src.training.checkpoint_manager - INFO - [OK] Checkpoint epoch 10 -> vv16 confirmed (state=COMMITTED, 771.9 MB). Safe to close Colab.
+2026-05-11 02:59:08
+2026-05-10 19:59:08,510 - src.training.checkpoint_manager - INFO - Removed old checkpoint: checkpoints-v12/epoch_009.pt
+2026-05-11 02:59:08
+2026-05-10 19:59:08,510 - src.training.trainer - INFO - Epoch 010 | train/loss=1.2325 | train/cl_loss=4.3529 | train/skipped_batches=0.0000 | train/lr=0.0001 | HR@10=0.0088 | NDCG@10=0.0020 | HR@20=0.0148 | NDCG@20=0.0028 | HR@50=0.0255 | NDCG@50=0.0041 | DIAG λ: L0_lambda_cart=0.977 L0_lambda_purchase=0.689 L0_lambda_struct=0.693 L0_lambda_view=1.314 L1_lambda_cart=0.970 L1_lambda_purchase=0.694 | DIAG z: baw0_zbeta_norm_cart=7.823 baw0_zbeta_norm_purchase=7.912 baw0_zbeta_norm_struct=8.000 baw0_zbeta_norm_view=7.955 baw1_zbeta_norm_cart=7.995 baw1_zbeta_norm_purchase=8.042
+2026-05-11 02:59:08
+epochs:  44%|████▍     | 11/25 [3:18:08<3:51:57, 994.11s/it, loss=1.1442, NDCG_20=0.0030, best_primary=0.0110]2026-05-10 20:14:51,538 - src.training.checkpoint_manager - INFO - Saved local: checkpoints-v12/epoch_011.pt (771.9 MB)
+2026-05-11 02:59:08
+2026-05-10 20:14:53,797 - src.training.checkpoint_manager - INFO - Artifact enqueued: bpatmp-checkpoint-v12 epoch-011
+2026-05-11 03:15:39
+2026-05-10 20:15:39,573 - src.training.checkpoint_manager - INFO - Size OK: 771.94 MB (diff 0.00%)
+2026-05-11 03:15:39
+2026-05-10 20:15:39,573 - src.training.checkpoint_manager - INFO - [OK] Checkpoint epoch 11 -> vv17 confirmed (state=COMMITTED, 771.9 MB). Safe to close Colab.
+2026-05-11 03:15:39
+2026-05-10 20:15:39,668 - src.training.checkpoint_manager - INFO - Removed old checkpoint: checkpoints-v12/epoch_010.pt
+2026-05-11 03:15:39
+2026-05-10 20:15:39,668 - src.training.trainer - INFO - Epoch 011 | train/loss=1.1442 | train/cl_loss=4.3542 | train/skipped_batches=0.0000 | train/lr=0.0001 | HR@10=0.0095 | NDCG@10=0.0023 | HR@20=0.0156 | NDCG@20=0.0030 | HR@50=0.0253 | NDCG@50=0.0041 | DIAG λ: L0_lambda_cart=0.978 L0_lambda_purchase=0.688 L0_lambda_struct=0.693 L0_lambda_view=1.313 L1_lambda_cart=0.970 L1_lambda_purchase=0.693 | DIAG z: baw0_zbeta_norm_cart=7.805 baw0_zbeta_norm_purchase=7.915 baw0_zbeta_norm_struct=8.000 baw0_zbeta_norm_view=7.948 baw1_zbeta_norm_cart=7.992 baw1_zbeta_norm_purchase=8.043
+2026-05-11 03:15:39
+epochs:  48%|████▊     | 12/25 [3:34:36<3:35:11, 993.21s/it, loss=1.0775, NDCG_20=0.0030, best_primary=0.0110]2026-05-10 20:31:19,800 - src.training.checkpoint_manager - INFO - Saved local: checkpoints-v12/epoch_012.pt (771.9 MB)
+2026-05-11 03:15:39
+2026-05-10 20:31:22,137 - src.training.checkpoint_manager - INFO - Artifact enqueued: bpatmp-checkpoint-v12 epoch-012
+2026-05-11 03:32:06
+2026-05-10 20:32:06,376 - src.training.checkpoint_manager - INFO - Size OK: 771.94 MB (diff 0.00%)
+2026-05-11 03:32:06
+2026-05-10 20:32:06,377 - src.training.checkpoint_manager - INFO - [OK] Checkpoint epoch 12 -> vv18 confirmed (state=COMMITTED, 771.9 MB). Safe to close Colab.
+2026-05-11 03:32:06
+2026-05-10 20:32:06,472 - src.training.checkpoint_manager - INFO - Removed old checkpoint: checkpoints-v12/epoch_011.pt
+2026-05-11 03:32:06
+2026-05-10 20:32:06,472 - src.training.trainer - INFO - Epoch 012 | train/loss=1.0775 | train/cl_loss=4.3578 | train/skipped_batches=0.0000 | train/lr=0.0001 | HR@10=0.0097 | NDCG@10=0.0024 | HR@20=0.0147 | NDCG@20=0.0030 | HR@50=0.0241 | NDCG@50=0.0041 | DIAG λ: L0_lambda_cart=0.978 L0_lambda_purchase=0.687 L0_lambda_struct=0.693 L0_lambda_view=1.313 L1_lambda_cart=0.970 L1_lambda_purchase=0.693 | DIAG z: baw0_zbeta_norm_cart=7.800 baw0_zbeta_norm_purchase=7.916 baw0_zbeta_norm_struct=8.000 baw0_zbeta_norm_view=7.948 baw1_zbeta_norm_cart=7.993 baw1_zbeta_norm_purchase=8.049
+2026-05-11 03:32:06
+epochs:  52%|█████▏    | 13/25 [3:51:05<3:18:15, 991.27s/it, loss=1.0266, NDCG_20=0.0026, best_primary=0.0110]2026-05-10 20:47:48,539 - src.training.checkpoint_manager - INFO - Saved local: checkpoints-v12/epoch_013.pt (771.9 MB)
+2026-05-11 03:32:06
+2026-05-10 20:47:50,743 - src.training.checkpoint_manager - INFO - Artifact enqueued: bpatmp-checkpoint-v12 epoch-013
+2026-05-11 03:48:36
+2026-05-10 20:48:36,166 - src.training.checkpoint_manager - INFO - Size OK: 771.94 MB (diff 0.00%)
+2026-05-11 03:48:36
+2026-05-10 20:48:36,167 - src.training.checkpoint_manager - INFO - [OK] Checkpoint epoch 13 -> vv19 confirmed (state=COMMITTED, 771.9 MB). Safe to close Colab.
+2026-05-11 03:48:36
+2026-05-10 20:48:36,264 - src.training.checkpoint_manager - INFO - Removed old checkpoint: checkpoints-v12/epoch_012.pt
+2026-05-11 03:48:36
+2026-05-10 20:48:36,265 - src.training.trainer - INFO - Epoch 013 | train/loss=1.0266 | train/cl_loss=4.3551 | train/skipped_batches=0.0000 | train/lr=0.0001 | HR@10=0.0086 | NDCG@10=0.0020 | HR@20=0.0134 | NDCG@20=0.0026 | HR@50=0.0235 | NDCG@50=0.0037 | DIAG λ: L0_lambda_cart=0.979 L0_lambda_purchase=0.687 L0_lambda_struct=0.693 L0_lambda_view=1.314 L1_lambda_cart=0.970 L1_lambda_purchase=0.693 | DIAG z: baw0_zbeta_norm_cart=7.796 baw0_zbeta_norm_purchase=7.921 baw0_zbeta_norm_struct=8.000 baw0_zbeta_norm_view=7.949 baw1_zbeta_norm_cart=7.996 baw1_zbeta_norm_purchase=8.052
+2026-05-11 03:48:36
+2026-05-10 20:48:36,265 - src.training.trainer - INFO - Early stopping at epoch 13. Best NDCG@20=0.0110

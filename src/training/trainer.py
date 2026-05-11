@@ -279,6 +279,86 @@ def _extract_per_behavior_lambdas(model: BPATMPModel) -> dict[str, torch.Tensor]
     return {beh: means[i] for i, beh in enumerate(BEHAVIOR_TYPES)}
 
 
+def _append_edge_index_with_ts(store, edge_index: torch.Tensor, edge_ts: torch.Tensor | None) -> None:
+    old_edge_index = getattr(store, "edge_index", None)
+    if old_edge_index is None or old_edge_index.numel() == 0:
+        store.edge_index = edge_index.contiguous()
+        if edge_ts is not None:
+            store.edge_ts = edge_ts.contiguous()
+        return
+
+    old_count = old_edge_index.size(1)
+    store.edge_index = torch.cat([old_edge_index, edge_index], dim=1).contiguous()
+
+    old_edge_ts = getattr(store, "edge_ts", None)
+    if edge_ts is not None and old_edge_ts is not None and old_edge_ts.numel() == old_count:
+        store.edge_ts = torch.cat([old_edge_ts.to(edge_ts.device), edge_ts], dim=0).contiguous()
+
+
+def _ensure_batch_positive_edges(
+    subgraph,
+    users_g: torch.Tensor,
+    items_g: torch.Tensor,
+    beh_ids: torch.Tensor,
+    timestamps: torch.Tensor | None,
+) -> tuple[int, int]:
+    """Ensure every supervised positive is present and connected in the sampled graph."""
+    if users_g.numel() == 0:
+        return 0, 0
+
+    prod_store = subgraph["product"]
+    prod_x = prod_store.x
+    unique_items = items_g.unique()
+    if prod_x.numel() == 0:
+        missing_items = unique_items
+    else:
+        missing_items = unique_items[~torch.isin(unique_items, prod_x)]
+
+    forced_nodes = int(missing_items.numel())
+    if forced_nodes > 0:
+        prod_store.x = torch.cat([prod_x, missing_items], dim=0)
+        prod_batch = getattr(prod_store, "batch", None)
+        if prod_batch is not None:
+            pad = prod_batch.new_full((forced_nodes,), -1)
+            prod_store.batch = torch.cat([prod_batch, pad], dim=0)
+        prod_store.num_nodes = int(prod_store.x.numel())
+
+    user_x = subgraph["user"].x.contiguous()
+    if user_x.numel() == 0 or subgraph["product"].x.numel() == 0:
+        return forced_nodes, 0
+
+    u_pos = torch.searchsorted(user_x, users_g.contiguous()).clamp(max=user_x.numel() - 1)
+    found_u = user_x[u_pos] == users_g
+
+    prod_x = subgraph["product"].x
+    sorted_px, sort_ord = prod_x.sort()
+    p_pos = torch.searchsorted(sorted_px, items_g.contiguous()).clamp(max=sorted_px.numel() - 1)
+    found_p = sorted_px[p_pos] == items_g
+    p_loc = sort_ord[p_pos]
+
+    valid = found_u & found_p
+    if not valid.any():
+        return forced_nodes, 0
+
+    added_edges = 0
+    for beh_id, beh_name in enumerate(BEHAVIOR_TYPES):
+        mask = valid & (beh_ids == beh_id)
+        if not mask.any():
+            continue
+
+        edge_index = torch.stack([u_pos[mask], p_loc[mask]], dim=0)
+        edge_ts = timestamps[mask].long() if timestamps is not None else None
+        _append_edge_index_with_ts(subgraph[("user", beh_name, "product")], edge_index, edge_ts)
+        _append_edge_index_with_ts(
+            subgraph[("product", f"rev_{beh_name}", "user")],
+            edge_index.flip(0),
+            edge_ts,
+        )
+        added_edges += int(mask.sum().item())
+
+    return forced_nodes, added_edges
+
+
 def train_epoch(
     model: BPATMPModel,
     sampler: BehaviorAwareNeighborSampler,
@@ -296,12 +376,17 @@ def train_epoch(
     history_item: torch.Tensor | None = None,
     pop_dist: torch.Tensor | None = None,
     scheduler: torch.optim.lr_scheduler._LRScheduler | None = None,
+    train_ref_time: float | None = None,
 ) -> dict[str, float]:
     model.train()
     total_loss = 0.0
     total_cl_loss = 0.0
     n_steps = 0
     n_skipped = 0  # batches dropped because no positive items found in subgraph
+    total_pos_seen = 0
+    total_pos_kept = 0
+    total_forced_product_nodes = 0
+    total_injected_positive_edges = 0
     purchase_id = BEHAVIOR_TYPES.index("purchase")
     model_raw = model._orig_mod if hasattr(model, "_orig_mod") else model
 
@@ -311,10 +396,22 @@ def train_epoch(
         users_g = raw_batch[:, 0]
         items_g = raw_batch[:, 1]
         beh_ids = raw_batch[:, 2]
-        ref_time = float(raw_batch[:, 3].min().item()) if raw_batch.size(1) >= 4 else None
+        timestamps = raw_batch[:, 3] if raw_batch.size(1) >= 4 else None
+        ref_time = train_ref_time
+        if ref_time is None and timestamps is not None:
+            ref_time = float(timestamps.max().item())
 
         unique_users = users_g.unique()
         subgraph = sampler.sample(unique_users, seed_type="user").to(device, non_blocking=True)
+        forced_nodes, injected_edges = _ensure_batch_positive_edges(
+            subgraph,
+            users_g,
+            items_g,
+            beh_ids,
+            timestamps,
+        )
+        total_forced_product_nodes += forced_nodes
+        total_injected_positive_edges += injected_edges
 
         optimizer.zero_grad(set_to_none=True)
 
@@ -336,6 +433,8 @@ def train_epoch(
             )
             found_p = sorted_px[pos_p] == items_g
             pp_loc = sort_ord[pos_p]
+            total_pos_seen += int(items_g.numel())
+            total_pos_kept += int(found_p.sum().item())
 
             if not found_p.any():
                 n_skipped += 1
@@ -464,6 +563,9 @@ def train_epoch(
         "train/loss": total_loss / max(n_steps, 1),
         "train/cl_loss": total_cl_loss / max(n_steps, 1),
         "train/skipped_batches": float(n_skipped),
+        "train/positive_retention": total_pos_kept / max(total_pos_seen, 1),
+        "train/forced_product_nodes": float(total_forced_product_nodes),
+        "train/injected_positive_edges": float(total_injected_positive_edges),
     }
 
 
@@ -543,11 +645,7 @@ def eval_epoch(
         ref_time=ref_time,
     )
 
-    # L2 normalize for cosine-similarity ranking
-    user_emb = F.normalize(user_emb, dim=-1)
-    item_emb = F.normalize(item_emb, dim=-1)
-
-    # Append item bias as extra dim: score = normalize(u)·normalize(i) + item_bias[i]
+    # Match BPR train scoring: raw dot-product plus item bias.
     model_raw = model._orig_mod if hasattr(model, "_orig_mod") else model
     item_bias = model_raw.item_bias.weight.detach().cpu()  # [n_items, 1]
     user_emb = torch.cat([user_emb, torch.ones(user_emb.size(0), 1)], dim=-1)
@@ -691,7 +789,6 @@ def train(
     FUNC_PARAM_PATTERNS = (
         "z_beta", "raw_lambda", "raw_mu", "raw_omega",
         "b_rho", "c_rho_beta", "r_rho_beta",
-        "beh_w_u", "beh_w_i", "beh_w_user", "beh_w_item",
     )
     functional_params = []
     functional_ids: set[int] = set()
@@ -803,6 +900,7 @@ def train(
             history_item=history_item,
             pop_dist=pop_dist,
             scheduler=scheduler,
+            train_ref_time=eval_ref_time,
         )
         train_loss = train_log["train/loss"]
         train_log["train/lr"] = float(optimizer.param_groups[0]["lr"])
@@ -931,4 +1029,3 @@ def train(
         best_primary,
         save_dir / "best.pt",
     )
-

@@ -340,7 +340,7 @@ class BPATMPConv(nn.Module):
 
             attr = attr.to(device=ref.device) if attr is not None else None
             if edge_ts is not None and ref_time is not None:
-                keep = edge_ts.float() < float(ref_time)
+                keep = edge_ts.float() <= float(ref_time)
                 if not keep.any():
                     continue
                 if not bool(keep.all()):
@@ -399,76 +399,6 @@ class BPATMPConv(nn.Module):
         out_dict = self.behavior_agg(agg_pb, x_dict)
         return out_dict, beh_user_agg
 
-class HyperPropagation(nn.Module):
-    """MixRec-style hypergraph propagation, per-behavior, applied per GNN layer.
-
-    Cong thuc:
-        uuH = u_emb_0 @ u_hyper                         # [N_user, hyper_num]
-        edge_b = ReLU(uuH^T @ u_emb)                    # [hyper_num, dim]
-        edge_b = FC_b(edge_b)                           # per-behavior transform
-        residual_b = uuH @ edge_b                       # [N_user, dim]
-        out = sum_b w_b * residual_b                    # mix theo behavior
-
-    Tao non-local global communication: moi user "thuoc" hyperNum hyperedge
-    voi soft assignment, message di tu user -> hyperedge -> tat ca user khac.
-    Day la chia khoa MixRec dat 0.109 NDCG@20.
-    """
-
-    BEHAVIORS = ("view", "cart", "purchase")
-
-    def __init__(self, dim: int, hyper_num: int = 128) -> None:
-        super().__init__()
-        self.dim = dim
-        self.hyper_num = hyper_num
-        self.u_hyper = nn.Parameter(torch.empty(dim, hyper_num))
-        self.i_hyper = nn.Parameter(torch.empty(dim, hyper_num))
-        nn.init.xavier_uniform_(self.u_hyper)
-        nn.init.xavier_uniform_(self.i_hyper)
-        # Per-behavior FC tren hyperedge (giong MixRec FC sau hyperEdge agg).
-        # Init nho (std=0.02) thay vi xavier default: residual luc dau co magnitude
-        # nho de khong destabilize, NHUNG khac 0 de gradient van flow den u_hyper.
-        # Zero-init -> u_hyper.grad=0 vinh vien (verified) -> sai.
-        self.fc_u = nn.ModuleList(
-            [nn.Linear(hyper_num, hyper_num, bias=False) for _ in self.BEHAVIORS]
-        )
-        self.fc_i = nn.ModuleList(
-            [nn.Linear(hyper_num, hyper_num, bias=False) for _ in self.BEHAVIORS]
-        )
-        for fc in list(self.fc_u) + list(self.fc_i):
-            nn.init.normal_(fc.weight, mean=0.0, std=2e-2)
-        # Mix weights per behavior (softmax). Init bias purchase nang hon.
-        self.beh_w_u = nn.Parameter(torch.tensor([0.0, 0.2, 0.4]))
-        self.beh_w_i = nn.Parameter(torch.tensor([0.0, 0.2, 0.4]))
-
-    def forward(
-        self,
-        u_emb: Tensor,
-        i_emb: Tensor,
-        u_emb_0: Tensor,
-        i_emb_0: Tensor,
-    ) -> Tuple[Tensor, Tensor]:
-        # Soft hyperedge assignment (giong MixRec uuHyper = uEmbed0 @ uhyper).
-        uuH = u_emb_0 @ self.u_hyper       # [Nu, H]
-        iiH = i_emb_0 @ self.i_hyper       # [Ni, H]
-
-        wu = F.softmax(self.beh_w_u, dim=0)
-        wi = F.softmax(self.beh_w_i, dim=0)
-
-        u_res = u_emb.new_zeros(u_emb.shape)
-        i_res = i_emb.new_zeros(i_emb.shape)
-        for b in range(len(self.BEHAVIORS)):
-            # User hyperedge: edge = FC(ReLU(uuH^T @ u_emb))
-            edge_u = F.relu(uuH.transpose(0, 1) @ u_emb)   # [H, dim]
-            edge_u = self.fc_u[b](edge_u.transpose(0, 1)).transpose(0, 1)  # [H, dim]
-            u_res = u_res + wu[b] * (uuH @ edge_u)         # [Nu, dim]
-
-            edge_i = F.relu(iiH.transpose(0, 1) @ i_emb)   # [H, dim]
-            edge_i = self.fc_i[b](edge_i.transpose(0, 1)).transpose(0, 1)
-            i_res = i_res + wi[b] * (iiH @ edge_i)
-
-        return u_res, i_res
-
-
 class BPATMPLayer(nn.Module):
     def __init__(
         self,
@@ -481,7 +411,6 @@ class BPATMPLayer(nn.Module):
         use_checkpoint: bool = True,
         n_freqs: int = 16,
         tau: float = 7.0,
-        hyper_num: int = 128,
     ) -> None:
         super().__init__()
         assert n_layers >= 1
@@ -499,10 +428,6 @@ class BPATMPLayer(nn.Module):
                 for i in range(n_layers)
             ]
         )
-        # Hypergraph propagation per layer (MixRec hyperPropagate).
-        self.hypers = nn.ModuleList(
-            [HyperPropagation(dim=dims[i + 1], hyper_num=hyper_num) for i in range(n_layers)]
-        )
         self.dropout = nn.Dropout(dropout)
 
     def forward(
@@ -517,10 +442,6 @@ class BPATMPLayer(nn.Module):
         h = x_dict
         beh_user_agg: Dict[str, Tensor] = {}
         all_h: list = [x_dict]  # h^0 included for LightGCN-style mean pooling
-
-        # MixRec hypergraph dung embedding GOC (h^0) lam soft assignment.
-        u0 = x_dict.get("user")
-        i0 = x_dict.get("product")
 
         for i, conv in enumerate(self.convs):
             if self.training and self.use_checkpoint:
@@ -548,13 +469,6 @@ class BPATMPLayer(nn.Module):
             else:
                 h, beh_user_agg = conv(h, edge_index_dict, edge_attr_dict, edge_ts_dict, ref_time)
 
-            # Hypergraph residual (giong MixRec: ulats[i+1] = ulat + hyperULat + ulats[i]).
-            if u0 is not None and "user" in h and i0 is not None and "product" in h:
-                u_res, i_res = self.hypers[i](h["user"], h["product"], u0, i0)
-                h = dict(h)
-                h["user"] = h["user"] + u_res
-                h["product"] = h["product"] + i_res
-
             all_h.append(h)
 
             if i < len(self.convs) - 1:
@@ -569,66 +483,29 @@ class BPATMPLayer(nn.Module):
         return h_out, beh_user_agg
     
 class IntentCodebook(nn.Module):
-    """Per-behavior decoupled intent codebooks (MixRec H^(u)_k style).
-
-    Mỗi behavior (view/cart/purchase) có codebook riêng cho user và item.
-    Kết quả attention 3 codebook được trộn bằng learnable behavior weights
-    (softmax) -> residual cộng vào embedding gốc.
-
-    So với codebook đơn shared trước đây, kiến trúc này có ~3x tham số intent
-    và biểu diễn được intent đặc thù theo behavior — giống cách MixRec đạt
-    SOTA trên REES46.
-    """
-
-    BEHAVIORS = ("view", "cart", "purchase")
+    """Shared low-rank intent codebook from the v10 architecture."""
 
     def __init__(self, n_intents: int = 32, dim: int = EMBED_DIM):
         super().__init__()
         self.n_intents = n_intents
         self.dim = dim
-        self.user_intents = nn.ParameterDict({
-            b: nn.Parameter(torch.empty(n_intents, dim)) for b in self.BEHAVIORS
-        })
-        self.item_intents = nn.ParameterDict({
-            b: nn.Parameter(torch.empty(n_intents, dim)) for b in self.BEHAVIORS
-        })
-        for p in self.user_intents.values():
-            nn.init.xavier_uniform_(p)
-        for p in self.item_intents.values():
-            nn.init.xavier_uniform_(p)
-        # learnable behavior mixing weights (softmax-normalized).
-        # init: purchase > cart > view (final intent should weigh strongest signal more).
-        self.beh_w_user = nn.Parameter(torch.tensor([0.0, 0.3, 0.6]))
-        self.beh_w_item = nn.Parameter(torch.tensor([0.0, 0.3, 0.6]))
-        self._scale = dim ** -0.5
+        self.user_intents = nn.Parameter(torch.empty(n_intents, dim))
+        self.item_intents = nn.Parameter(torch.empty(n_intents, dim))
+        nn.init.xavier_uniform_(self.user_intents)
+        nn.init.xavier_uniform_(self.item_intents)
+        self._scale = dim**-0.5
 
     def _attend(self, x: Tensor, codebook: Tensor) -> Tensor:
         attn = (x @ codebook.T) * self._scale
         attn = torch.softmax(attn, dim=-1)
         return attn @ codebook
 
-    def _mix(
-        self,
-        x: Tensor,
-        codebooks: nn.ParameterDict,
-        weights: Tensor,
-    ) -> Tensor:
-        w = F.softmax(weights, dim=0)
-        out = x.new_zeros(x.shape)
-        for i, b in enumerate(self.BEHAVIORS):
-            out = out + w[i] * self._attend(x, codebooks[b])
-        return out
-
     def forward(self, x_dict: Dict[str, Tensor]) -> Dict[str, Tensor]:
         out = dict(x_dict)
         if "user" in out:
-            out["user"] = out["user"] + self._mix(
-                out["user"], self.user_intents, self.beh_w_user
-            )
+            out["user"] = out["user"] + self._attend(out["user"], self.user_intents)
         if "product" in out:
-            out["product"] = out["product"] + self._mix(
-                out["product"], self.item_intents, self.beh_w_item
-            )
+            out["product"] = out["product"] + self._attend(out["product"], self.item_intents)
         return out
 
 
