@@ -20,42 +20,45 @@ sampler:
   hop2_budget: 8
   hop1_sample_replace: true
 
+# Total loss:
+#   L = L_BPR + lambda_cl*L_CL + lambda_conv*L_conv + lambda_mono*L_mono + lambda_wd*||theta||^2
+# Per-behavior BPR weights: w_b = clip((N_purchase / N_b) ** alpha, w_min, 1.0)
 loss:
-  lambda_cl: 0.10      # compromise giua v3 (0.15) va v10 (0.05). v10 chung minh 0.05 qua yeu.
-  lambda_conv: 0.05    # bat lai funnel prior nhung yeu hon v3 (0.1)
-  lambda_mono: 0.025   # bat lai mono prior. raw_lambda gio init bat doi xung roi -> mono co cho neo.
+  lambda_cl: 0.15 # contrastive (HierarchicalMBCL)
+  lambda_conv: 0.1 # funnel prior s_view < s_cart < s_purchase (0 = off)
+  lambda_mono: 0.05 # monotonic decay prior lam_view >= lam_cart >= lam_purchase (0 = off)
   funnel_margin: 0.1
-  alpha: 0.5
-  w_min: 0.05
+  alpha: 0.5 # exponent in (N_p / N_b) ** alpha; alpha in [0.25, 0.5]
+  w_min: 0.05 # floor for view/cart weight
 
 hierarchy_cl:
   enabled: true
   tau: 0.1
   hard_k: 64
   min_pair_overlap: 4
-  pair_weights: null
+  pair_weights: null # null = auto progressive (view -> cart -> purchase)
 
 training:
   amp: true
   use_bf16: true
   batch_size: 8192
   device: cuda
-  epochs: 25
+  epochs: 40
   eval_batch_size: 8192
   eval_every: 1
-  eval_subsample: 60000
+  eval_subsample: 20000 # 0 = full eval each cycle
   eval_seed: 42
-  l2_lambda: 1.0e-05
+  l2_lambda: 1.0e-05 # lambda_wd
   lr: 8.0e-04
   min_lr: 1.0e-06
-  warmup_epochs: 5     # tang tu 3 -> 5: cho BPR on dinh truoc khi prior bat
-  max_grad_norm: 1.0   # ha tu 5.0: 5.0 gay phan ky o v8 (NDCG sup tu ep.2)
-  cl_every_k: 2
+  warmup_epochs: 3
+  max_grad_norm: 1.0
+  cl_every_k: 2 # raise to 2 since deeper model; keep CL quality high without per-step overhead
   max_view_triplets: 3000000
   num_neg: 32
   num_workers: 8
-  patience: 12
-  save_dir: checkpoints-v10
+  patience: 10
+  save_dir: checkpoints-v3
   weight_decay: 1.0e-02
   pin_memory: true
   persistent_workers: true
@@ -68,13 +71,14 @@ evaluation:
   metrics: ["HR@10", "HR@20", "HR@50", "NDCG@10", "NDCG@20", "NDCG@50"]
 
 wandb:
-  artifact_name: bpatmp-checkpoint-v10
+  artifact_name: bpatmp-checkpoint-v3
   enabled: true
   entity: nguyenmaiductrong37-h-c-vi-n-c-ng-ngh-b-u-ch-nh-vi-n-th-ng
   project: bpatmp-recsys
-  run_name: bpatmp-v10
+  run_name: bpatmp-v3
   save_every: 1
 
+# A100 optimizations
 a100:
   allow_tf32: true
   cudnn_benchmark: true

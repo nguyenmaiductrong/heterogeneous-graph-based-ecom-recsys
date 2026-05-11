@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -22,30 +23,6 @@ from src.training.losses import (
 from src.core.evaluator import TemporalSplitEvaluator
 
 logger = logging.getLogger(__name__)
-
-
-@torch.no_grad()
-def diagnostic_module_stats(model: torch.nn.Module) -> dict[str, float]:
-    stats: dict[str, float] = {}
-    layer_idx = 0
-    baw_idx = 0
-    for _name, mod in model.named_modules():
-        cls = mod.__class__.__name__
-        if cls == "TemporalAttention" and hasattr(mod, "raw_lambda"):
-            lam = F.softplus(mod.raw_lambda).detach().cpu()
-            mu = F.softplus(mod.raw_mu).detach().cpu()
-            for b_idx, b in enumerate(("view", "cart", "purchase", "struct")):
-                if b_idx < lam.numel():
-                    stats[f"diag/L{layer_idx}_lambda_{b}"] = float(lam[b_idx])
-                    stats[f"diag/L{layer_idx}_mu_{b}"] = float(mu[b_idx])
-            layer_idx += 1
-        elif cls == "BehaviorAwareWeight" and hasattr(mod, "z_beta"):
-            z = mod.z_beta.detach().cpu()
-            for b_idx, b in enumerate(("view", "cart", "purchase", "struct")):
-                if b_idx < z.shape[0]:
-                    stats[f"diag/baw{baw_idx}_zbeta_norm_{b}"] = float(z[b_idx].norm())
-            baw_idx += 1
-    return stats
 
 
 @dataclass
@@ -303,7 +280,6 @@ def train_epoch(
     n_steps = 0
     n_skipped = 0  # batches dropped because no positive items found in subgraph
     purchase_id = BEHAVIOR_TYPES.index("purchase")
-    model_raw = model._orig_mod if hasattr(model, "_orig_mod") else model
 
     pbar = tqdm(dataloader, desc="train", leave=False, dynamic_ncols=True)
     for step, raw_batch in enumerate(pbar):
@@ -387,11 +363,8 @@ def train_epoch(
                     neg_loc[neg_loc >= pp_b.unsqueeze(-1)] += 1
 
                 neg_emb_b = item_emb[neg_loc]
-                pos_bias = model_raw.item_bias(items_g_kept[mask])  # [B_b, 1]
-                pos_s = (u_emb_b * pos_emb_b).sum(-1, keepdim=True) + pos_bias
-                neg_global = prod_x[neg_loc.clamp(0, prod_x.size(0) - 1).long()]
-                neg_bias = model_raw.item_bias(neg_global).squeeze(-1)  # [B_b, num_neg]
-                neg_s = torch.bmm(neg_emb_b, u_emb_b.unsqueeze(-1)).squeeze(-1) + neg_bias
+                pos_s = (u_emb_b * pos_emb_b).sum(-1, keepdim=True)
+                neg_s = torch.bmm(neg_emb_b, u_emb_b.unsqueeze(-1)).squeeze(-1)
                 behavior_losses[beh_name] = bpr_loss(pos_s, neg_s)
 
             users_per_beh = {b: u_loc[bev == bid].unique() for bid, b in enumerate(BEHAVIOR_TYPES)}
@@ -547,13 +520,6 @@ def eval_epoch(
         ref_time=ref_time,
     )
 
-    # Eval ranking khớp với BPR train (raw dot-product, không normalize).
-    # Append item bias as extra dim: score = u·i + item_bias[i]
-    model_raw = model._orig_mod if hasattr(model, "_orig_mod") else model
-    item_bias = model_raw.item_bias.weight.detach().cpu()  # [n_items, 1]
-    user_emb = torch.cat([user_emb, torch.ones(user_emb.size(0), 1)], dim=-1)
-    item_emb = torch.cat([item_emb, item_bias], dim=-1)
-
     eval_input = EvalInput(
         user_embeddings=user_emb,
         item_embeddings=item_emb,
@@ -678,49 +644,19 @@ def train(
     item_pop_counts = torch.bincount(train_triplets[:, 1].long(), minlength=n_items).float()
     pop_dist = (item_pop_counts + 1.0).pow(0.75)
     pop_dist = (pop_dist / pop_dist.sum()).to(device)
-    # Functional/structural params must NOT be L2-shrunk: WD=1e-2 caused
-    # z_beta to decay 8.0 -> 7.0 and raw_lambda to stay stuck at init 0.693
-    # in v7c diagnostic, killing behavior-awareness and temporal decay.
-    # item_bias gop vao group WD=0: WD=1e-2 keo bias ve 0 -> mat tin hieu popularity.
-    emb_params = (
-        list(model.input_proj.parameters())
-        + list(model.beh_proj.parameters())
-        + list(model.item_bias.parameters())
-    )
+    emb_params = list(model.input_proj.parameters()) + list(model.beh_proj.parameters())
     emb_ids = {id(p) for p in emb_params}
-
-    FUNC_PARAM_PATTERNS = (
-        "z_beta", "raw_lambda", "raw_mu", "raw_omega",
-        "b_rho", "c_rho_beta", "r_rho_beta",
-    )
-    functional_params = []
-    functional_ids: set[int] = set()
-    for name, p in model.named_parameters():
-        if id(p) in emb_ids:
-            continue
-        if any(pat in name for pat in FUNC_PARAM_PATTERNS):
-            functional_params.append(p)
-            functional_ids.add(id(p))
-
-    other_params = [
-        p for p in model.parameters()
-        if id(p) not in emb_ids and id(p) not in functional_ids
-    ]
+    other_params = [p for p in model.parameters() if id(p) not in emb_ids]
     use_fused = cfg.use_fused_adamw and device.type == "cuda"
     optimizer = torch.optim.AdamW(
         [
             {"params": other_params, "weight_decay": cfg.weight_decay},
             {"params": emb_params, "weight_decay": 0.0},
-            {"params": functional_params, "weight_decay": 0.0},
         ],
         lr=cfg.lr,
         fused=use_fused,
     )
-    logger.info(
-        "Optimizer: AdamW (fused=%s, wd=%.1e | groups: matmul=%d, emb=%d, functional=%d wd=0)",
-        use_fused, cfg.weight_decay,
-        len(other_params), len(emb_params), len(functional_params),
-    )
+    logger.info("Optimizer: AdamW (fused=%s, wd=%.1e on non-embedding)", use_fused, cfg.weight_decay)
     scaler = torch.amp.GradScaler(
         "cuda", enabled=cfg.amp and not cfg.use_bf16 and device.type == "cuda"
     )
@@ -812,8 +748,6 @@ def train(
         postfix: dict[str, str] = {"loss": f"{train_loss:.4f}"}
 
         if (epoch + 1) % cfg.eval_every == 0:
-            if device.type == "cuda":
-                torch.cuda.empty_cache()
             metrics = eval_epoch(
                 model,
                 sampler,
@@ -855,16 +789,8 @@ def train(
         epoch_pbar.set_postfix(postfix)
         _save_checkpoint(save_dir, epoch, model, optimizer, scaler, train_loss, metrics)
 
-        diag = diagnostic_module_stats(model)
-        if diag:
-            lam_keys = sorted(k for k in diag if "_lambda_" in k)
-            zb_keys = sorted(k for k in diag if "_zbeta_norm_" in k)
-            lam_summary = " ".join(f"{k.split('/')[-1]}={diag[k]:.3f}" for k in lam_keys[:6])
-            zb_summary = " ".join(f"{k.split('/')[-1]}={diag[k]:.3f}" for k in zb_keys[:6])
-            row += f" | DIAG λ: {lam_summary} | DIAG z: {zb_summary}"
-
         if wandb_manager is not None:
-            wandb_run.log({**train_log, **metrics, **diag, "epoch": epoch})
+            wandb_run.log({**train_log, **metrics, "epoch": epoch})
             cloud_ok = wandb_manager.save_checkpoint(
                 model,
                 optimizer,

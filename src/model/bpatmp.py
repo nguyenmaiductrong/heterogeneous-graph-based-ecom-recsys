@@ -131,7 +131,7 @@ class FourierTimeEncoding(nn.Module):
 class TemporalAttention(nn.Module):
     """Temporal attention voi decay-in-logit va value gate.
 
-    Cong thuc:
+    Cong thuc theo CLAUDE.md §8.4 va §8.6:
         logit = Q·K/√d + b_ρ + u_{ρ,β}ᵀ Φ(Δt) − λ_β · log(1 + Δt/τ)
         alpha = scatter_softmax(logit, dst_idx)
         gate  = σ(c_{ρ,β} + r_{ρ,β}ᵀ Φ(Δt) − μ_β · log(1 + Δt/τ))
@@ -171,15 +171,11 @@ class TemporalAttention(nn.Module):
         self.time_enc = FourierTimeEncoding(n_freqs)
         self.time_bias_proj = nn.Linear(n_freqs * 2, 1, bias=False)
 
-        # Init bat doi xung de pha symmetry: raw_lambda=0 (softplus=0.693) cho moi behavior
-        # khien decay rate khong khac biet -> module behavior-aware temporal decay vo dung.
-        # view decays nhanh, purchase decay cham. struct=0 (mid).
-        # softplus values: view~1.31, cart~0.91, purchase~0.62, struct=0.69
-        self.raw_lambda = nn.Parameter(torch.tensor([1.0, 0.5, 0.0, 0.0]))
+        self.raw_lambda = nn.Parameter(torch.zeros(n_beta))
 
         self.c_rho_beta = nn.Parameter(torch.zeros(n_relations, n_beta))
         self.r_rho_beta = nn.Parameter(torch.zeros(n_relations, n_beta, n_freqs * 2))
-        self.raw_mu = nn.Parameter(torch.tensor([0.7, 0.3, -0.3, 0.0]))
+        self.raw_mu = nn.Parameter(torch.zeros(n_beta))
 
         nn.init.xavier_uniform_(self.r_rho_beta)
 
@@ -242,6 +238,169 @@ class TemporalAttention(nn.Module):
         return exp_logit / (sum_exp[index] + 1e-12)
 
 
+class TemporalPurchaseIntentDecoder(nn.Module):
+    """Bo giai ma y dinh mua hang theo thoi gian (TPID).
+
+    Ket hop 3 expert:
+    - s_graph: diem user-item tu graph
+    - s_seq: diem tu chuoi L su kien gan nhat
+    - s_pop: diem popularity co time decay
+
+    Trong so fusion tinh qua MLP tren user features.
+    """
+
+    def __init__(
+        self,
+        dim: int,
+        n_items: int,
+        seq_len: int = 20,
+        n_behaviors: int = 3,
+        n_freqs: int = 16,
+        tau_pop: float = 30.0,
+    ) -> None:
+        super().__init__()
+        self.dim = dim
+        self.n_items = n_items
+        self.seq_len = seq_len
+        self.tau_pop = tau_pop
+
+        self.beh_emb = nn.Embedding(n_behaviors + 1, dim)
+        self.pos_emb = nn.Embedding(seq_len, dim)
+        self.time_enc = FourierTimeEncoding(n_freqs)
+        self.time_proj = nn.Linear(n_freqs * 2, dim)
+
+        self.seq_encoder = nn.GRU(dim, dim, batch_first=True)
+
+        self.item_bias = nn.Embedding(n_items, 1)
+
+        self.raw_eta = nn.Parameter(torch.zeros(n_behaviors))
+        self.raw_kappa = nn.Parameter(torch.zeros(n_behaviors))
+
+        self.fusion_mlp = nn.Sequential(
+            nn.Linear(3, 16),
+            nn.ReLU(),
+            nn.Linear(16, 3),
+        )
+
+    def encode_sequence(
+        self,
+        item_seq: Tensor,
+        beh_seq: Tensor,
+        ts_seq: Tensor,
+        ref_time: float,
+        item_emb: Tensor,
+    ) -> Tensor:
+        """Encode user sequence into a single vector.
+
+        Args:
+            item_seq: [B, L] item indices
+            beh_seq: [B, L] behavior indices
+            ts_seq: [B, L] timestamps
+            ref_time: reference time T
+            item_emb: [N, dim] item embeddings
+
+        Returns:
+            z_u: [B, dim] user sequence embedding
+        """
+        B, L = item_seq.shape
+        device = item_seq.device
+
+        e_item = item_emb[item_seq.clamp(0, item_emb.size(0) - 1)]
+        e_beh = self.beh_emb(beh_seq.clamp(0, 3))
+        e_pos = self.pos_emb(torch.arange(L, device=device).unsqueeze(0).expand(B, -1))
+
+        delta_t = (ref_time - ts_seq.float()) / 86400.0
+        delta_t = delta_t.clamp(min=0)
+        phi = self.time_enc(delta_t.view(-1)).view(B, L, -1)
+        e_time = self.time_proj(phi)
+
+        x = e_item + e_beh + e_pos + e_time
+
+        mask = item_seq >= 0
+        x = x * mask.unsqueeze(-1).float()
+
+        _, h_n = self.seq_encoder(x)
+        return h_n.squeeze(0)
+    
+    def compute_popularity_score(
+        self,
+        item_idx: Tensor,
+        item_counts: Tensor,
+        item_decay_sum: Tensor,
+    ) -> Tensor:
+        """Compute time-decayed popularity score.
+
+        Args:
+            item_idx: [B] item indices
+            item_counts: [N, 3] per-behavior counts
+            item_decay_sum: [N, 3] sum of time-decayed weights
+
+        Returns:
+            s_pop: [B] popularity scores
+        """
+        eta = F.softplus(self.raw_eta)
+        counts = item_counts[item_idx]
+        decay_sum = item_decay_sum[item_idx]
+        weighted = (eta * decay_sum).sum(dim=-1)
+        return torch.log1p(weighted)
+
+    def forward(
+        self,
+        user_emb: Tensor,
+        item_emb: Tensor,
+        user_idx: Tensor,
+        item_idx: Tensor,
+        item_seq: Optional[Tensor] = None,
+        beh_seq: Optional[Tensor] = None,
+        ts_seq: Optional[Tensor] = None,
+        ref_time: Optional[float] = None,
+        user_n_events: Optional[Tensor] = None,
+        user_last_dt: Optional[Tensor] = None,
+        item_pop_decay: Optional[Tensor] = None,
+    ) -> Tensor:
+        """Compute final score with expert fusion.
+
+        Returns:
+            score: [B] final scores
+        """
+        h_u = user_emb[user_idx]
+        h_i = item_emb[item_idx]
+        s_graph = (h_u * h_i).sum(dim=-1) + self.item_bias(item_idx).squeeze(-1)
+
+        B = user_idx.size(0)
+        device = user_idx.device
+
+        if item_seq is not None and ref_time is not None:
+            z_u = self.encode_sequence(item_seq, beh_seq, ts_seq, ref_time, item_emb)
+            e_i = item_emb[item_idx]
+            s_seq = (z_u * e_i).sum(dim=-1)
+        else:
+            s_seq = torch.zeros(B, device=device)
+
+        if item_pop_decay is not None:
+            s_pop = self.compute_popularity_score(item_idx, item_pop_decay, item_pop_decay)
+        else:
+            s_pop = torch.zeros(B, device=device)
+
+        if user_n_events is None:
+            user_n_events = torch.ones(B, device=device)
+        if user_last_dt is None:
+            user_last_dt = torch.ones(B, device=device)
+
+        feat = torch.stack(
+            [
+                torch.log1p(user_n_events[user_idx].float()),
+                torch.log1p(user_last_dt[user_idx].float()),
+                (h_u * h_u).sum(dim=-1).sqrt(),
+            ],
+            dim=-1,
+        )
+
+        omega = F.softmax(self.fusion_mlp(feat), dim=-1)
+        score = omega[:, 0] * s_graph + omega[:, 1] * s_seq + omega[:, 2] * s_pop
+
+        return score
+    
 BEH_BUCKETS: Tuple[str, str, str, str] = ("view", "cart", "purchase", "struct")
 _BEH_W_INIT = torch.tensor([0.30, 0.50, 1.00, 0.40])
 
@@ -450,7 +609,6 @@ class BPATMPLayer(nn.Module):
         BEH_KEYS = ["view", "cart", "purchase"]
         h = x_dict
         beh_user_agg: Dict[str, Tensor] = {}
-        all_h: list = [x_dict]  # h^0 included for LightGCN-style mean pooling
 
         for i, conv in enumerate(self.convs):
             if self.training and self.use_checkpoint:
@@ -478,18 +636,10 @@ class BPATMPLayer(nn.Module):
             else:
                 h, beh_user_agg = conv(h, edge_index_dict, edge_attr_dict, edge_ts_dict, ref_time)
 
-            all_h.append(h)
-
             if i < len(self.convs) - 1:
                 h = {t: self.dropout(v) for t, v in h.items()}
 
-        # Mean pooling across h^0 .. h^L (LightGCN-style aggregation)
-        h_out: Dict[str, Tensor] = {}
-        for t in all_h[-1].keys():
-            layers = [lh[t] for lh in all_h if t in lh]
-            h_out[t] = torch.stack(layers, dim=0).mean(dim=0)
-
-        return h_out, beh_user_agg
+        return h, beh_user_agg
     
 class IntentCodebook(nn.Module):
     """Shared low-rank intent codebook. Per-node attention over a small set
@@ -570,14 +720,10 @@ class BPATMPModel(nn.Module):
 
         self.intent_codebook = IntentCodebook(n_intents=n_intents, dim=embed_dim)
 
-        self.item_bias = nn.Embedding(num_nodes_dict["product"], 1)
-        nn.init.zeros_(self.item_bias.weight)
-
     def embedding_l2_norm(self) -> Tensor:
         total = torch.tensor(0.0, device=next(self.parameters()).device)
         for emb in self.input_proj.values():
             total = total + emb.weight.pow(2).sum()
-        total = total + self.item_bias.weight.pow(2).sum()
         return total
 
     def forward(
