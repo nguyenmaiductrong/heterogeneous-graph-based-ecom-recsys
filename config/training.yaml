@@ -11,13 +11,13 @@ model:
   dropout: 0.2
   embed_dim: 256
   n_layers: 3
-  rank: 64
-  use_grad_checkpoint: true
-  n_intents: 64
+  rank: 32
+  use_grad_checkpoint: false
+  n_intents: 32
 
 sampler:
-  hop1_budget: 16
-  hop2_budget: 8
+  hop1_budget: 8
+  hop2_budget: 4
   hop1_sample_replace: true
 
 loss:
@@ -31,30 +31,34 @@ loss:
 hierarchy_cl:
   enabled: true
   tau: 0.1
-  hard_k: 64
+  hard_k: 32
   min_pair_overlap: 4
+  max_users_per_pair: 2048
   pair_weights: null
 
 training:
   amp: true
   use_bf16: true
-  batch_size: 8192
+  batch_size: 4096
   device: cuda
   epochs: 35
-  eval_batch_size: 8192
-  eval_every: 1
-  eval_subsample: 0
+  eval_batch_size: 4096
+  eval_every: 3
+  eval_subsample: 10000
   eval_seed: 42
   l2_lambda: 1.0e-05
   lr: 8.0e-04
   min_lr: 1.0e-06
   warmup_epochs: 2
   max_grad_norm: 1.0
-  cl_every_k: 2
-  max_view_triplets: 3000000
-  num_neg: 64
+  cl_every_k: 4
+  max_view_triplets: 1500000
+  num_neg: 32
+  hard_neg_candidates: 4096
+  neg_history_cap: 256
   num_workers: 8
   patience: 10
+  checkpoint_every: 1
   save_dir: checkpoints-v10-fixed
   weight_decay: 1.0e-02
   pin_memory: true
@@ -74,6 +78,8 @@ wandb:
   project: bpatmp-recsys
   run_name: bpatmp-v10-fixed
   save_every: 1
+  verify_checkpoints: false
+  model_only_checkpoints: true
 
 a100:
   allow_tf32: true

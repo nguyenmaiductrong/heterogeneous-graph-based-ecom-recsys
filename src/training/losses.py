@@ -101,12 +101,14 @@ class HierarchicalMBCL(nn.Module):
         pair_weights: list[tuple[str, str, float]] | None = None,
         hard_k: int = 32,
         min_pair_overlap: int = 4,
+        max_users_per_pair: int | None = 2048,
     ) -> None:
         super().__init__()
         from src.core.contracts import BEHAVIOR_TYPES
         self.tau = tau
         self.hard_k = hard_k
         self.min_pair_overlap = min_pair_overlap
+        self.max_users_per_pair = max_users_per_pair
         self.behaviors = list(behaviors) if behaviors else list(BEHAVIOR_TYPES)
         K = len(self.behaviors)
 
@@ -160,6 +162,12 @@ class HierarchicalMBCL(nn.Module):
             common_pair = u_w[torch.isin(u_w, u_s)]
             if common_pair.numel() < self.min_pair_overlap:
                 continue
+            if (
+                self.max_users_per_pair is not None
+                and self.max_users_per_pair > 0
+                and common_pair.numel() > self.max_users_per_pair
+            ):
+                common_pair = common_pair[: self.max_users_per_pair]
             z_w = beh_embs[weak][common_pair]
             z_s = beh_embs[strong][common_pair]
             loss = loss + w * self._directional(z_w, z_s)
@@ -198,6 +206,8 @@ def sample_aligned_negatives_local(
     item_emb_local: torch.Tensor,  # (N_items, d) DETACHED
     frac_random: float = 0.25,
     frac_pop: float = 0.25,
+    hard_candidate_pool_size: int | None = 4096,
+    history_item_cap: int | None = 256,
 ) -> torch.Tensor:                 # (B, num_neg) LOCAL positions in subgraph
     """Mixed-strategy negatives in subgraph-local index space, with global
     history masking. Distribution: uniform | popularity | in-batch hard."""
@@ -222,6 +232,8 @@ def sample_aligned_negatives_local(
     starts = history_ptr[user_b_global]
     ends = history_ptr[user_b_global + 1]
     lens = ends - starts
+    if history_item_cap is not None and history_item_cap > 0:
+        lens = lens.clamp(max=int(history_item_cap))
     max_len = int(lens.max().item()) if lens.numel() > 0 else 0
 
     seen = None
@@ -236,8 +248,27 @@ def sample_aligned_negatives_local(
 
     if n_hard > 0:
         with torch.no_grad():
-            scores = user_emb_b @ item_emb_local.T  # (B, N_items)
-            scores.scatter_(1, pp_b.unsqueeze(1), float("-inf"))
+            use_pool = (
+                hard_candidate_pool_size is not None
+                and hard_candidate_pool_size > 0
+                and N_items > hard_candidate_pool_size
+            )
+            if use_pool:
+                pool_size = min(
+                    N_items,
+                    max(n_hard + 1, min(int(hard_candidate_pool_size), N_items)),
+                )
+                candidate_pool = torch.randint(0, N_items, (pool_size,), device=device)
+                scores = user_emb_b @ item_emb_local[candidate_pool].T  # (B, pool_size)
+                scores.masked_fill_(
+                    candidate_pool.unsqueeze(0) == pp_b.unsqueeze(1),
+                    float("-inf"),
+                )
+            else:
+                candidate_pool = None
+                pool_size = N_items
+                scores = user_emb_b @ item_emb_local.T  # (B, N_items)
+                scores.scatter_(1, pp_b.unsqueeze(1), float("-inf"))
 
             # Mask full user history in subgraph BEFORE topk to avoid false negatives.
             # Without this, hard negatives are selected from high-scoring items that are
@@ -254,12 +285,24 @@ def sample_aligned_negatives_local(
                 safe_local = sort_ord[pos].view(B, max_len)
                 in_sub_2d = in_sub.view(B, max_len)
                 safe_local = safe_local.masked_fill(~in_sub_2d, 0)
-                hist_mask = torch.zeros(B, N_items, dtype=torch.bool, device=device)
-                hist_mask.scatter_(1, safe_local, in_sub_2d)
+                if candidate_pool is not None:
+                    sorted_pool, pool_ord = candidate_pool.sort()
+                    pool_pos = torch.searchsorted(
+                        sorted_pool, safe_local.clamp(min=0)
+                    ).clamp(max=pool_size - 1)
+                    in_pool = (sorted_pool[pool_pos] == safe_local) & in_sub_2d
+                    pool_local = pool_ord[pool_pos].masked_fill(~in_pool, 0)
+                    hist_mask = torch.zeros(B, pool_size, dtype=torch.bool, device=device)
+                    hist_mask.scatter_(1, pool_local, in_pool)
+                else:
+                    hist_mask = torch.zeros(B, N_items, dtype=torch.bool, device=device)
+                    hist_mask.scatter_(1, safe_local, in_sub_2d)
                 scores.masked_fill_(hist_mask, float("-inf"))
 
-            k = min(n_hard, N_items - 1)
+            k = min(n_hard, scores.size(1))
             _, hard_negs = scores.topk(k, dim=-1)
+            if candidate_pool is not None:
+                hard_negs = candidate_pool[hard_negs]
             if k < n_hard:
                 pad = torch.randint(0, N_items, (B, n_hard - k), device=device)
                 hard_negs = torch.cat([hard_negs, pad], dim=-1)
@@ -424,6 +467,7 @@ class BPATMPTotalLoss(nn.Module):
         w_min: float = 0.05,
         cl_hard_k: int = 32,
         cl_min_pair_overlap: int = 4,
+        cl_max_users_per_pair: int | None = 2048,
         cl_pair_weights: list[tuple[str, str, float]] | None = None,
     ) -> None:
         super().__init__()
@@ -442,6 +486,7 @@ class BPATMPTotalLoss(nn.Module):
             pair_weights=cl_pair_weights,
             hard_k=cl_hard_k,
             min_pair_overlap=cl_min_pair_overlap,
+            max_users_per_pair=cl_max_users_per_pair,
         )
         self.funnel = FunnelPriorLoss(margin=margin)
         self.mono = MonotonicDecayPriorLoss()

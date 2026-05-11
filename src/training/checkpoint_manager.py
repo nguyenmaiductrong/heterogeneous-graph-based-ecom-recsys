@@ -23,8 +23,9 @@ class CheckpointManager:
     """
     Quan ly luu/phuc hoi checkpoint BAGNN qua W&B Artifacts, khong can Google Drive.
 
-    Moi chu ky save: ghi local -> upload -> wait() block -> verify API -> xoa local cu.
-    File local chi bi xoa sau khi W&B Public API xac nhan artifact da COMMITTED.
+    Moi chu ky save: ghi local -> upload. Co the verify dong bo neu can dam bao
+    artifact da COMMITTED truoc khi sang epoch tiep theo, nhung che do nay lam
+    cham training vi phai cho network/API W&B.
     """
 
     _RUN_ID_FILE = ".wandb_run_id"
@@ -39,6 +40,8 @@ class CheckpointManager:
         local_dir: str = "/content/checkpoints",
         verify_timeout_secs: int = 300,
         verify_poll_secs: int = 30,
+        verify_on_save: bool = True,
+        model_only: bool = False,
     ):
         self.project              = project
         self.entity               = entity
@@ -48,6 +51,8 @@ class CheckpointManager:
         self.local_dir            = Path(local_dir)
         self.verify_timeout_secs  = verify_timeout_secs
         self.verify_poll_secs     = verify_poll_secs
+        self.verify_on_save       = verify_on_save
+        self.model_only           = model_only
 
         self.local_dir.mkdir(parents=True, exist_ok=True)
 
@@ -85,9 +90,12 @@ class CheckpointManager:
             logger.info("No checkpoint found on W&B — starting from epoch 0.")
             return 0
 
-        ckpt = torch.load(ckpt_path, map_location=device)
+        ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
         model.load_state_dict(ckpt["model_state_dict"])
-        optimizer.load_state_dict(ckpt["optimizer_state_dict"])
+        if "optimizer_state_dict" in ckpt:
+            optimizer.load_state_dict(ckpt["optimizer_state_dict"])
+        else:
+            _log_warn("W&B checkpoint has no optimizer_state_dict; resuming with fresh optimizer.")
         if scaler is not None and "scaler_state_dict" in ckpt:
             scaler.load_state_dict(ckpt["scaler_state_dict"])
 
@@ -104,10 +112,11 @@ class CheckpointManager:
         metrics: dict | None = None,
     ) -> bool:
         """
-        Pipeline: luu local -> upload -> verify cloud -> cleanup.
+        Pipeline: luu local -> upload. Neu verify_on_save=True thi cho W&B
+        artifact commit xong roi moi return.
 
-        Tra ve True neu cloud xac nhan thanh cong.
-        Tra ve False neu verify that bai — file local duoc giu lai
+        Tra ve True neu da enqueue thanh cong, hoac cloud xac nhan thanh cong
+        khi verify_on_save=True.
         """
         if (epoch + 1) % self.save_every_n_epochs != 0:
             return True
@@ -115,11 +124,27 @@ class CheckpointManager:
         if self.run is None:
             raise RuntimeError("Call init_wandb() first.")
 
-        ckpt_path       = self._save_local(model, optimizer, scaler, epoch, loss, metrics)
+        ckpt_path = self._save_local(
+            model,
+            optimizer,
+            scaler,
+            epoch,
+            loss,
+            metrics,
+            model_only=self.model_only,
+        )
         logged_artifact = self._upload_artifact(ckpt_path, epoch, loss, metrics)
 
         self._last_logged_artifact = logged_artifact
         self._last_local_ckpt      = ckpt_path
+
+        if not self.verify_on_save:
+            logger.info(
+                "W&B artifact queued without blocking verify: %s epoch-%03d",
+                self.artifact_name,
+                epoch,
+            )
+            return True
 
         verified = self.verify_checkpoint_on_cloud(
             logged_artifact=logged_artifact,
@@ -205,19 +230,22 @@ class CheckpointManager:
         epoch: int,
         loss: float,
         metrics: dict | None,
+        model_only: bool = False,
     ) -> Path:
         path = self.local_dir / f"epoch_{epoch:03d}.pt"
         state: dict = {
             "epoch": epoch,
             "model_state_dict": model.state_dict(),
-            "optimizer_state_dict": optimizer.state_dict(),
             "loss": loss,
             "metrics": metrics or {},
         }
-        if scaler is not None:
+        if not model_only:
+            state["optimizer_state_dict"] = optimizer.state_dict()
+        if scaler is not None and not model_only:
             state["scaler_state_dict"] = scaler.state_dict()
         torch.save(state, path)
-        logger.info("Saved local: %s (%.1f MB)", path, path.stat().st_size / 1e6)
+        mode = "model-only" if model_only else "full"
+        logger.info("Saved local %s checkpoint: %s (%.1f MB)", mode, path, path.stat().st_size / 1e6)
         return path
 
     def _upload_artifact(

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -64,6 +65,7 @@ class TrainConfig:
     eval_batch_size: int = 512
     num_workers: int = 4
     save_dir: str = "checkpoints/rees46"
+    checkpoint_every: int = 1
 
     # W&B
     use_wandb: bool = False
@@ -72,6 +74,8 @@ class TrainConfig:
     wandb_run_name: str = "bpatmp-training"
     wandb_artifact_name: str = "bpatmp-checkpoint"
     wandb_save_every: int = 5
+    wandb_verify_checkpoints: bool = True
+    wandb_model_only_checkpoints: bool = False
 
     # Loss: L_total = L_BPR + lambda_cl*L_CL + lambda_conv*L_conv + lambda_mono*L_mono + lambda_wd*||theta||^2
     cl_weight: float = 0.1          # lambda_cl
@@ -83,6 +87,8 @@ class TrainConfig:
     cl_every_k: int = 1             # 1 = every step, K>1 = run CL every K steps
     use_bf16: bool = True
     max_view_triplets: int = -1
+    hard_neg_candidates: int = 4096
+    neg_history_cap: int = 256
 
     # Evaluation
     eval_subsample: int = 10000
@@ -95,6 +101,7 @@ class TrainConfig:
     hierarchy_cl_tau: float = 0.1
     hierarchy_cl_hard_k: int = 32
     hierarchy_cl_min_pair_overlap: int = 4
+    hierarchy_cl_max_users_per_pair: int = 2048
     hierarchy_cl_pair_weights: list[tuple[str, str, float]] | None = None
 
     # A100 Optimizations
@@ -141,6 +148,7 @@ class TrainConfig:
             eval_batch_size=t.get("eval_batch_size", cls.eval_batch_size),
             num_workers=t.get("num_workers", cls.num_workers),
             save_dir=t.get("save_dir", cls.save_dir),
+            checkpoint_every=int(t.get("checkpoint_every", cls.checkpoint_every)),
 
             # W&B
             use_wandb=w.get("enabled", cls.use_wandb),
@@ -149,6 +157,12 @@ class TrainConfig:
             wandb_run_name=w.get("run_name", cls.wandb_run_name),
             wandb_artifact_name=w.get("artifact_name", cls.wandb_artifact_name),
             wandb_save_every=w.get("save_every", cls.wandb_save_every),
+            wandb_verify_checkpoints=bool(
+                w.get("verify_checkpoints", cls.wandb_verify_checkpoints)
+            ),
+            wandb_model_only_checkpoints=bool(
+                w.get("model_only_checkpoints", cls.wandb_model_only_checkpoints)
+            ),
 
             # Loss
             cl_weight=loss.get("lambda_cl", t.get("cl_weight", cls.cl_weight)),
@@ -160,6 +174,8 @@ class TrainConfig:
             cl_every_k=int(t.get("cl_every_k", a100.get("cl_every_k", cls.cl_every_k))),
             use_bf16=t.get("use_bf16", cls.use_bf16),
             max_view_triplets=t.get("max_view_triplets", cls.max_view_triplets),
+            hard_neg_candidates=int(t.get("hard_neg_candidates", cls.hard_neg_candidates)),
+            neg_history_cap=int(t.get("neg_history_cap", cls.neg_history_cap)),
 
             # Evaluation
             eval_subsample=t.get("eval_subsample", cls.eval_subsample),
@@ -173,6 +189,9 @@ class TrainConfig:
             hierarchy_cl_hard_k=int(hcl.get("hard_k", cls.hierarchy_cl_hard_k)),
             hierarchy_cl_min_pair_overlap=int(
                 hcl.get("min_pair_overlap", cls.hierarchy_cl_min_pair_overlap)
+            ),
+            hierarchy_cl_max_users_per_pair=int(
+                hcl.get("max_users_per_pair", cls.hierarchy_cl_max_users_per_pair)
             ),
             hierarchy_cl_pair_weights=pair_weights,
 
@@ -235,12 +254,18 @@ def _load_checkpoint(
 ) -> int:
     ckpt = torch.load(ckpt_path, map_location=device)
     model.load_state_dict(ckpt["model_state_dict"])
-    try:
-        optimizer.load_state_dict(ckpt["optimizer_state_dict"])
-        scaler.load_state_dict(ckpt["scaler_state_dict"])
-    except (ValueError, KeyError, RuntimeError):
+    if "optimizer_state_dict" in ckpt:
+        try:
+            optimizer.load_state_dict(ckpt["optimizer_state_dict"])
+            if "scaler_state_dict" in ckpt:
+                scaler.load_state_dict(ckpt["scaler_state_dict"])
+        except (ValueError, KeyError, RuntimeError):
+            logger.warning(
+                "Optimizer/scaler state incompatible with checkpoint — starting with fresh optimizer state."
+            )
+    else:
         logger.warning(
-            "Optimizer/scaler state incompatible with checkpoint — starting with fresh optimizer state."
+            "Checkpoint has no optimizer_state_dict — starting with fresh optimizer state."
         )
     resumed_epoch = int(ckpt["epoch"])
     logger.info(
@@ -377,11 +402,18 @@ def train_epoch(
     pop_dist: torch.Tensor | None = None,
     scheduler: torch.optim.lr_scheduler._LRScheduler | None = None,
     train_ref_time: float | None = None,
+    hard_neg_candidates: int = 4096,
+    neg_history_cap: int = 256,
 ) -> dict[str, float]:
     model.train()
+    if device.type == "cuda":
+        torch.cuda.synchronize()
+        torch.cuda.reset_peak_memory_stats(device)
+    t0 = time.perf_counter()
     total_loss = 0.0
     total_cl_loss = 0.0
     n_steps = 0
+    total_examples = 0
     n_skipped = 0  # batches dropped because no positive items found in subgraph
     total_pos_seen = 0
     total_pos_kept = 0
@@ -392,6 +424,7 @@ def train_epoch(
 
     pbar = tqdm(dataloader, desc="train", leave=False, dynamic_ncols=True)
     for step, raw_batch in enumerate(pbar):
+        total_examples += int(raw_batch.size(0))
         raw_batch = raw_batch.to(device)
         users_g = raw_batch[:, 0]
         items_g = raw_batch[:, 1]
@@ -476,6 +509,8 @@ def train_epoch(
                         history_item=history_item,
                         user_emb_b=u_emb_b.detach(),
                         item_emb_local=item_emb.detach(),
+                        hard_candidate_pool_size=hard_neg_candidates,
+                        history_item_cap=neg_history_cap,
                     )
                 else:
                     neg_loc = torch.randint(0, N_items - 1, (B_b, num_neg), device=device)
@@ -559,6 +594,13 @@ def train_epoch(
             n_skipped + n_steps,
         )
 
+    if device.type == "cuda":
+        torch.cuda.synchronize()
+    elapsed = max(time.perf_counter() - t0, 1e-9)
+    peak_vram_gb = (
+        torch.cuda.max_memory_allocated(device) / 1024**3 if device.type == "cuda" else 0.0
+    )
+
     return {
         "train/loss": total_loss / max(n_steps, 1),
         "train/cl_loss": total_cl_loss / max(n_steps, 1),
@@ -566,6 +608,10 @@ def train_epoch(
         "train/positive_retention": total_pos_kept / max(total_pos_seen, 1),
         "train/forced_product_nodes": float(total_forced_product_nodes),
         "train/injected_positive_edges": float(total_injected_positive_edges),
+        "train/epoch_minutes": elapsed / 60.0,
+        "train/steps_per_sec": n_steps / elapsed,
+        "train/examples_per_sec": total_examples / elapsed,
+        "train/peak_vram_gb": peak_vram_gb,
     }
 
 
@@ -759,6 +805,7 @@ def train(
         w_min=cfg.bpr_w_min,
         cl_hard_k=cfg.hierarchy_cl_hard_k,
         cl_min_pair_overlap=cfg.hierarchy_cl_min_pair_overlap,
+        cl_max_users_per_pair=cfg.hierarchy_cl_max_users_per_pair,
         cl_pair_weights=cfg.hierarchy_cl_pair_weights,
     ).to(device)
     logger.info(
@@ -852,6 +899,8 @@ def train(
             artifact_name=cfg.wandb_artifact_name,
             save_every_n_epochs=cfg.wandb_save_every,
             local_dir=str(save_dir),
+            verify_on_save=cfg.wandb_verify_checkpoints,
+            model_only=cfg.wandb_model_only_checkpoints,
         )
         wandb_run = wandb_manager.init_wandb(
             config={
@@ -863,6 +912,9 @@ def train(
                 "num_neg": cfg.num_neg,
                 "amp": cfg.amp,
                 "cl_weight": cfg.cl_weight,
+                "wandb_save_every": cfg.wandb_save_every,
+                "wandb_verify_checkpoints": cfg.wandb_verify_checkpoints,
+                "wandb_model_only_checkpoints": cfg.wandb_model_only_checkpoints,
             }
         )
         logger.info("W&B enabled — project=%s run=%s", cfg.wandb_project, wandb_run.id)
@@ -901,6 +953,8 @@ def train(
             pop_dist=pop_dist,
             scheduler=scheduler,
             train_ref_time=eval_ref_time,
+            hard_neg_candidates=cfg.hard_neg_candidates,
+            neg_history_cap=cfg.neg_history_cap,
         )
         train_loss = train_log["train/loss"]
         train_log["train/lr"] = float(optimizer.param_groups[0]["lr"])
@@ -951,7 +1005,12 @@ def train(
                 no_improve += 1
 
         epoch_pbar.set_postfix(postfix)
-        _save_checkpoint(save_dir, epoch, model, optimizer, scaler, train_loss, metrics)
+        should_save_epoch_ckpt = (
+            cfg.checkpoint_every > 0
+            and ((epoch + 1) % cfg.checkpoint_every == 0 or epoch == cfg.epochs - 1)
+        )
+        if should_save_epoch_ckpt and wandb_manager is None:
+            _save_checkpoint(save_dir, epoch, model, optimizer, scaler, train_loss, metrics)
 
         diag = diagnostic_module_stats(model)
         if diag:
