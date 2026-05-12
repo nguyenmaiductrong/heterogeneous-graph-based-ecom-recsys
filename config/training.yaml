@@ -83,11 +83,3 @@ a100:
   use_fused_adamw: true
   compile_model: false
   empty_cache_freq: 0
-
-debug:
-  enabled: true
-  eval_repeats: 1
-  eval_seed_stride: 9973
-  rerun_eval_on_drop: true
-  primary_drop_threshold: 0.005
-  log_model_stats: true

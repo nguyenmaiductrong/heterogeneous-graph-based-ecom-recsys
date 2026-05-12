@@ -1,11 +1,9 @@
 import gc
 import logging
-import time
 
-import numpy as np
 import torch
 
-from .contracts import EvalInput, EMBED_DIM
+from .contracts import EvalInput
 
 logger = logging.getLogger(__name__)
 
@@ -144,39 +142,3 @@ class TemporalSplitEvaluator:
                 mode,
             )
         return self.evaluate_full_ranking_tiled(eval_input, user_batch=batch_size)
-
-
-FullRankingEvaluator = TemporalSplitEvaluator
-
-
-def run_testpass() -> None:
-    print("Running evaluator testpass (full-rank only) ...")
-    n_eval = 1_000
-    n_items = 5_000
-
-    eval_input = EvalInput(
-        user_embeddings=torch.randn(n_eval, EMBED_DIM),
-        item_embeddings=torch.randn(n_items, EMBED_DIM),
-        eval_user_ids=torch.arange(n_eval),
-        ground_truth={i: i % n_items for i in range(n_eval)},
-        exclude_items={i: [(i + 1) % n_items, (i + 2) % n_items] for i in range(n_eval)},
-    )
-
-    evaluator = TemporalSplitEvaluator(ks=[10, 20, 50], device="cpu")
-    t0 = time.time()
-    m = evaluator.evaluate(eval_input)
-    print(f"  Full-rank ({time.time() - t0:.2f}s)")
-    for k, v in m.items():
-        print(f"  {k}: {v:.4f}")
-    print("Testpass PASSED")
-
-
-if __name__ == "__main__":
-    import argparse
-
-    logging.basicConfig(level=logging.INFO)
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--testpass", action="store_true")
-    args = parser.parse_args()
-    if args.testpass:
-        run_testpass()

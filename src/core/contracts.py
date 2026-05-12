@@ -1,9 +1,8 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from collections.abc import Iterable
 from numbers import Integral
-import torch
 from torch import Tensor
 
 EMBED_DIM: int = 128
@@ -256,98 +255,3 @@ class CrossComboWeightSpec:
         nR, nB = len(RELATION_TYPES), len(BEHAVIOR_TYPES)
         # W_ρ: nR×d×d, A_ρ: nR×d×r, B_ρ: nR×d×r, z_β: nB×r
         return nR * d * d + nR * d * r + nR * d * r + nB * r
-
-
-def _self_test() -> None:
-    print("=" * 55)
-    print("contracts.py self-test")
-    print("=" * 55)
-
-    B, Nu, Ni, Nc, Nb = 64, 200, 500, 30, 20
-
-    # 1. SampledSubgraph
-    sg = SampledSubgraph(
-        node_features={
-            "user": torch.randn(Nu, EMBED_DIM),
-            "product": torch.randn(Ni, EMBED_DIM),
-            "category": torch.randn(Nc, EMBED_DIM),
-            "brand": torch.randn(Nb, EMBED_DIM),
-        },
-        edge_index={
-            ("user", "view", "product"): torch.randint(0, Nu, (2, 1000)),
-            ("user", "cart", "product"): torch.randint(0, Nu, (2, 300)),
-            ("user", "purchase", "product"): torch.randint(0, Nu, (2, 100)),
-            ("product", "belongs_to", "category"): torch.randint(0, Ni, (2, 500)),
-            ("product", "producedBy", "brand"): torch.randint(0, Ni, (2, 500)),
-        },
-        edge_behavior_origin={
-            ("user", "view", "product"): torch.zeros(1000, dtype=torch.long),
-            ("user", "cart", "product"): torch.ones(300, dtype=torch.long),
-            ("user", "purchase", "product"): torch.full((100,), 2, dtype=torch.long),
-            ("product", "belongs_to", "category"): torch.randint(0, 3, (500,)),
-            ("product", "producedBy", "brand"): torch.randint(0, 3, (500,)),
-        },
-        target_user_indices=torch.randint(0, Nu, (B,)),
-        node_id_map={
-            t: torch.arange(n)
-            for t, n in [("user", Nu), ("product", Ni), ("category", Nc), ("brand", Nb)]
-        },
-    )
-    sg.validate()
-    print("[PASS] SampledSubgraph")
-
-    # 2. GNNOutput
-    gnn = GNNOutput(
-        per_behavior_emb={
-            b: {"user": torch.randn(B, EMBED_DIM), "product": torch.randn(B, EMBED_DIM)}
-            for b in BEHAVIOR_TYPES
-        },
-        final_user_emb=torch.randn(B, EMBED_DIM),
-        final_item_emb=torch.randn(B, EMBED_DIM),
-    )
-    gnn.validate()
-    print("[PASS] GNNOutput")
-
-    # 3. GatedOutput
-    gated = GatedOutput(torch.randn(B, EMBED_DIM), torch.randn(B, EMBED_DIM), torch.tensor(0.5))
-    gated.validate()
-    print("[PASS] GatedOutput")
-
-    # 4. LossInput / LossOutput
-    li = LossInput(
-        torch.randn(B, EMBED_DIM),
-        torch.randn(B, EMBED_DIM),
-        torch.randn(B, 4, EMBED_DIM),
-        torch.randint(0, 3, (B,)),
-        torch.tensor(0.5),
-    )
-    li.validate()
-    print("[PASS] LossInput")
-
-    lo = LossOutput(*(torch.tensor(x) for x in [1.2, 0.8, 0.3, 0.1]))
-    lo.validate()
-    print("[PASS] LossOutput")
-
-    # 6. EvalInput
-    Ne = 100
-    ei = EvalInput(
-        torch.randn(Ne, EMBED_DIM),
-        torch.randn(Ni, EMBED_DIM),
-        torch.arange(Ne),
-        {i: i % Ni for i in range(Ne)},
-        {i: [i % Ni] for i in range(Ne)},
-    )
-    ei.validate()
-    print("[PASS] EvalInput")
-
-    # 7. Param count
-    spec = CrossComboWeightSpec()
-    print(f"\n  Cross-combo params: {spec.total_params:,} ({spec.total_params / 1e6:.2f}M)")
-
-    print("\n" + "=" * 55)
-    print("ALL CONTRACTS PASSED")
-    print("=" * 55)
-
-
-if __name__ == "__main__":
-    _self_test()

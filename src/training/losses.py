@@ -509,7 +509,6 @@ class BPATMPTotalLoss(nn.Module):
             ``(total_loss, log_dict)`` where *log_dict* maps every
             component name to its scalar value for W&B / TensorBoard.
         """
-        device = next(iter(behavior_losses.values())).device
         log_dict: dict[str, float] = {}
 
         # 1. BPR (main ranking loss)
