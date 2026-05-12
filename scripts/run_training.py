@@ -1,15 +1,20 @@
 #!/usr/bin/env python
 """
 Main training script - handles data loading and training from config file.
-Usage: python run_training.py --config config/training.yaml
+
+  python scripts/run_training.py --config config/training.yaml
 """
 from __future__ import annotations
 
 import argparse
 import json
 import logging
+import os
 import pickle
+import sys
 from pathlib import Path
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import numpy as np
 import pandas as pd

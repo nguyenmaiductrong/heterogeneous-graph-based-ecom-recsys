@@ -339,7 +339,6 @@ class TemporalPurchaseIntentDecoder(nn.Module):
             s_pop: [B] popularity scores
         """
         eta = F.softplus(self.raw_eta)
-        counts = item_counts[item_idx]
         decay_sum = item_decay_sum[item_idx]
         weighted = (eta * decay_sum).sum(dim=-1)
         return torch.log1p(weighted)

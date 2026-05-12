@@ -2,7 +2,6 @@ import gc
 import logging
 import time
 
-import numpy as np
 import torch
 
 from .contracts import EvalInput, EMBED_DIM

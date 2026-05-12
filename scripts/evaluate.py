@@ -62,9 +62,9 @@ def main():
     logger.info("Loaded epoch=%s metrics=%s", ckpt.get("epoch"), ckpt.get("metrics"))
 
     # --- data ---
-    # reuse build_hetero_data from run_training
+    # reuse build_hetero_data from scripts/run_training.py
     import sys; sys.path.insert(0, str(Path(__file__).parents[1]))
-    from run_training import build_hetero_data
+    from scripts.run_training import build_hetero_data
     hetero, node_counts, behavior_data = build_hetero_data(cfg)
 
     import numpy as np

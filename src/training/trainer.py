@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import logging
 import math
-import os
 from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -497,7 +496,6 @@ def train_epoch(
             pp_loc = pp_loc[found_p]
             bev = beh_ids[found_p]
             users_g_kept = users_g[found_p]
-            items_g_kept = items_g[found_p]
 
             N_items = item_emb.size(0)
             behavior_losses: dict[str, torch.Tensor] = {}
@@ -520,7 +518,6 @@ def train_epoch(
                     neg_loc = sample_aligned_negatives_local(
                         pp_b=pp_b,
                         user_b_global=users_g_kept[mask],
-                        pos_b_global=items_g_kept[mask],
                         N_items=N_items,
                         num_neg=num_neg,
                         prod_x=subgraph["product"].x,
@@ -957,7 +954,6 @@ def train(
     wandb_run = None
     if cfg.use_wandb:
         from src.training.checkpoint_manager import CheckpointManager
-        import wandb
 
         wandb_manager = CheckpointManager(
             project=cfg.wandb_project,
