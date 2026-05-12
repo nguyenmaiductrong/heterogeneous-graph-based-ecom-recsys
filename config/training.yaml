@@ -54,8 +54,8 @@ training:
   max_view_triplets: 3000000
   num_neg: 32
   num_workers: 8
-  patience: 10
-  save_dir: checkpoints-final-l1
+  patience: 15
+  save_dir: checkpoints-final-l2
   weight_decay: 1.0e-02
   pin_memory: true
   persistent_workers: true
@@ -68,11 +68,11 @@ evaluation:
   metrics: ["HR@10", "HR@20", "HR@50", "NDCG@10", "NDCG@20", "NDCG@50"]
 
 wandb:
-  artifact_name: bpatmp-final-l1
+  artifact_name: bpatmp-final-l2
   enabled: true
   entity: nguyenmaiductrong37-h-c-vi-n-c-ng-ngh-b-u-ch-nh-vi-n-th-ng
   project: bpatmp-recsys
-  run_name: bpatmp-final-l1
+  run_name: bpatmp-final-l2
   save_every: 1
 
 a100:
@@ -81,11 +81,3 @@ a100:
   use_fused_adamw: true
   compile_model: false
   empty_cache_freq: 0
-
-debug:
-  enabled: true
-  eval_repeats: 1
-  eval_seed_stride: 9973
-  rerun_eval_on_drop: true
-  primary_drop_threshold: 0.005
-  log_model_stats: true
