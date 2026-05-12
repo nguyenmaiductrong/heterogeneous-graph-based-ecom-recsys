@@ -217,9 +217,8 @@ heterogeneous-graph-based-ecom-recsys/
 │   ├── training.yaml           # Toàn bộ siêu tham số: model, sampler, loss, training, wandb
 │   └── spark_config.yaml       # Cấu hình PySpark pipeline
 │
-├── run_training.py             # Điểm vào chính: nạp dữ liệu -> build graph -> train
-│
 ├── scripts/
+│   ├── run_training.py         # Điểm vào chính: nạp dữ liệu -> build graph -> train
 │   ├── prepare_data.py         # Chạy PySpark pipeline xử lý dữ liệu
 │   ├── download_data.py        # Tải file CSV từ Kaggle
 │   ├── evaluate.py             # Đánh giá checkpoint trên val/test
@@ -340,7 +339,7 @@ wandb:
 ### 7.2 Chạy huấn luyện
 
 ```bash
-python run_training.py --config config/training.yaml
+python scripts/run_training.py --config config/training.yaml
 ```
 
 **Luồng thực thi:**

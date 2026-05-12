@@ -38,7 +38,6 @@ class PopularityBiasedNegativeSampler:
         batch_size: int,
         num_neg: int = 1,
         behavior: str | None = None,
-        exclude_pos: torch.Tensor | None = None,
     ) -> torch.Tensor:
         key = behavior if behavior and behavior in self._distributions else "global"
         neg_flat = torch.multinomial(self._distributions[key], batch_size * num_neg, replacement=True)
@@ -220,7 +219,6 @@ def build_user_history_csr(
 def sample_aligned_negatives_local(
     pp_b: torch.Tensor,            # (B,) local pos positions in subgraph
     user_b_global: torch.Tensor,   # (B,) global user ids
-    pos_b_global: torch.Tensor,    # (B,) global pos item ids
     N_items: int,                  # subgraph item count
     num_neg: int,
     prod_x: torch.Tensor,          # (N_items,) subgraph item -> global id
@@ -486,7 +484,6 @@ class BPATMPTotalLoss(nn.Module):
             ``(total_loss, log_dict)`` where *log_dict* maps every
             component name to its scalar value for W&B / TensorBoard.
         """
-        device = next(iter(behavior_losses.values())).device
         log_dict: dict[str, float] = {}
 
         # 1. BPR (main ranking loss)
