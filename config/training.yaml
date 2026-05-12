@@ -20,42 +20,34 @@ sampler:
   hop2_budget: 8
   hop1_sample_replace: true
 
+# Total loss:
+#   L = Σ_b w_b * CE_softmax(s_b(u,i⁺), {s_b(u,i⁻_j)})  +  lambda_emb * mean(‖e_u‖² + ‖e_i⁺‖² + Σ‖e_i⁻‖²)
+# Per-behavior weights: w_b = clip((N_purchase / N_b) ** alpha, w_min, 1.0)
 loss:
-  lambda_cl: 0.15
-  lambda_conv: 0.1
-  lambda_mono: 0.05
-  funnel_margin: 0.1
-  alpha: 0.5
-  w_min: 0.05
-
-hierarchy_cl:
-  enabled: true
-  tau: 0.1
-  hard_k: 64
-  min_pair_overlap: 4
-  pair_weights: null
+  alpha: 0.5          # exponent in w_b = (N_p / N_b) ** alpha
+  w_min: 0.05         # floor for view/cart weight
+  temperature: 1.0    # softmax temperature for the CE ranking loss
+  lambda_emb: 1.0e-03 # L2 on the user/pos/neg vectors used in scoring
 
 training:
   amp: true
   use_bf16: true
   batch_size: 8192
   device: cuda
-  epochs: 8
+  epochs: 30
   eval_batch_size: 8192
   eval_every: 1
   eval_subsample: 20000
   eval_seed: 42
-  l2_lambda: 1.0e-05
-  lr: 8.0e-04
+  lr: 3.0e-04
   min_lr: 1.0e-06
-  warmup_epochs: 5
+  warmup_epochs: 2
   max_grad_norm: 1.0
-  cl_every_k: 2
   max_view_triplets: 3000000
   num_neg: 32
   num_workers: 8
   patience: 10
-  save_dir: checkpoints-v3-l2-wdprobe
+  save_dir: checkpoints-v4-softmax
   weight_decay: 1.0e-02
   pin_memory: true
   persistent_workers: true
@@ -68,11 +60,11 @@ evaluation:
   metrics: ["HR@10", "HR@20", "HR@50", "NDCG@10", "NDCG@20", "NDCG@50"]
 
 wandb:
-  artifact_name: bpatmp-checkpoint-v3-l2-wdprobe
+  artifact_name: bpatmp-checkpoint-v4-softmax
   enabled: true
   entity: nguyenmaiductrong37-h-c-vi-n-c-ng-ngh-b-u-ch-nh-vi-n-th-ng
   project: bpatmp-recsys
-  run_name: bpatmp-v3-l2-wdprobe
+  run_name: bpatmp-v4-softmax
   save_every: 1
 
 a100:

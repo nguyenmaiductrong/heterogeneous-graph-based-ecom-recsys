@@ -18,7 +18,7 @@ from src.core.contracts import BEHAVIOR_TYPES, EvalInput
 from src.graph.neighbor_sampler import BehaviorAwareNeighborSampler
 from src.training.losses import (
     BPATMPTotalLoss,
-    bpr_loss,
+    sampled_softmax_loss,
     build_user_history_csr,
     sample_aligned_negatives_local,
 )
@@ -34,7 +34,6 @@ class TrainConfig:
     batch_size: int = 512
     lr: float = 3e-4
     weight_decay: float = 1e-3
-    l2_lambda: float = 1e-4
     num_neg: int = 1
     max_grad_norm: float = 1.0
     amp: bool = True
@@ -52,14 +51,11 @@ class TrainConfig:
     wandb_artifact_name: str = "bpatmp-checkpoint"
     wandb_save_every: int = 5
 
-    # Loss: L_total = L_BPR + lambda_cl*L_CL + lambda_conv*L_conv + lambda_mono*L_mono + lambda_wd*||theta||^2
-    cl_weight: float = 0.1          # lambda_cl
-    lambda_conv: float = 0.0        # lambda_conv (funnel prior; 0 = disabled)
-    lambda_mono: float = 0.0        # lambda_mono (monotonic decay prior; 0 = disabled)
-    funnel_margin: float = 0.1
+    # Loss: L = Σ_b w_b * CE_softmax_b + lambda_emb * ||active embeddings||^2
     bpr_alpha: float = 0.5          # exponent in w_b = (N_p / N_b) ** alpha
     bpr_w_min: float = 0.05         # floor for w_b
-    cl_every_k: int = 1             # 1 = every step, K>1 = run CL every K steps
+    loss_temperature: float = 1.0   # softmax temperature for the CE ranking loss
+    lambda_emb: float = 1e-3        # L2 coeff on user/pos/neg vectors used in scoring
     use_bf16: bool = True
     max_view_triplets: int = -1
 
@@ -68,13 +64,6 @@ class TrainConfig:
     eval_seed: int = 42
     eval_ks: list[int] = field(default_factory=lambda: [10, 20, 50])
     primary_metric: str = "NDCG@20"
-
-    # Hierarchical CL
-    hierarchy_cl_enabled: bool = True
-    hierarchy_cl_tau: float = 0.1
-    hierarchy_cl_hard_k: int = 32
-    hierarchy_cl_min_pair_overlap: int = 4
-    hierarchy_cl_pair_weights: list[tuple[str, str, float]] | None = None
 
     # A100 Optimizations
     gradient_accumulation: int = 1
@@ -104,15 +93,11 @@ class TrainConfig:
         loss = cfg.get("loss", {})
         w = cfg.get("wandb", {})
         e = cfg.get("evaluation", {})
-        hcl = cfg.get("hierarchy_cl", {})
         a100 = cfg.get("a100", {})
         dbg = cfg.get("debug", {})
 
         eval_ks = e.get("ks", [10, 20, 50])
         primary_metric = str(e.get("primary_metric", cls.primary_metric))
-        pair_weights = hcl.get("pair_weights", None)
-        if pair_weights is not None:
-            pair_weights = [(str(a), str(b), float(c)) for a, b, c in pair_weights]
 
         return cls(
             # Basic training
@@ -120,7 +105,6 @@ class TrainConfig:
             batch_size=t.get("batch_size", cls.batch_size),
             lr=t.get("lr", cls.lr),
             weight_decay=t.get("weight_decay", cls.weight_decay),
-            l2_lambda=t.get("l2_lambda", cls.l2_lambda),
             num_neg=t.get("num_neg", cls.num_neg),
             max_grad_norm=t.get("max_grad_norm", cls.max_grad_norm),
             amp=t.get("amp", cls.amp),
@@ -139,13 +123,10 @@ class TrainConfig:
             wandb_save_every=w.get("save_every", cls.wandb_save_every),
 
             # Loss
-            cl_weight=loss.get("lambda_cl", t.get("cl_weight", cls.cl_weight)),
-            lambda_conv=loss.get("lambda_conv", cls.lambda_conv),
-            lambda_mono=loss.get("lambda_mono", cls.lambda_mono),
-            funnel_margin=loss.get("funnel_margin", cls.funnel_margin),
             bpr_alpha=loss.get("alpha", cls.bpr_alpha),
             bpr_w_min=loss.get("w_min", cls.bpr_w_min),
-            cl_every_k=int(t.get("cl_every_k", a100.get("cl_every_k", cls.cl_every_k))),
+            loss_temperature=float(loss.get("temperature", cls.loss_temperature)),
+            lambda_emb=float(loss.get("lambda_emb", cls.lambda_emb)),
             use_bf16=t.get("use_bf16", cls.use_bf16),
             max_view_triplets=t.get("max_view_triplets", cls.max_view_triplets),
 
@@ -154,15 +135,6 @@ class TrainConfig:
             eval_seed=t.get("eval_seed", cls.eval_seed),
             eval_ks=list(eval_ks),
             primary_metric=primary_metric,
-
-            # Hierarchical CL
-            hierarchy_cl_enabled=bool(hcl.get("enabled", cls.hierarchy_cl_enabled)),
-            hierarchy_cl_tau=float(hcl.get("tau", cls.hierarchy_cl_tau)),
-            hierarchy_cl_hard_k=int(hcl.get("hard_k", cls.hierarchy_cl_hard_k)),
-            hierarchy_cl_min_pair_overlap=int(
-                hcl.get("min_pair_overlap", cls.hierarchy_cl_min_pair_overlap)
-            ),
-            hierarchy_cl_pair_weights=pair_weights,
 
             # A100 Optimizations
             gradient_accumulation=t.get("gradient_accumulation", cls.gradient_accumulation),
@@ -266,21 +238,6 @@ class InteractionDataset(Dataset):
 
     def __getitem__(self, idx: int) -> torch.Tensor:
         return self.triplets[idx]
-
-
-def _extract_per_behavior_lambdas(model: BPATMPModel) -> dict[str, torch.Tensor]:
-    """Mean across encoder layers of softplus(raw_lambda) per behavior.
-
-    Used by MonotonicDecayPriorLoss; returns a 1-element scalar tensor per
-    behavior so the prior can compute relu(lam_strong - lam_weak) ** 2.
-    """
-    base = model._orig_mod if hasattr(model, "_orig_mod") else model  # torch.compile unwrap
-    convs = base.encoder.convs
-    stacked = torch.stack(
-        [F.softplus(c.temporal_attn.raw_lambda) for c in convs], dim=0
-    )  # (n_layers, 3)
-    means = stacked.mean(dim=0)  # (3,)
-    return {beh: means[i] for i, beh in enumerate(BEHAVIOR_TYPES)}
 
 
 def _unwrap_model(model: BPATMPModel) -> BPATMPModel:
@@ -404,7 +361,7 @@ def train_epoch(
     max_grad_norm: float = 1.0,
     amp: bool = True,
     use_bf16: bool = True,
-    cl_every_k: int = 1,
+    loss_temperature: float = 1.0,
     history_ptr: torch.Tensor | None = None,
     history_item: torch.Tensor | None = None,
     pop_dist: torch.Tensor | None = None,
@@ -413,12 +370,8 @@ def train_epoch(
 ) -> dict[str, float]:
     model.train()
     total_loss = 0.0
-    total_cl_loss = 0.0
-    total_cl_active_loss = 0.0
     n_steps = 0
-    n_cl_steps = 0
     n_skipped = 0  # batches dropped because no positive items found in subgraph
-    purchase_id = BEHAVIOR_TYPES.index("purchase")
 
     total_examples = 0
     kept_examples = 0
@@ -459,11 +412,7 @@ def train_epoch(
 
         _amp_dtype = torch.bfloat16 if use_bf16 else torch.float16
         with torch.amp.autocast("cuda", dtype=_amp_dtype, enabled=amp and device.type == "cuda"):
-            user_emb, item_emb, beh_embs = model(
-                subgraph,
-                return_beh_embs=True,
-                ref_time=ref_time,
-            )
+            user_emb, item_emb = model(subgraph, ref_time=ref_time)
 
             user_x = subgraph["user"].x.contiguous()
             u_loc = torch.searchsorted(user_x, users_g.contiguous())
@@ -501,6 +450,7 @@ def train_epoch(
 
             N_items = item_emb.size(0)
             behavior_losses: dict[str, torch.Tensor] = {}
+            emb_reg_terms: list[torch.Tensor] = []
 
             for beh_id, beh_name in enumerate(BEHAVIOR_TYPES):
                 mask = bev == beh_id
@@ -537,7 +487,14 @@ def train_epoch(
                 neg_emb_b = item_emb[neg_loc]
                 pos_s = (u_emb_b * pos_emb_b).sum(-1, keepdim=True)
                 neg_s = torch.bmm(neg_emb_b, u_emb_b.unsqueeze(-1)).squeeze(-1)
-                behavior_losses[beh_name] = bpr_loss(pos_s, neg_s)
+                behavior_losses[beh_name] = sampled_softmax_loss(
+                    pos_s, neg_s, temperature=loss_temperature
+                )
+                emb_reg_terms.append(
+                    u_emb_b.pow(2).sum(-1).mean()
+                    + pos_emb_b.pow(2).sum(-1).mean()
+                    + neg_emb_b.pow(2).sum(-1).mean()
+                )
 
                 if debug_enabled:
                     pos_f = pos_s.detach().float()
@@ -561,45 +518,17 @@ def train_epoch(
                         B_b,
                     )
 
-            users_per_beh = {b: u_loc[bev == bid].unique() for bid, b in enumerate(BEHAVIOR_TYPES)}
-
-            # Funnel scores on the SHARED set of purchase positives so the
-            # ordering s_view < s_cart < s_purchase is computed on matched (u,i).
-            funnel_scores: dict[str, torch.Tensor] | None = None
-            if loss_fn.lambda_conv > 0:
-                p_mask = bev == purchase_id
-                if p_mask.any():
-                    u_p = u_loc[p_mask]
-                    pp_p = pp_loc[p_mask]
-                    pos_emb_p = item_emb[pp_p]
-                    funnel_scores = {
-                        b: (beh_embs[b][u_p] * pos_emb_p).sum(-1)
-                        for b in BEHAVIOR_TYPES
-                    }
-
-            lambdas_dict: dict[str, torch.Tensor] | None = None
-            if loss_fn.lambda_mono > 0:
-                lambdas_dict = _extract_per_behavior_lambdas(model)
-
-            # Skip CL on most steps when cl_every_k > 1: ~K times cheaper when lambda_cl > 0
-            run_cl = loss_fn.lambda_cl > 0 and (cl_every_k <= 1 or (step % cl_every_k == 0))
-            beh_embs_for_cl = (
-                {b: beh_embs[b].float() for b in BEHAVIOR_TYPES} if run_cl else None
+            embedding_reg = (
+                torch.stack(emb_reg_terms).mean() if emb_reg_terms else None
             )
-            users_per_beh_for_cl = users_per_beh if run_cl else None
 
         if not behavior_losses:
             n_skipped += 1
             continue
 
-        model_l2 = model.embedding_l2_norm()
         loss, log = loss_fn(
             behavior_losses=behavior_losses,
-            beh_embs=beh_embs_for_cl,
-            users_per_beh=users_per_beh_for_cl,
-            scores=funnel_scores,
-            lambdas=lambdas_dict,
-            model_params=model_l2,
+            embedding_reg=embedding_reg,
         )
         if not torch.isfinite(loss):
             raise FloatingPointError(
@@ -610,9 +539,6 @@ def train_epoch(
         if debug_enabled:
             for key, value in log.items():
                 add_stat(f"debug/{key}", value)
-            if run_cl:
-                n_cl_steps += 1
-                total_cl_active_loss += float(log.get("loss/cl", 0.0))
 
         if amp:
             scaler.scale(loss).backward()
@@ -640,12 +566,8 @@ def train_epoch(
             scheduler.step()
 
         total_loss += log["loss/total"]
-        total_cl_loss += float(log.get("loss/cl", 0.0))
         n_steps += 1
-        pbar.set_postfix(
-            loss=f"{log['loss/total']:.4f}",
-            cl=f"{log.get('loss/cl', 0.0):.4f}",
-        )
+        pbar.set_postfix(loss=f"{log['loss/total']:.4f}")
 
     if n_skipped > 0:
         logger.warning(
@@ -660,8 +582,6 @@ def train_epoch(
                 "debug/train/kept_pos_frac": _safe_div(kept_examples, total_examples),
                 "debug/train/dropped_pos_frac": 1.0
                 - _safe_div(kept_examples, total_examples),
-                "debug/train/cl_active_loss": _safe_div(total_cl_active_loss, n_cl_steps),
-                "debug/train/cl_step_frac": _safe_div(n_cl_steps, n_steps),
                 **{
                     f"debug/train/kept_pos_frac/{b}": _safe_div(
                         per_beh_kept[b], per_beh_total[b]
@@ -683,7 +603,6 @@ def train_epoch(
             else {}
         ),
         "train/loss": total_loss / max(n_steps, 1),
-        "train/cl_loss": total_cl_loss / max(n_steps, 1),
         "train/skipped_batches": float(n_skipped),
     }
 
@@ -886,23 +805,14 @@ def train(
 
     loss_fn = BPATMPTotalLoss(
         behavior_counts=behavior_counts,
-        lambda_cl=cfg.cl_weight if cfg.hierarchy_cl_enabled else 0.0,
-        lambda_conv=cfg.lambda_conv,
-        lambda_mono=cfg.lambda_mono,
-        lambda_wd=cfg.l2_lambda,
-        margin=cfg.funnel_margin,
-        tau=cfg.hierarchy_cl_tau,
+        lambda_emb=cfg.lambda_emb,
         alpha=cfg.bpr_alpha,
         w_min=cfg.bpr_w_min,
-        cl_hard_k=cfg.hierarchy_cl_hard_k,
-        cl_min_pair_overlap=cfg.hierarchy_cl_min_pair_overlap,
-        cl_pair_weights=cfg.hierarchy_cl_pair_weights,
     ).to(device)
     logger.info(
-        "Loss: BPR(alpha=%.2f, w_min=%.2f, weights=%s) + lambda_cl=%.3f + lambda_conv=%.3f + lambda_mono=%.3f + lambda_wd=%.1e",
-        cfg.bpr_alpha, cfg.bpr_w_min,
-        loss_fn.bpr.task_weights.tolist(),
-        loss_fn.lambda_cl, loss_fn.lambda_conv, loss_fn.lambda_mono, loss_fn.lambda_wd,
+        "Loss: weighted softmax-CE (alpha=%.2f, w_min=%.2f, T=%.2f, weights=%s) + lambda_emb=%.1e",
+        cfg.bpr_alpha, cfg.bpr_w_min, cfg.loss_temperature,
+        loss_fn.task_weights.tolist(), cfg.lambda_emb,
     )
 
     history_ptr, history_item = build_user_history_csr(train_triplets, n_users=n_users)
@@ -973,10 +883,10 @@ def train(
                 "batch_size": cfg.batch_size,
                 "lr": cfg.lr,
                 "weight_decay": cfg.weight_decay,
-                "l2_lambda": cfg.l2_lambda,
+                "lambda_emb": cfg.lambda_emb,
+                "loss_temperature": cfg.loss_temperature,
                 "num_neg": cfg.num_neg,
                 "amp": cfg.amp,
-                "cl_weight": cfg.cl_weight,
             }
         )
         logger.info("W&B enabled — project=%s run=%s", cfg.wandb_project, wandb_run.id)
@@ -1010,7 +920,7 @@ def train(
             max_grad_norm=cfg.max_grad_norm,
             amp=cfg.amp,
             use_bf16=cfg.use_bf16,
-            cl_every_k=cfg.cl_every_k,
+            loss_temperature=cfg.loss_temperature,
             history_ptr=history_ptr,
             history_item=history_item,
             pop_dist=pop_dist,
@@ -1144,15 +1054,11 @@ def train(
                     "debug/train/kept_pos_frac/view",
                     "debug/train/kept_pos_frac/cart",
                     "debug/train/kept_pos_frac/purchase",
-                    "debug/loss/bpr",
-                    "debug/loss/conv",
-                    "debug/loss/mono",
-                    "debug/loss/wd",
+                    "debug/loss/ce",
+                    "debug/loss/emb_reg",
                     "debug/train/grad_norm",
                     "debug/train/grad_norm_max",
                     "debug/train/grad_clip_frac",
-                    "debug/train/cl_active_loss",
-                    "debug/train/cl_step_frac",
                 ],
             )
             if train_diag:
