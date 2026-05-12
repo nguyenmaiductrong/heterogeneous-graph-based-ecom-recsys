@@ -45,6 +45,8 @@ training:
   eval_every: 1
   eval_subsample: 20000
   eval_seed: 42
+  seed: 42
+  deterministic: false
   l2_lambda: 1.0e-05
   lr: 8.0e-04
   min_lr: 1.0e-06
@@ -54,8 +56,8 @@ training:
   max_view_triplets: 3000000
   num_neg: 32
   num_workers: 8
-  patience: 15
-  save_dir: checkpoints-final-l2
+  patience: 5
+  save_dir: checkpoints-final-l3
   weight_decay: 1.0e-02
   pin_memory: true
   persistent_workers: true
@@ -63,12 +65,12 @@ training:
 
 evaluation:
   full_ranking: true
-  primary_metric: "NDCG@20"
+  primary_metric: "NDCG@10"
   ks: [10, 20, 50]
   metrics: ["HR@10", "HR@20", "HR@50", "NDCG@10", "NDCG@20", "NDCG@50"]
 
 wandb:
-  artifact_name: bpatmp-final-l2
+  artifact_name: bpatmp-final-l3
   enabled: true
   entity: nguyenmaiductrong37-h-c-vi-n-c-ng-ngh-b-u-ch-nh-vi-n-th-ng
   project: bpatmp-recsys

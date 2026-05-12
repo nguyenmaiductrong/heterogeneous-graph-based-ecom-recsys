@@ -25,7 +25,7 @@ from torch_geometric.data import HeteroData
 from src.core.contracts import BEHAVIOR_TYPES, configure_dims
 from src.graph.neighbor_sampler import BehaviorAwareNeighborSampler
 from src.model.bpatmp import BPATMPModel
-from src.training.trainer import TrainConfig, train
+from src.training.trainer import TrainConfig, set_seed, train
 
 logging.basicConfig(
     level=logging.INFO,
@@ -142,6 +142,9 @@ def main():
     logger.info(f"Loading config from {args.config}")
     cfg = load_config(args.config)
     configure_dims(cfg["model"]["embed_dim"])
+
+    _train_cfg = cfg.get("training", {})
+    set_seed(int(_train_cfg.get("seed", 42)), bool(_train_cfg.get("deterministic", False)))
 
     logger.info(f"PyTorch: {torch.__version__}")
     logger.info(f"CUDA available: {torch.cuda.is_available()}")
