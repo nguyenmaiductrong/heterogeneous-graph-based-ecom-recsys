@@ -229,6 +229,7 @@ def sample_aligned_negatives_local(
     item_emb_local: torch.Tensor,  # (N_items, d) DETACHED
     frac_random: float = 0.25,
     frac_pop: float = 0.25,
+    generator: torch.Generator | None = None,
 ) -> torch.Tensor:                 # (B, num_neg) LOCAL positions in subgraph
     """Mixed-strategy negatives in subgraph-local index space, with global
     history masking. Distribution: uniform | popularity | in-batch hard."""
@@ -244,9 +245,9 @@ def sample_aligned_negatives_local(
     pop_local = pop_dist_global[prod_x.long()].clone()
     pop_local = pop_local / (pop_local.sum() + 1e-12)
 
-    rand_negs = torch.randint(0, N_items, (B, n_rand), device=device)
+    rand_negs = torch.randint(0, N_items, (B, n_rand), device=device, generator=generator)
     pop_negs = torch.multinomial(
-        pop_local, B * n_pop, replacement=True
+        pop_local, B * n_pop, replacement=True, generator=generator
     ).view(B, n_pop)
 
     if n_hard > 0:
@@ -259,7 +260,7 @@ def sample_aligned_negatives_local(
             _, hard_negs = scores.topk(k, dim=-1)
             if k < n_hard:
                 pad = torch.randint(
-                    0, N_items, (B, n_hard - k), device=device
+                    0, N_items, (B, n_hard - k), device=device, generator=generator
                 )
                 hard_negs = torch.cat([hard_negs, pad], dim=-1)
     else:
@@ -288,12 +289,12 @@ def sample_aligned_negatives_local(
             ).any(dim=-1)
             if not bad.any():
                 break
-            repl = torch.randint(0, N_items, bad.shape, device=device)
+            repl = torch.randint(0, N_items, bad.shape, device=device, generator=generator)
             negs_local = torch.where(bad, repl, negs_local)
 
     same = negs_local == pp_b.unsqueeze(1)
     if same.any():
-        repl = torch.randint(0, N_items, negs_local.shape, device=device)
+        repl = torch.randint(0, N_items, negs_local.shape, device=device, generator=generator)
         negs_local = torch.where(same, repl, negs_local)
 
     return negs_local
