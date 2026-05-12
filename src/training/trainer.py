@@ -24,6 +24,27 @@ from src.core.evaluator import TemporalSplitEvaluator
 logger = logging.getLogger(__name__)
 
 
+def set_seed(seed: int = 42, deterministic: bool = False) -> None:
+    """Seed Python / NumPy / PyTorch RNGs so a run is reproducible.
+
+    With ``deterministic=True`` also forces deterministic CUDA kernels and
+    disables cuDNN autotuning — slower, and a few ops may not support it.
+    """
+    import random
+
+    import numpy as np
+
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+    if deterministic:
+        torch.backends.cudnn.benchmark = False
+        torch.use_deterministic_algorithms(True, warn_only=True)
+    logger.info("Seed set to %d (deterministic=%s)", seed, deterministic)
+
+
 @dataclass
 class TrainConfig:
     # Basic training
@@ -40,6 +61,8 @@ class TrainConfig:
     eval_batch_size: int = 512
     num_workers: int = 4
     save_dir: str = "checkpoints/rees46"
+    seed: int = 42
+    deterministic: bool = False
 
     # W&B
     use_wandb: bool = False
@@ -117,6 +140,8 @@ class TrainConfig:
             eval_batch_size=t.get("eval_batch_size", cls.eval_batch_size),
             num_workers=t.get("num_workers", cls.num_workers),
             save_dir=t.get("save_dir", cls.save_dir),
+            seed=int(t.get("seed", cls.seed)),
+            deterministic=bool(t.get("deterministic", cls.deterministic)),
 
             # W&B
             use_wandb=w.get("enabled", cls.use_wandb),
@@ -294,6 +319,7 @@ def train_epoch(
     history_item: torch.Tensor | None = None,
     pop_dist: torch.Tensor | None = None,
     scheduler: torch.optim.lr_scheduler._LRScheduler | None = None,
+    generator: torch.Generator | None = None,
 ) -> dict[str, float]:
     model.train()
     total_loss = 0.0
@@ -316,7 +342,9 @@ def train_epoch(
         ref_time = float(raw_batch[:, 3].min().item()) if raw_batch.size(1) >= 4 else None
 
         unique_users = users_g.unique()
-        subgraph = sampler.sample(unique_users, seed_type="user").to(device, non_blocking=True)
+        subgraph = sampler.sample(
+            unique_users, seed_type="user", generator=generator
+        ).to(device, non_blocking=True)
 
         optimizer.zero_grad(set_to_none=True)
 
@@ -377,9 +405,12 @@ def train_epoch(
                         history_item=history_item,
                         user_emb_b=u_emb_b.detach(),
                         item_emb_local=item_emb.detach(),
+                        generator=generator,
                     )
                 else:
-                    neg_loc = torch.randint(0, N_items - 1, (B_b, num_neg), device=device)
+                    neg_loc = torch.randint(
+                        0, N_items - 1, (B_b, num_neg), device=device, generator=generator
+                    )
                     neg_loc[neg_loc >= pp_b.unsqueeze(-1)] += 1
 
                 neg_emb_b = item_emb[neg_loc]
@@ -579,8 +610,8 @@ def _setup_a100_optimizations(cfg: TrainConfig, device: torch.device) -> None:
         torch.backends.cudnn.allow_tf32 = True
         logger.info("TF32 enabled for matmul operations")
 
-    # cuDNN benchmark for faster convolutions
-    if cfg.cudnn_benchmark:
+    # cuDNN benchmark for faster convolutions (skipped when deterministic)
+    if cfg.cudnn_benchmark and not cfg.deterministic:
         torch.backends.cudnn.benchmark = True
         logger.info("cuDNN benchmark enabled")
 
@@ -624,6 +655,10 @@ def train(
     device: torch.device,
     eval_ref_time: float | None = None,
 ) -> None:
+    # Reproducibility: re-seed at the start of training so the RNG state here
+    # is fixed regardless of how much randomness data/model setup consumed.
+    set_seed(cfg.seed, deterministic=cfg.deterministic)
+
     # Apply A100 optimizations
     _setup_a100_optimizations(cfg, device)
 
@@ -641,7 +676,13 @@ def train(
             pass
         model = torch.compile(model, mode="default", dynamic=True)
 
+    # Generator for sampling inside train_epoch (neighbor + negative sampling);
+    # on CUDA falls back to the global RNG if a device generator can't be made.
+    train_generator = _make_generator(device, cfg.seed)
+
     dataset = InteractionDataset(train_triplets)
+    loader_generator = torch.Generator()
+    loader_generator.manual_seed(cfg.seed)
     loader = DataLoader(
         dataset,
         batch_size=cfg.batch_size,
@@ -651,6 +692,7 @@ def train(
         drop_last=True,
         persistent_workers=cfg.persistent_workers and cfg.num_workers > 0,
         prefetch_factor=cfg.prefetch_factor if cfg.num_workers > 0 else None,
+        generator=loader_generator,
     )
 
     loss_fn = BPATMPTotalLoss(
@@ -775,6 +817,7 @@ def train(
             history_item=history_item,
             pop_dist=pop_dist,
             scheduler=scheduler,
+            generator=train_generator,
         )
         train_loss = train_log["train/loss"]
         train_log["train/lr"] = float(optimizer.param_groups[0]["lr"])
