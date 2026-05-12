@@ -54,7 +54,7 @@ training:
   max_view_triplets: 3000000
   num_neg: 32
   num_workers: 8
-  patience: 10
+  patience: 15
   save_dir: checkpoints-final-l2
   weight_decay: 1.0e-02
   pin_memory: true
