@@ -355,15 +355,16 @@ class FunnelPriorLoss(nn.Module):
 
 
 class MonotonicDecayPriorLoss(nn.Module):
-    """Monotonic temporal-decay ordering prior.
+    """Legacy monotonic temporal-decay ordering prior.
 
     Enforces lam_weak >= lam_strong so that weaker signals (e.g. view) fade
     faster than stronger ones (e.g. cart, purchase):
 
         L_mono = mean( relu(lam_strong - lam_weak) ** 2 )
 
-    Operates on per-behavior decay rates (post-softplus, positive) used in
-    the temporal attention where decay = lam * log(1 + dt / tau).
+    This module is retained for checkpoint/config compatibility, but
+    BPATMPTotalLoss forces its coefficient to 0 when temporal features are
+    disabled.
     """
 
     DECAY_ORDER: list[str] = ["view", "cart", "purchase"]
@@ -409,7 +410,7 @@ class BPATMPTotalLoss(nn.Module):
     Aggregates every training objective into a single call::
 
         L = L_bpr + lambda_cl * L_CL + lambda_conv * L_conv
-            + lambda_mono * L_mono + lambda_wd * ||theta||^2
+            + lambda_wd * ||theta||^2
 
     Each sub-loss is optional: if the corresponding input is ``None`` or
     empty, that term is silently skipped (and logged as 0).
@@ -419,7 +420,8 @@ class BPATMPTotalLoss(nn.Module):
             :class:`MultiTaskBPRLoss` count-weighted normalisation.
         lambda_cl:   coefficient for :class:`HierarchicalMBCL`.
         lambda_conv: coefficient for :class:`FunnelPriorLoss`.
-        lambda_mono: coefficient for :class:`MonotonicDecayPriorLoss`.
+        lambda_mono: kept for config compatibility; ignored because temporal
+            decay is disabled.
         lambda_wd:   L2 weight-decay coefficient on model parameters.
         margin:      margin ``m`` for :class:`FunnelPriorLoss`.
         tau:         temperature for :class:`HierarchicalMBCL`.
@@ -444,7 +446,8 @@ class BPATMPTotalLoss(nn.Module):
 
         self.lambda_cl = lambda_cl
         self.lambda_conv = lambda_conv
-        self.lambda_mono = lambda_mono
+        self.configured_lambda_mono = lambda_mono
+        self.lambda_mono = 0.0
         self.lambda_wd = lambda_wd
 
         # Sub-modules — L2 handled here, so BPR gets l2_lambda=0

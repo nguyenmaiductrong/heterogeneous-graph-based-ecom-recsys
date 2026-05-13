@@ -6,7 +6,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import torch
-import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
 from tqdm import tqdm
 
@@ -72,10 +71,10 @@ class TrainConfig:
     wandb_artifact_name: str = "bpatmp-checkpoint"
     wandb_save_every: int = 5
 
-    # Loss: L_total = L_BPR + lambda_cl*L_CL + lambda_conv*L_conv + lambda_mono*L_mono + lambda_wd*||theta||^2
+    # Loss: L_total = L_BPR + lambda_cl*L_CL + lambda_conv*L_conv + lambda_wd*||theta||^2
     cl_weight: float = 0.1          # lambda_cl
     lambda_conv: float = 0.0        # lambda_conv (funnel prior; 0 = disabled)
-    lambda_mono: float = 0.0        # lambda_mono (monotonic decay prior; 0 = disabled)
+    lambda_mono: float = 0.0        # kept for config compatibility; ignored when time features are disabled
     funnel_margin: float = 0.1
     bpr_alpha: float = 0.5          # exponent in w_b = (N_p / N_b) ** alpha
     bpr_w_min: float = 0.05         # floor for w_b
@@ -265,21 +264,6 @@ class InteractionDataset(Dataset):
         return self.triplets[idx]
 
 
-def _extract_per_behavior_lambdas(model: BPATMPModel) -> dict[str, torch.Tensor]:
-    """Mean across encoder layers of softplus(raw_lambda) per behavior.
-
-    Used by MonotonicDecayPriorLoss; returns a 1-element scalar tensor per
-    behavior so the prior can compute relu(lam_strong - lam_weak) ** 2.
-    """
-    base = model._orig_mod if hasattr(model, "_orig_mod") else model  # torch.compile unwrap
-    convs = base.encoder.convs
-    stacked = torch.stack(
-        [F.softplus(c.temporal_attn.raw_lambda) for c in convs], dim=0
-    )  # (n_layers, 3)
-    means = stacked.mean(dim=0)  # (3,)
-    return {beh: means[i] for i, beh in enumerate(BEHAVIOR_TYPES)}
-
-
 def _format_main_metrics(metrics: dict[str, float]) -> str:
     return " | ".join(f"{k}={v:.4f}" for k, v in metrics.items())
 
@@ -335,12 +319,6 @@ def train_epoch(
         items_g = raw_batch[:, 1]
         beh_ids = raw_batch[:, 2]
 
-        # ref_time = batch_min: every t_e < min(batch_ts) <= t_pos for ALL positives
-        # in the batch, so no future leakage. Tradeoff: late-batch positives lose
-        # access to recent context within (min, t_pos). Mitigated by large
-        # batch_size + i.i.d. shuffling so distribution is balanced.
-        ref_time = float(raw_batch[:, 3].min().item()) if raw_batch.size(1) >= 4 else None
-
         unique_users = users_g.unique()
         subgraph = sampler.sample(
             unique_users, seed_type="user", generator=generator
@@ -353,7 +331,6 @@ def train_epoch(
             user_emb, item_emb, beh_embs = model(
                 subgraph,
                 return_beh_embs=True,
-                ref_time=ref_time,
             )
 
             user_x = subgraph["user"].x.contiguous()
@@ -434,10 +411,6 @@ def train_epoch(
                         for b in BEHAVIOR_TYPES
                     }
 
-            lambdas_dict: dict[str, torch.Tensor] | None = None
-            if loss_fn.lambda_mono > 0:
-                lambdas_dict = _extract_per_behavior_lambdas(model)
-
             # Skip CL on most steps when cl_every_k > 1: ~K times cheaper when lambda_cl > 0
             run_cl = loss_fn.lambda_cl > 0 and (cl_every_k <= 1 or (step % cl_every_k == 0))
             beh_embs_for_cl = (
@@ -455,7 +428,7 @@ def train_epoch(
             beh_embs=beh_embs_for_cl,
             users_per_beh=users_per_beh_for_cl,
             scores=funnel_scores,
-            lambdas=lambdas_dict,
+            lambdas=None,
             model_params=model_l2,
         )
         if not torch.isfinite(loss):
@@ -527,7 +500,7 @@ def export_embeddings(
             generator=sampler_generator,
         ).to(device)
         with torch.amp.autocast("cuda", dtype=_amp_dtype, enabled=device.type == "cuda"):
-            _, item_local = model(sub, ref_time=ref_time)
+            _, item_local = model(sub)
         item_emb[start:end] = item_local.float().cpu()
 
     user_emb = torch.zeros(len(user_ids), d)
@@ -540,7 +513,7 @@ def export_embeddings(
             generator=sampler_generator,
         ).to(device)
         with torch.amp.autocast("cuda", dtype=_amp_dtype, enabled=device.type == "cuda"):
-            u_local, _ = model(sub, ref_time=ref_time)
+            u_local, _ = model(sub)
         user_emb[start:end] = u_local.float().cpu()
 
     return user_emb, item_emb
@@ -584,7 +557,7 @@ def eval_epoch(
         device,
         batch_size,
         use_bf16=use_bf16,
-        ref_time=ref_time,
+        ref_time=None,
         sampler_seed=seed if sampler_seed is None else sampler_seed,
     )
 
@@ -695,11 +668,12 @@ def train(
         generator=loader_generator,
     )
 
+    effective_lambda_mono = 0.0
     loss_fn = BPATMPTotalLoss(
         behavior_counts=behavior_counts,
         lambda_cl=cfg.cl_weight if cfg.hierarchy_cl_enabled else 0.0,
         lambda_conv=cfg.lambda_conv,
-        lambda_mono=cfg.lambda_mono,
+        lambda_mono=effective_lambda_mono,
         lambda_wd=cfg.l2_lambda,
         margin=cfg.funnel_margin,
         tau=cfg.hierarchy_cl_tau,
@@ -710,10 +684,10 @@ def train(
         cl_pair_weights=cfg.hierarchy_cl_pair_weights,
     ).to(device)
     logger.info(
-        "Loss: BPR(alpha=%.2f, w_min=%.2f, weights=%s) + lambda_cl=%.3f + lambda_conv=%.3f + lambda_mono=%.3f + lambda_wd=%.1e",
+        "Loss: BPR(alpha=%.2f, w_min=%.2f, weights=%s) + lambda_cl=%.3f + lambda_conv=%.3f + lambda_mono=%.3f (config %.3f ignored) + lambda_wd=%.1e",
         cfg.bpr_alpha, cfg.bpr_w_min,
         loss_fn.bpr.task_weights.tolist(),
-        loss_fn.lambda_cl, loss_fn.lambda_conv, loss_fn.lambda_mono, loss_fn.lambda_wd,
+        loss_fn.lambda_cl, loss_fn.lambda_conv, loss_fn.lambda_mono, cfg.lambda_mono, loss_fn.lambda_wd,
     )
 
     history_ptr, history_item = build_user_history_csr(train_triplets, n_users=n_users)
@@ -841,7 +815,7 @@ def train(
                 subsample=cfg.eval_subsample,
                 seed=cfg.eval_seed,
                 sampler_seed=cfg.eval_seed,
-                ref_time=eval_ref_time,
+                ref_time=None,
             )
 
             row += " | " + _format_main_metrics(metrics)
@@ -917,7 +891,7 @@ def train(
             subsample=0,
             seed=cfg.eval_seed,
             sampler_seed=cfg.eval_seed,
-            ref_time=eval_ref_time,
+            ref_time=None,
         )
         logger.info(
             "FINAL VAL full-rank eval on best.pt: %s",

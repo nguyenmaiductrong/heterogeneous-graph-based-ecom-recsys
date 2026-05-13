@@ -90,12 +90,9 @@ def build_hetero_data(cfg: dict) -> tuple[HeteroData, dict, dict]:
     for beh in ["view", "cart", "purchase"]:
         src = torch.from_numpy(behavior_data[beh]["src"]).long()
         dst = torch.from_numpy(behavior_data[beh]["dst"]).long()
-        ts = torch.from_numpy(behavior_data[beh]["ts"]).long()
 
         hetero[("user", beh, "product")].edge_index = torch.stack([src, dst])
-        hetero[("user", beh, "product")].edge_time = ts
         hetero[("product", f"rev_{beh}", "user")].edge_index = torch.stack([dst, src])
-        hetero[("product", f"rev_{beh}", "user")].edge_time = ts
 
     cat_ei = torch.from_numpy(prod_cat[["product_idx", "category_idx"]].values.T.copy()).long()
     brand_ei = torch.from_numpy(prod_brand[["product_idx", "brand_idx"]].values.T.copy()).long()
@@ -110,14 +107,13 @@ def build_hetero_data(cfg: dict) -> tuple[HeteroData, dict, dict]:
 
 
 def build_train_triplets(behavior_data: dict, max_view: int = -1) -> torch.Tensor:
-    """Build train triplets from behavior data."""
+    """Build train triplets from behavior data without timestamp features."""
     triplets_list = []
     for beh_id, beh in enumerate(BEHAVIOR_TYPES):
         src = behavior_data[beh]["src"]
         dst = behavior_data[beh]["dst"]
-        ts = behavior_data[beh]["ts"]
         beh_arr = np.full(len(src), beh_id, dtype=np.int64)
-        triplets_list.append(np.stack([src, dst, beh_arr, ts], axis=1))
+        triplets_list.append(np.stack([src, dst, beh_arr], axis=1))
 
     train_triplets = torch.from_numpy(np.concatenate(triplets_list, axis=0)).long()
 
@@ -275,9 +271,6 @@ def main():
     )
 
     train_cfg = TrainConfig.from_yaml(cfg)
-    eval_ref_time = float(train_triplets[:, 3].max().item())
-    logger.info(f"Eval reference time: {eval_ref_time}")
-
     train(
         model=model,
         sampler=sampler,
@@ -290,7 +283,7 @@ def main():
         behavior_counts=behavior_counts,
         cfg=train_cfg,
         device=device,
-        eval_ref_time=eval_ref_time,
+        eval_ref_time=None,
     )
 
 

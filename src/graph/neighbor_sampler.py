@@ -195,24 +195,12 @@ class BehaviorAwareNeighborSampler:
 
         if data is not None:
             edge_index_dict = {e: data[e].edge_index.clone() for e in data.edge_types}
-            edge_ts_dict = {}
-            for e in data.edge_types:
-                edge_ts = getattr(data[e], "edge_ts", None)
-                if edge_ts is None:
-                    edge_ts = getattr(data[e], "edge_time", None)
-                if edge_ts is not None and edge_ts.numel() > 0:
-                    edge_ts_dict[e] = edge_ts.clone()
-        else:
-            edge_ts_dict = {}
 
         assert edge_index_dict is not None
         dev = device or next(iter(edge_index_dict.values())).device
         self._device = dev
         self._edge_index_dict = {
             k: v.to(device=dev, dtype=torch.long) for k, v in edge_index_dict.items()
-        }
-        self._edge_ts_dict = {
-            k: v.to(device=dev, dtype=torch.long).view(-1) for k, v in edge_ts_dict.items()
         }
 
         self._num_nodes = _infer_num_nodes(self._edge_index_dict, num_nodes_dict)
@@ -231,12 +219,11 @@ class BehaviorAwareNeighborSampler:
             if ei.numel() > 0:
                 n_src = max(n_src, int(ei[0].max().item()) + 1)
                 self._num_nodes[src_type] = max(self._num_nodes.get(src_type, 0), n_src)
-            edge_ts = self._edge_ts_dict.get(key)
             ptr, cols, ts_vals = _edge_index_to_csr_with_values(
                 ei,
                 n_src,
                 dedupe=self._cfg.dedupe_csr,
-                edge_values=edge_ts,
+                edge_values=None,
             )
             self._csr[key] = (ptr, cols)
             if ts_vals is not None:

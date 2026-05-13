@@ -129,21 +129,11 @@ class FourierTimeEncoding(nn.Module):
 
 
 class TemporalAttention(nn.Module):
-    """Temporal attention voi decay-in-logit va value gate.
+    """Relation attention without temporal features.
 
-    Cong thuc theo CLAUDE.md §8.4 va §8.6:
-        logit = Q·K/√d + b_ρ + u_{ρ,β}ᵀ Φ(Δt) − λ_β · log(1 + Δt/τ)
-        alpha = scatter_softmax(logit, dst_idx)
-        gate  = σ(c_{ρ,β} + r_{ρ,β}ᵀ Φ(Δt) − μ_β · log(1 + Δt/τ))
-
-    Thanh phan:
-        - Q·K/√d:        content match giua src va dst
-        - b_ρ:           bias theo loai relation
-        - u_{ρ,β}ᵀ Φ:    time bias per relation-behavior
-        - λ_β·log():     decay term trong attention, khac nhau theo behavior
-        - c_{ρ,β}:       gate bias per relation-behavior
-        - r_{ρ,β}ᵀ Φ:    gate time projection per relation-behavior
-        - μ_β·log():     decay term trong gate, khac nhau theo behavior
+    The time-related modules are intentionally kept as unused parameters so
+    existing configs and checkpoints still load, but forward scoring ignores
+    ``delta_t`` and learned temporal decay.
     """
 
     def __init__(
@@ -192,7 +182,7 @@ class TemporalAttention(nn.Module):
         Args:
             h_src:   [E, dim]  source node embeddings
             h_dst:   [E, dim]  destination node embeddings
-            delta_t: [E]       time deltas in days
+            delta_t: [E]       ignored; kept for API/checkpoint compatibility
             rho:     int       relation index
             beta:    [E]       behavior index per edge (0-3)
             dst_idx: [E]       destination node indices
@@ -207,21 +197,11 @@ class TemporalAttention(nn.Module):
 
         bias = self.b_rho[rho]
 
-        phi = self.time_enc(delta_t)
-        time_bias = self.time_bias_proj(phi).squeeze(-1)
-
-        lam = F.softplus(self.raw_lambda)
-        decay = lam[beta] * torch.log1p(delta_t / self.tau)
-
-        logit = qk + bias + time_bias - decay
+        logit = qk + bias
         alpha = self._scatter_softmax(logit, dst_idx)
 
         c = self.c_rho_beta[rho, beta]
-        r = self.r_rho_beta[rho, beta]
-        r_phi = (r * phi).sum(dim=-1)
-        mu = F.softplus(self.raw_mu)
-        gate_decay = mu[beta] * torch.log1p(delta_t / self.tau)
-        gate = torch.sigmoid(c + r_phi - gate_decay)
+        gate = torch.sigmoid(c)
 
         return alpha, gate
 
@@ -239,12 +219,12 @@ class TemporalAttention(nn.Module):
 
 
 class TemporalPurchaseIntentDecoder(nn.Module):
-    """Bo giai ma y dinh mua hang theo thoi gian (TPID).
+    """Purchase intent decoder without temporal features.
 
     Ket hop 3 expert:
     - s_graph: diem user-item tu graph
-    - s_seq: diem tu chuoi L su kien gan nhat
-    - s_pop: diem popularity co time decay
+    - s_seq: diem tu chuoi L su kien
+    - s_pop: diem popularity khong decay theo thoi gian
 
     Trong so fusion tinh qua MLP tren user features.
     """
@@ -286,18 +266,18 @@ class TemporalPurchaseIntentDecoder(nn.Module):
         self,
         item_seq: Tensor,
         beh_seq: Tensor,
-        ts_seq: Tensor,
-        ref_time: float,
         item_emb: Tensor,
+        ts_seq: Optional[Tensor] = None,
+        ref_time: Optional[float] = None,
     ) -> Tensor:
         """Encode user sequence into a single vector.
 
         Args:
             item_seq: [B, L] item indices
             beh_seq: [B, L] behavior indices
-            ts_seq: [B, L] timestamps
-            ref_time: reference time T
             item_emb: [N, dim] item embeddings
+            ts_seq: ignored; kept for API compatibility
+            ref_time: ignored; kept for API compatibility
 
         Returns:
             z_u: [B, dim] user sequence embedding
@@ -309,12 +289,7 @@ class TemporalPurchaseIntentDecoder(nn.Module):
         e_beh = self.beh_emb(beh_seq.clamp(0, 3))
         e_pos = self.pos_emb(torch.arange(L, device=device).unsqueeze(0).expand(B, -1))
 
-        delta_t = (ref_time - ts_seq.float()) / 86400.0
-        delta_t = delta_t.clamp(min=0)
-        phi = self.time_enc(delta_t.view(-1)).view(B, L, -1)
-        e_time = self.time_proj(phi)
-
-        x = e_item + e_beh + e_pos + e_time
+        x = e_item + e_beh + e_pos
 
         mask = item_seq >= 0
         x = x * mask.unsqueeze(-1).float()
@@ -328,19 +303,19 @@ class TemporalPurchaseIntentDecoder(nn.Module):
         item_counts: Tensor,
         item_decay_sum: Tensor,
     ) -> Tensor:
-        """Compute time-decayed popularity score.
+        """Compute popularity score without temporal decay.
 
         Args:
             item_idx: [B] item indices
             item_counts: [N, 3] per-behavior counts
-            item_decay_sum: [N, 3] sum of time-decayed weights
+            item_decay_sum: ignored; kept for API compatibility
 
         Returns:
             s_pop: [B] popularity scores
         """
         eta = F.softplus(self.raw_eta)
-        decay_sum = item_decay_sum[item_idx]
-        weighted = (eta * decay_sum).sum(dim=-1)
+        counts = item_counts[item_idx]
+        weighted = (eta * counts).sum(dim=-1)
         return torch.log1p(weighted)
 
     def forward(
@@ -369,8 +344,8 @@ class TemporalPurchaseIntentDecoder(nn.Module):
         B = user_idx.size(0)
         device = user_idx.device
 
-        if item_seq is not None and ref_time is not None:
-            z_u = self.encode_sequence(item_seq, beh_seq, ts_seq, ref_time, item_emb)
+        if item_seq is not None and beh_seq is not None:
+            z_u = self.encode_sequence(item_seq, beh_seq, item_emb, ts_seq, ref_time)
             e_i = item_emb[item_idx]
             s_seq = (z_u * e_i).sum(dim=-1)
         else:
@@ -383,13 +358,10 @@ class TemporalPurchaseIntentDecoder(nn.Module):
 
         if user_n_events is None:
             user_n_events = torch.ones(B, device=device)
-        if user_last_dt is None:
-            user_last_dt = torch.ones(B, device=device)
-
         feat = torch.stack(
             [
                 torch.log1p(user_n_events[user_idx].float()),
-                torch.log1p(user_last_dt[user_idx].float()),
+                torch.zeros(B, device=device, dtype=h_u.dtype),
                 (h_u * h_u).sum(dim=-1).sqrt(),
             ],
             dim=-1,
@@ -483,14 +455,14 @@ class BPATMPConv(nn.Module):
         edge_ts_dict: Optional[Dict[Tuple, Tensor]] = None,
         ref_time: Optional[float] = None,
     ) -> Tuple[Dict[str, Tensor], Dict[str, Tensor]]:
-        """Forward pass with temporal attention.
+        """Forward pass without temporal edge filtering or decay.
 
         Args:
             x_dict: node embeddings per type
             edge_index_dict: edge indices per edge type
             edge_attr_dict: behavior origin for structural edges
-            edge_ts_dict: timestamps per edge type (Unix seconds)
-            ref_time: reference time T for computing delta_t
+            edge_ts_dict: ignored; kept for API compatibility
+            ref_time: ignored; kept for API compatibility
         """
         agg_pb: Dict[str, Dict[str, Optional[Tensor]]] = {
             t: {b: None for b in BEH_BUCKETS} for t in NODE_TYPES
@@ -519,30 +491,8 @@ class BPATMPConv(nn.Module):
             beta_raw = BEHAVIOR_ORIGIN.get(edge_name.removeprefix("rev_"), -1)
             attr = (edge_attr_dict or {}).get(edge_type)
 
-            edge_ts = (edge_ts_dict or {}).get(edge_type)
-            if edge_ts is not None:
-                edge_ts = edge_ts.to(device=ref.device)
-
             attr = attr.to(device=ref.device) if attr is not None else None
-            if edge_ts is not None and ref_time is not None:
-                keep = edge_ts.float() < float(ref_time)
-                if not keep.any():
-                    continue
-                if not bool(keep.all()):
-                    src_idx = src_idx[keep]
-                    dst_idx = dst_idx[keep]
-                    h_src = h_src[keep]
-                    h_dst = h_dst[keep]
-                    edge_ts = edge_ts[keep]
-                    if attr is not None and attr.numel() > 0:
-                        attr = attr.view(-1)[keep].view(-1, 1)
-                    E = h_src.size(0)
-
-            if edge_ts is not None and ref_time is not None:
-                delta_t = (ref_time - edge_ts.float()) / 86400.0
-                delta_t = delta_t.clamp(min=0)
-            else:
-                delta_t = torch.zeros(E, device=ref.device)
+            delta_t = torch.zeros(E, device=ref.device)
 
             if beta_raw < 0 and attr is not None and attr.numel() > 0:
                 origin = attr.view(-1).long().clamp(0, 2)
@@ -756,16 +706,11 @@ class BPATMPModel(nn.Module):
                 x_dict[ntype] = emb(node_ids)
 
         edge_index_dict = {}
-        edge_ts_dict = {}
         edge_attr_dict = {}
         for edge_type in subgraph.edge_types:
             store = subgraph[edge_type]
             if hasattr(store, "edge_index") and store.edge_index.numel() > 0:
                 edge_index_dict[edge_type] = store.edge_index
-                if hasattr(store, "edge_ts"):
-                    edge_ts_dict[edge_type] = store.edge_ts
-                elif hasattr(store, "ts"):
-                    edge_ts_dict[edge_type] = store.ts
                 if hasattr(store, "edge_attr"):
                     edge_attr_dict[edge_type] = store.edge_attr
 
@@ -773,8 +718,8 @@ class BPATMPModel(nn.Module):
             x_dict,
             edge_index_dict,
             edge_attr_dict if edge_attr_dict else None,
-            edge_ts_dict if edge_ts_dict else None,
-            ref_time,
+            None,
+            None,
         )
         h_dict = self.intent_codebook(h_dict)
 

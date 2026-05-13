@@ -57,7 +57,7 @@ training:
   num_neg: 32
   num_workers: 8
   patience: 5
-  save_dir: checkpoints-final-l4
+  save_dir: checkpoints-final-notime
   weight_decay: 1.0e-02
   pin_memory: true
   persistent_workers: true
@@ -70,11 +70,11 @@ evaluation:
   metrics: ["HR@10", "HR@20", "HR@50", "NDCG@10", "NDCG@20", "NDCG@50"]
 
 wandb:
-  artifact_name: bpatmp-final-l4
+  artifact_name: bpatmp-final-notime
   enabled: true
   entity: nguyenmaiductrong37-h-c-vi-n-c-ng-ngh-b-u-ch-nh-vi-n-th-ng
   project: bpatmp-recsys
-  run_name: bpatmp-final-l4
+  run_name: bpatmp-final-notime
   save_every: 1
 
 a100:

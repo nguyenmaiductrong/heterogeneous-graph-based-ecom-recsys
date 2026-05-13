@@ -67,9 +67,6 @@ def main():
     from scripts.run_training import build_hetero_data
     hetero, node_counts, behavior_data = build_hetero_data(cfg)
 
-    import numpy as np
-    ref_time = float(np.concatenate([behavior_data[b]["ts"] for b in ["view", "cart", "purchase"]]).max())
-
     data_dir = Path(cfg["data"]["data_dir"])
     with open(data_dir / f"{args.split}_ground_truth.pkl", "rb") as f:
         ground_truth = pickle.load(f)
@@ -126,7 +123,7 @@ def main():
         batch_size=tc.get("eval_batch_size", 2048),
         use_bf16=tc.get("use_bf16", True),
         subsample=0,
-        ref_time=ref_time,
+        ref_time=None,
     )
 
     print(f"\n{'='*45}\n  {args.split} | epoch {ckpt.get('epoch', '?')} | {ckpt_path.name}")
