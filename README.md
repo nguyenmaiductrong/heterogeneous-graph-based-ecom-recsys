@@ -204,7 +204,7 @@ L = L_BPR + λ_cl · L_CL + λ_conv · L_conv + λ_mono · L_mono + λ_wd · ||�
 | Epochs (max) | 40 |
 | Early stopping patience | 10 |
 | CL every k steps (`cl_every_k`) | 2 |
-| Metrics | HR@10/20/50, NDCG@10/20/50 |
+| Metrics | HR@1/5/10/20/50, NDCG@1/5/10/20/50 |
 | Primary metric | NDCG@20 |
 
 ---
@@ -367,7 +367,7 @@ Nếu `wandb.enabled: true`, metrics được log lên W&B project `bpatmp-recsy
 ```
 loss/total, loss/bpr, loss/cl, loss/conv, loss/mono, loss/wd
 loss/view, loss/cart, loss/purchase
-HR@10, HR@20, HR@50, NDCG@10, NDCG@20, NDCG@50
+HR@1, HR@5, HR@10, HR@20, HR@50, NDCG@1, NDCG@5, NDCG@10, NDCG@20, NDCG@50
 ```
 
 Để tắt W&B:
@@ -410,7 +410,7 @@ python scripts/evaluate.py --wandb-artifact epoch-025 --split val
 - **Full-ranking**: mỗi user được xếp hạng trên toàn bộ item catalog (không sampling).
 - **Exclude items**: loại trừ toàn bộ item purchase trong train (`train_mask_purchase_only.pkl`) khỏi ranking.
 - **Multi-positive ground truth**: NDCG được tính trên tất cả item đúng trong top-K.
-- **Metrics**: HR@K (Hit Rate) và NDCG@K với K ∈ {10, 20, 50}.
+- **Metrics**: HR@K (Hit Rate) và NDCG@K với K ∈ {1, 5, 10, 20, 50}.
 
 ---
 

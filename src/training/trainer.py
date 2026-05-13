@@ -86,7 +86,7 @@ class TrainConfig:
     # Evaluation
     eval_subsample: int = 10000
     eval_seed: int = 42
-    eval_ks: list[int] = field(default_factory=lambda: [10, 20, 50])
+    eval_ks: list[int] = field(default_factory=lambda: [1, 5, 10, 20, 50])
     primary_metric: str = "NDCG@20"
 
     # Hierarchical CL
@@ -119,7 +119,7 @@ class TrainConfig:
         hcl = cfg.get("hierarchy_cl", {})
         a100 = cfg.get("a100", {})
 
-        eval_ks = e.get("ks", [10, 20, 50])
+        eval_ks = e.get("ks", [1, 5, 10, 20, 50])
         primary_metric = str(e.get("primary_metric", cls.primary_metric))
         pair_weights = hcl.get("pair_weights", None)
         if pair_weights is not None:
