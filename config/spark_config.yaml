@@ -90,8 +90,8 @@ behavior:
 evaluation:
   full_ranking: true
   primary_metric: "NDCG@20"
-  ks: [10, 20, 50]
-  metrics: ["HR@10", "HR@20", "HR@50", "NDCG@10", "NDCG@20", "NDCG@50"]
+  ks: [1, 5, 10, 20, 50]
+  metrics: ["HR@1", "HR@5", "HR@10", "HR@20", "HR@50", "NDCG@1", "NDCG@5", "NDCG@10", "NDCG@20", "NDCG@50"]
   ground_truth: "all_new_purchases"
   mask_behaviors_primary: ["purchase"]
   mask_behaviors_seen_all: ["view", "cart", "purchase"]

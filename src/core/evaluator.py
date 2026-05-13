@@ -22,7 +22,7 @@ class TemporalSplitEvaluator:
         ks: list[int] | None = None,
         device: str = "cpu",
     ):
-        self.ks = sorted(ks or [10, 20, 50])
+        self.ks = sorted(ks or [1, 5, 10, 20, 50])
         self.max_k = max(self.ks)
         if device == "cuda" and not torch.cuda.is_available():
             device = "cpu"
@@ -161,7 +161,7 @@ def run_testpass() -> None:
         exclude_items={i: [(i + 1) % n_items, (i + 2) % n_items] for i in range(n_eval)},
     )
 
-    evaluator = TemporalSplitEvaluator(ks=[10, 20, 50], device="cpu")
+    evaluator = TemporalSplitEvaluator(ks=[1, 5, 10, 20, 50], device="cpu")
     t0 = time.time()
     m = evaluator.evaluate(eval_input)
     print(f"  Full-rank ({time.time() - t0:.2f}s)")

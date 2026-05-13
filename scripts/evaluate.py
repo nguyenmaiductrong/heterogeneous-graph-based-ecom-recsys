@@ -121,7 +121,7 @@ def main():
         ground_truth=ground_truth,
         exclude_items=exclude_items,
         n_items=node_counts["product"],
-        evaluator=TemporalSplitEvaluator(ks=ec.get("ks", [10, 20, 50]), device=str(device)),
+        evaluator=TemporalSplitEvaluator(ks=ec.get("ks", [1, 5, 10, 20, 50]), device=str(device)),
         device=device,
         batch_size=tc.get("eval_batch_size", 2048),
         use_bf16=tc.get("use_bf16", True),
