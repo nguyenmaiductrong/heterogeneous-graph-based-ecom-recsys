@@ -22,6 +22,8 @@ from src.core.evaluator import TemporalSplitEvaluator
 
 logger = logging.getLogger(__name__)
 
+_MAX_FORWARD_BATCH_SIZE = 256
+
 
 def set_seed(seed: int = 42, deterministic: bool = False) -> None:
     """Seed Python / NumPy / PyTorch RNGs so a run is reproducible.
@@ -315,148 +317,171 @@ def train_epoch(
     pbar = tqdm(dataloader, desc="train", leave=False, dynamic_ncols=True)
     for step, raw_batch in enumerate(pbar):
         raw_batch = raw_batch.to(device)
-        users_g = raw_batch[:, 0]
-        items_g = raw_batch[:, 1]
-        beh_ids = raw_batch[:, 2]
-
-        unique_users = users_g.unique()
-        subgraph = sampler.sample(
-            unique_users, seed_type="user", generator=generator
-        ).to(device, non_blocking=True)
-
         optimizer.zero_grad(set_to_none=True)
 
-        _amp_dtype = torch.bfloat16 if use_bf16 else torch.float16
-        with torch.amp.autocast("cuda", dtype=_amp_dtype, enabled=amp and device.type == "cuda"):
-            user_emb, item_emb, beh_embs = model(
-                subgraph,
-                return_beh_embs=True,
-            )
+        batch_loss = 0.0
+        batch_cl_loss = 0.0
+        did_backward = False
+        micro_size = min(_MAX_FORWARD_BATCH_SIZE, raw_batch.size(0))
+        n_micro = (raw_batch.size(0) + micro_size - 1) // micro_size
 
-            user_x = subgraph["user"].x.contiguous()
-            u_loc = torch.searchsorted(user_x, users_g.contiguous())
+        for micro_start in range(0, raw_batch.size(0), micro_size):
+            micro_batch = raw_batch[micro_start : micro_start + micro_size]
+            loss_scale = micro_batch.size(0) / raw_batch.size(0)
 
-            prod_x = subgraph["product"].x
-            sorted_px, sort_ord = prod_x.sort()
-            pos_p = torch.searchsorted(sorted_px, items_g.contiguous()).clamp(
-                max=sorted_px.size(0) - 1
-            )
-            found_p = sorted_px[pos_p] == items_g
-            pp_loc = sort_ord[pos_p]
+            users_g = micro_batch[:, 0]
+            items_g = micro_batch[:, 1]
+            beh_ids = micro_batch[:, 2]
 
-            if not found_p.any():
+            unique_users = users_g.unique()
+            subgraph = sampler.sample(
+                unique_users, seed_type="user", generator=generator
+            ).to(device, non_blocking=True)
+
+            _amp_dtype = torch.bfloat16 if use_bf16 else torch.float16
+            with torch.amp.autocast("cuda", dtype=_amp_dtype, enabled=amp and device.type == "cuda"):
+                user_emb, item_emb, beh_embs = model(
+                    subgraph,
+                    return_beh_embs=True,
+                )
+
+                user_x = subgraph["user"].x.contiguous()
+                u_loc = torch.searchsorted(user_x, users_g.contiguous())
+
+                prod_x = subgraph["product"].x
+                sorted_px, sort_ord = prod_x.sort()
+                pos_p = torch.searchsorted(sorted_px, items_g.contiguous()).clamp(
+                    max=sorted_px.size(0) - 1
+                )
+                found_p = sorted_px[pos_p] == items_g
+                pp_loc = sort_ord[pos_p]
+
+                if not found_p.any():
+                    n_skipped += 1
+                    continue
+
+                u_loc = u_loc[found_p]
+                pp_loc = pp_loc[found_p]
+                bev = beh_ids[found_p]
+                users_g_kept = users_g[found_p]
+
+                N_items = item_emb.size(0)
+                behavior_losses: dict[str, torch.Tensor] = {}
+
+                for beh_id, beh_name in enumerate(BEHAVIOR_TYPES):
+                    mask = bev == beh_id
+                    if not mask.any():
+                        continue
+
+                    u_b = u_loc[mask]
+                    pp_b = pp_loc[mask]
+                    B_b = u_b.size(0)
+                    if N_items <= 1:
+                        continue
+
+                    u_emb_b = user_emb[u_b]
+                    pos_emb_b = item_emb[pp_b]
+
+                    if history_ptr is not None and history_item is not None and pop_dist is not None:
+                        neg_loc = sample_aligned_negatives_local(
+                            pp_b=pp_b,
+                            user_b_global=users_g_kept[mask],
+                            N_items=N_items,
+                            num_neg=num_neg,
+                            prod_x=subgraph["product"].x,
+                            pop_dist_global=pop_dist,
+                            history_ptr=history_ptr,
+                            history_item=history_item,
+                            user_emb_b=u_emb_b.detach(),
+                            item_emb_local=item_emb.detach(),
+                            generator=generator,
+                        )
+                    else:
+                        neg_loc = torch.randint(
+                            0, N_items - 1, (B_b, num_neg), device=device, generator=generator
+                        )
+                        neg_loc[neg_loc >= pp_b.unsqueeze(-1)] += 1
+
+                    neg_emb_b = item_emb[neg_loc]
+                    pos_s = (u_emb_b * pos_emb_b).sum(-1, keepdim=True)
+                    neg_s = torch.bmm(neg_emb_b, u_emb_b.unsqueeze(-1)).squeeze(-1)
+                    behavior_losses[beh_name] = bpr_loss(pos_s, neg_s)
+
+                users_per_beh = {b: u_loc[bev == bid].unique() for bid, b in enumerate(BEHAVIOR_TYPES)}
+
+                # Funnel scores on the SHARED set of purchase positives so the
+                # ordering s_view < s_cart < s_purchase is computed on matched (u,i).
+                funnel_scores: dict[str, torch.Tensor] | None = None
+                if loss_fn.lambda_conv > 0:
+                    p_mask = bev == purchase_id
+                    if p_mask.any():
+                        u_p = u_loc[p_mask]
+                        pp_p = pp_loc[p_mask]
+                        pos_emb_p = item_emb[pp_p]
+                        funnel_scores = {
+                            b: (beh_embs[b][u_p] * pos_emb_p).sum(-1)
+                            for b in BEHAVIOR_TYPES
+                        }
+
+                # Skip CL on most steps when cl_every_k > 1: ~K times cheaper when lambda_cl > 0
+                run_cl = loss_fn.lambda_cl > 0 and (cl_every_k <= 1 or (step % cl_every_k == 0))
+                beh_embs_for_cl = (
+                    {b: beh_embs[b].float() for b in BEHAVIOR_TYPES} if run_cl else None
+                )
+                users_per_beh_for_cl = users_per_beh if run_cl else None
+
+            if not behavior_losses:
                 n_skipped += 1
                 continue
 
-            u_loc = u_loc[found_p]
-            pp_loc = pp_loc[found_p]
-            bev = beh_ids[found_p]
-            users_g_kept = users_g[found_p]
-
-            N_items = item_emb.size(0)
-            behavior_losses: dict[str, torch.Tensor] = {}
-
-            for beh_id, beh_name in enumerate(BEHAVIOR_TYPES):
-                mask = bev == beh_id
-                if not mask.any():
-                    continue
-
-                u_b = u_loc[mask]
-                pp_b = pp_loc[mask]
-                B_b = u_b.size(0)
-                if N_items <= 1:
-                    continue
-
-                u_emb_b = user_emb[u_b]
-                pos_emb_b = item_emb[pp_b]
-
-                if history_ptr is not None and history_item is not None and pop_dist is not None:
-                    neg_loc = sample_aligned_negatives_local(
-                        pp_b=pp_b,
-                        user_b_global=users_g_kept[mask],
-                        N_items=N_items,
-                        num_neg=num_neg,
-                        prod_x=subgraph["product"].x,
-                        pop_dist_global=pop_dist,
-                        history_ptr=history_ptr,
-                        history_item=history_item,
-                        user_emb_b=u_emb_b.detach(),
-                        item_emb_local=item_emb.detach(),
-                        generator=generator,
-                    )
-                else:
-                    neg_loc = torch.randint(
-                        0, N_items - 1, (B_b, num_neg), device=device, generator=generator
-                    )
-                    neg_loc[neg_loc >= pp_b.unsqueeze(-1)] += 1
-
-                neg_emb_b = item_emb[neg_loc]
-                pos_s = (u_emb_b * pos_emb_b).sum(-1, keepdim=True)
-                neg_s = torch.bmm(neg_emb_b, u_emb_b.unsqueeze(-1)).squeeze(-1)
-                behavior_losses[beh_name] = bpr_loss(pos_s, neg_s)
-
-            users_per_beh = {b: u_loc[bev == bid].unique() for bid, b in enumerate(BEHAVIOR_TYPES)}
-
-            # Funnel scores on the SHARED set of purchase positives so the
-            # ordering s_view < s_cart < s_purchase is computed on matched (u,i).
-            funnel_scores: dict[str, torch.Tensor] | None = None
-            if loss_fn.lambda_conv > 0:
-                p_mask = bev == purchase_id
-                if p_mask.any():
-                    u_p = u_loc[p_mask]
-                    pp_p = pp_loc[p_mask]
-                    pos_emb_p = item_emb[pp_p]
-                    funnel_scores = {
-                        b: (beh_embs[b][u_p] * pos_emb_p).sum(-1)
-                        for b in BEHAVIOR_TYPES
-                    }
-
-            # Skip CL on most steps when cl_every_k > 1: ~K times cheaper when lambda_cl > 0
-            run_cl = loss_fn.lambda_cl > 0 and (cl_every_k <= 1 or (step % cl_every_k == 0))
-            beh_embs_for_cl = (
-                {b: beh_embs[b].float() for b in BEHAVIOR_TYPES} if run_cl else None
+            model_l2 = model.embedding_l2_norm()
+            loss, log = loss_fn(
+                behavior_losses=behavior_losses,
+                beh_embs=beh_embs_for_cl,
+                users_per_beh=users_per_beh_for_cl,
+                scores=funnel_scores,
+                lambdas=None,
+                model_params=model_l2,
             )
-            users_per_beh_for_cl = users_per_beh if run_cl else None
+            if not torch.isfinite(loss):
+                raise FloatingPointError(
+                    f"Non-finite training loss at step={step}: "
+                    + ", ".join(f"{k}={v}" for k, v in log.items())
+                )
 
-        if not behavior_losses:
+            scaled_loss = loss * loss_scale
+            if amp:
+                scaler.scale(scaled_loss).backward()
+            else:
+                scaled_loss.backward()
+
+            did_backward = True
+            batch_loss += float(log["loss/total"]) * loss_scale
+            batch_cl_loss += float(log.get("loss/cl", 0.0)) * loss_scale
+
+        if not did_backward:
             n_skipped += 1
             continue
 
-        model_l2 = model.embedding_l2_norm()
-        loss, log = loss_fn(
-            behavior_losses=behavior_losses,
-            beh_embs=beh_embs_for_cl,
-            users_per_beh=users_per_beh_for_cl,
-            scores=funnel_scores,
-            lambdas=None,
-            model_params=model_l2,
-        )
-        if not torch.isfinite(loss):
-            raise FloatingPointError(
-                f"Non-finite training loss at step={step}: "
-                + ", ".join(f"{k}={v}" for k, v in log.items())
-            )
-
         if amp:
-            scaler.scale(loss).backward()
             scaler.unscale_(optimizer)
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
             scaler.step(optimizer)
             scaler.update()
         else:
-            loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
             optimizer.step()
 
         if scheduler is not None:
             scheduler.step()
 
-        total_loss += log["loss/total"]
-        total_cl_loss += float(log.get("loss/cl", 0.0))
+        total_loss += batch_loss
+        total_cl_loss += batch_cl_loss
         n_steps += 1
         pbar.set_postfix(
-            loss=f"{log['loss/total']:.4f}",
-            cl=f"{log.get('loss/cl', 0.0):.4f}",
+            loss=f"{batch_loss:.4f}",
+            cl=f"{batch_cl_loss:.4f}",
+            micro=n_micro,
         )
 
     if n_skipped > 0:

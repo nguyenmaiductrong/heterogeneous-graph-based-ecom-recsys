@@ -431,7 +431,7 @@ class BPATMPConv(nn.Module):
         n_relations: int = len(ALL_EDGE_TYPES),
         n_freqs: int = 16,
         tau: float = 7.0,
-        edge_chunk_size: int = 65536,
+        edge_chunk_size: int = 16384,
     ) -> None:
         super().__init__()
         self.in_dim = in_dim
