@@ -431,10 +431,12 @@ class BPATMPConv(nn.Module):
         n_relations: int = len(ALL_EDGE_TYPES),
         n_freqs: int = 16,
         tau: float = 7.0,
+        edge_chunk_size: int = 65536,
     ) -> None:
         super().__init__()
         self.in_dim = in_dim
         self.out_dim = out_dim
+        self.edge_chunk_size = edge_chunk_size
 
         self.baw = BehaviorAwareWeight(in_dim, out_dim, rank, n_relations=n_relations)
         self.temporal_attn = TemporalAttention(
@@ -483,53 +485,77 @@ class BPATMPConv(nn.Module):
             if edge_index.numel() == 0:
                 continue
             src_idx, dst_idx = edge_index
-            h_src = x_dict[src_type][src_idx]
-            h_dst = x_dict[dst_type][dst_idx]
-            E = h_src.size(0)
+            E = src_idx.numel()
 
             rho = _REL_IDX[edge_type]
             beta_raw = BEHAVIOR_ORIGIN.get(edge_name.removeprefix("rev_"), -1)
             attr = (edge_attr_dict or {}).get(edge_type)
 
             attr = attr.to(device=ref.device) if attr is not None else None
-            delta_t = torch.zeros(E, device=ref.device)
 
             if beta_raw < 0 and attr is not None and attr.numel() > 0:
-                origin = attr.view(-1).long().clamp(0, 2)
+                beta_tensor = attr.view(-1).long().clamp(0, 2)
                 W_rho = self.baw.W_rho[rho]
                 A_rho = self.baw.A_rho[rho]
                 B_rho = self.baw.B_rho[rho]
-
-                base_msg = torch.einsum("oi,ei->eo", W_rho, h_src)
-                h_B = h_src @ B_rho
-                scaled = torch.zeros_like(h_B)
-                for b_idx in origin.unique():
-                    mask = origin == b_idx
-                    scaled[mask] = (h_B[mask] * self.baw.z_beta[b_idx]).to(scaled.dtype)
-                msg = base_msg + scaled @ A_rho.T
-                beta_tensor = origin
+                W = None
             else:
                 beta_idx = beta_raw if beta_raw >= 0 else 3
-                W = self.baw(rho, beta_raw)
-                msg = torch.einsum("oi,ei->eo", W, h_src)
                 beta_tensor = torch.full((E,), beta_idx, device=ref.device, dtype=torch.long)
+                W = self.baw(rho, beta_raw)
+                W_rho = A_rho = B_rho = None
 
-            alpha, gate = self.temporal_attn(h_src, h_dst, delta_t, rho, beta_tensor, dst_idx)
+            logit_chunks = []
+            chunk_size = max(1, self.edge_chunk_size)
+            for start in range(0, E, chunk_size):
+                end = min(start + chunk_size, E)
+                h_src_c = x_dict[src_type][src_idx[start:end]]
+                h_dst_c = x_dict[dst_type][dst_idx[start:end]]
+                q = self.temporal_attn.W_q(h_dst_c)
+                k = self.temporal_attn.W_k(h_src_c)
+                qk = (q * k).sum(dim=-1) * self.temporal_attn.scale
+                logit_chunks.append(qk + self.temporal_attn.b_rho[rho])
 
-            weighted = (alpha * gate).unsqueeze(-1) * msg
+            logit = torch.cat(logit_chunks, dim=0)
+            alpha = self.temporal_attn._scatter_softmax(logit, dst_idx)
+            gate = torch.sigmoid(self.temporal_attn.c_rho_beta[rho, beta_tensor])
+
             N_dst = x_dict[dst_type].size(0)
             bucket = BEH_BUCKETS[_BEH_IDX[edge_name]]
             if agg_pb[dst_type][bucket] is None:
-                agg_pb[dst_type][bucket] = weighted.new_zeros(N_dst, self.out_dim)
-            agg_pb[dst_type][bucket].scatter_add_(
-                0, dst_idx.unsqueeze(-1).expand_as(weighted), weighted
-            )
+                agg_pb[dst_type][bucket] = ref.new_zeros(N_dst, self.out_dim)
+            agg_out = agg_pb[dst_type][bucket]
 
             beh_key = _REV_BEH_KEYS.get(edge_name)
-            if beh_key is not None and n_users > 0:
-                beh_user_agg[beh_key].scatter_add_(
-                    0, dst_idx.unsqueeze(-1).expand_as(weighted), weighted
+
+            for start in range(0, E, chunk_size):
+                end = min(start + chunk_size, E)
+                h_src_c = x_dict[src_type][src_idx[start:end]]
+                dst_c = dst_idx[start:end]
+
+                if W is None:
+                    assert W_rho is not None and A_rho is not None and B_rho is not None
+                    origin_c = beta_tensor[start:end]
+                    base_msg = torch.einsum("oi,ei->eo", W_rho, h_src_c)
+                    h_B = h_src_c @ B_rho
+                    scaled = torch.zeros_like(h_B)
+                    for b_idx in origin_c.unique():
+                        mask = origin_c == b_idx
+                        scaled[mask] = (h_B[mask] * self.baw.z_beta[b_idx]).to(scaled.dtype)
+                    msg = base_msg + scaled @ A_rho.T
+                else:
+                    msg = torch.einsum("oi,ei->eo", W, h_src_c)
+
+                edge_weight = (alpha[start:end] * gate[start:end]).unsqueeze(-1)
+                weighted = edge_weight * msg
+                agg_out.scatter_add_(
+                    0, dst_c.unsqueeze(-1).expand_as(weighted), weighted
                 )
+
+                if beh_key is not None and n_users > 0:
+                    beh_user_agg[beh_key].scatter_add_(
+                        0, dst_c.unsqueeze(-1).expand_as(weighted), weighted
+                    )
 
         out_dict = self.behavior_agg(agg_pb, x_dict)
         return out_dict, beh_user_agg
