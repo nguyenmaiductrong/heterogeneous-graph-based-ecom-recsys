@@ -325,14 +325,12 @@ class TemporalPurchaseIntentDecoder(nn.Module):
     def compute_popularity_score(
         self,
         item_idx: Tensor,
-        item_counts: Tensor,
         item_decay_sum: Tensor,
     ) -> Tensor:
         """Compute time-decayed popularity score.
 
         Args:
             item_idx: [B] item indices
-            item_counts: [N, 3] per-behavior counts
             item_decay_sum: [N, 3] sum of time-decayed weights
 
         Returns:
@@ -377,7 +375,7 @@ class TemporalPurchaseIntentDecoder(nn.Module):
             s_seq = torch.zeros(B, device=device)
 
         if item_pop_decay is not None:
-            s_pop = self.compute_popularity_score(item_idx, item_pop_decay, item_pop_decay)
+            s_pop = self.compute_popularity_score(item_idx, item_pop_decay)
         else:
             s_pop = torch.zeros(B, device=device)
 
