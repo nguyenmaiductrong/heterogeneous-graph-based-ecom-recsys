@@ -135,7 +135,6 @@ class TemporalSplitEvaluator:
         eval_input: EvalInput,
         batch_size: int = 512,
         mode: str | None = None,
-        seed: int = 42,
     ) -> dict[str, float]:
         if mode is not None and mode not in ("full", "full_tiled"):
             logger.warning(
