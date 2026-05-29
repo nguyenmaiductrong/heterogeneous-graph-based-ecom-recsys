@@ -232,16 +232,6 @@ class EvalInput:
 
 
 @dataclass
-class ServingArtifacts:
-    user_embeddings_path: str = "user_embeddings.npy"
-    item_embeddings_path: str = "item_embeddings.npy"
-    faiss_index_path: str = "item_index.faiss"
-    user_id_map_path: str = "user_id_map.json"
-    item_id_map_path: str = "item_id_map.json"
-    product_meta_path: str = "products.parquet"
-
-
-@dataclass
 class CrossComboWeightSpec:
     """Low-rank relation-behavior transform: W_{ρ,β} = W_ρ + A_ρ · diag(z_β) · B_ρᵀ"""
 

@@ -4,46 +4,6 @@ import torch.nn.functional as F
 from torch.amp import autocast
 
 
-class PopularityBiasedNegativeSampler:
-    def __init__(
-        self,
-        item_counts: dict[str, torch.Tensor],
-        num_items: int,
-        alpha: float = 0.75,
-        device: str = "cpu",
-    ):
-        self.num_items = num_items
-        self.alpha = alpha
-        self.device = device
-        self._distributions: dict[str, torch.Tensor] = {}
-
-        for beh_name, counts in item_counts.items():
-            assert counts.shape[0] == num_items, (
-                f"item_counts['{beh_name}'] has {counts.shape[0]} entries, expected {num_items}"
-            )
-            smoothed = (counts.float() + 1.0).pow(alpha)
-            prob = smoothed / smoothed.sum()
-            self._distributions[beh_name] = prob.to(device)
-
-        if not self._distributions:
-            self._distributions["global"] = torch.full(
-                (self.num_items,), 1.0 / self.num_items, device=self.device
-            )
-        else:
-            global_prob = torch.stack(list(self._distributions.values())).mean(dim=0)
-            self._distributions["global"] = (global_prob / global_prob.sum()).to(device)
-
-    def sample(
-        self,
-        batch_size: int,
-        num_neg: int = 1,
-        behavior: str | None = None,
-    ) -> torch.Tensor:
-        key = behavior if behavior and behavior in self._distributions else "global"
-        neg_flat = torch.multinomial(self._distributions[key], batch_size * num_neg, replacement=True)
-        return neg_flat.view(batch_size, num_neg)
-
-
 def bpr_loss(
     pos_scores: torch.Tensor,
     neg_scores: torch.Tensor,
@@ -217,20 +177,20 @@ def build_user_history_csr(
 
 
 def sample_aligned_negatives_local(
-    pp_b: torch.Tensor,            # (B,) local pos positions in subgraph
-    user_b_global: torch.Tensor,   # (B,) global user ids
-    N_items: int,                  # subgraph item count
+    pp_b: torch.Tensor,  # (B,) local pos positions in subgraph
+    user_b_global: torch.Tensor,  # (B,) global user ids
+    N_items: int,  # subgraph item count
     num_neg: int,
-    prod_x: torch.Tensor,          # (N_items,) subgraph item -> global id
-    pop_dist_global: torch.Tensor, # (n_items_global,)
+    prod_x: torch.Tensor,  # (N_items,) subgraph item -> global id
+    pop_dist_global: torch.Tensor,  # (n_items_global,)
     history_ptr: torch.Tensor,
     history_item: torch.Tensor,
-    user_emb_b: torch.Tensor,      # (B, d) DETACHED
+    user_emb_b: torch.Tensor,  # (B, d) DETACHED
     item_emb_local: torch.Tensor,  # (N_items, d) DETACHED
     frac_random: float = 0.25,
     frac_pop: float = 0.25,
     generator: torch.Generator | None = None,
-) -> torch.Tensor:                 # (B, num_neg) LOCAL positions in subgraph
+) -> torch.Tensor:  # (B, num_neg) LOCAL positions in subgraph
     """Mixed-strategy negatives in subgraph-local index space, with global
     history masking. Distribution: uniform | popularity | in-batch hard."""
     device = pp_b.device

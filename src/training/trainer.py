@@ -73,13 +73,13 @@ class TrainConfig:
     wandb_save_every: int = 5
 
     # Loss: L_total = L_BPR + lambda_cl*L_CL + lambda_conv*L_conv + lambda_mono*L_mono + lambda_wd*||theta||^2
-    cl_weight: float = 0.1          # lambda_cl
-    lambda_conv: float = 0.0        # lambda_conv (funnel prior; 0 = disabled)
-    lambda_mono: float = 0.0        # lambda_mono (monotonic decay prior; 0 = disabled)
+    cl_weight: float = 0.1  # lambda_cl
+    lambda_conv: float = 0.0  # lambda_conv (funnel prior; 0 = disabled)
+    lambda_mono: float = 0.0  # lambda_mono (monotonic decay prior; 0 = disabled)
     funnel_margin: float = 0.1
-    bpr_alpha: float = 0.5          # exponent in w_b = (N_p / N_b) ** alpha
-    bpr_w_min: float = 0.05         # floor for w_b
-    cl_every_k: int = 1             # 1 = every step, K>1 = run CL every K steps
+    bpr_alpha: float = 0.5  # exponent in w_b = (N_p / N_b) ** alpha
+    bpr_w_min: float = 0.05  # floor for w_b
+    cl_every_k: int = 1  # 1 = every step, K>1 = run CL every K steps
     use_bf16: bool = True
     max_view_triplets: int = -1
 
@@ -191,13 +191,6 @@ class TrainConfig:
             log_every=w.get("log_every", cls.log_every),
             empty_cache_freq=a100.get("empty_cache_freq", cls.empty_cache_freq),
         )
-
-
-def load_yaml_config(path: str) -> dict:
-    import yaml
-
-    with open(path) as f:
-        return yaml.safe_load(f)
 
 
 def _find_latest_checkpoint(save_dir: Path) -> Path | None:

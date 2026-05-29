@@ -8,14 +8,14 @@ import wandb
 
 logger = logging.getLogger(__name__)
 
-_GREEN  = "\033[92m"
-_RED    = "\033[91m"
+_GREEN = "\033[92m"
+_RED = "\033[91m"
 _YELLOW = "\033[93m"
-_RESET  = "\033[0m"
+_RESET = "\033[0m"
 
 
-def _log_ok(msg: str)   -> None: logger.info("%s[OK]%s %s", _GREEN, _RESET, msg)
-def _log_err(msg: str)  -> None: logger.error("%s[FAIL]%s %s", _RED, _RESET, msg)
+def _log_ok(msg: str) -> None: logger.info("%s[OK]%s %s", _GREEN, _RESET, msg)
+def _log_err(msg: str) -> None: logger.error("%s[FAIL]%s %s", _RED, _RESET, msg)
 def _log_warn(msg: str) -> None: logger.warning("%s[WARN]%s %s", _YELLOW, _RESET, msg)
 
 
@@ -40,14 +40,14 @@ class CheckpointManager:
         verify_timeout_secs: int = 300,
         verify_poll_secs: int = 30,
     ):
-        self.project              = project
-        self.entity               = entity
-        self.run_name             = run_name
-        self.artifact_name        = artifact_name
-        self.save_every_n_epochs  = save_every_n_epochs
-        self.local_dir            = Path(local_dir)
-        self.verify_timeout_secs  = verify_timeout_secs
-        self.verify_poll_secs     = verify_poll_secs
+        self.project = project
+        self.entity = entity
+        self.run_name = run_name
+        self.artifact_name = artifact_name
+        self.save_every_n_epochs = save_every_n_epochs
+        self.local_dir = Path(local_dir)
+        self.verify_timeout_secs = verify_timeout_secs
+        self.verify_poll_secs = verify_poll_secs
 
         self.local_dir.mkdir(parents=True, exist_ok=True)
 
@@ -115,11 +115,11 @@ class CheckpointManager:
         if self.run is None:
             raise RuntimeError("Call init_wandb() first.")
 
-        ckpt_path       = self._save_local(model, optimizer, scaler, epoch, loss, metrics)
+        ckpt_path = self._save_local(model, optimizer, scaler, epoch, loss, metrics)
         logged_artifact = self._upload_artifact(ckpt_path, epoch, loss, metrics)
 
         self._last_logged_artifact = logged_artifact
-        self._last_local_ckpt      = ckpt_path
+        self._last_local_ckpt = ckpt_path
 
         verified = self.verify_checkpoint_on_cloud(
             logged_artifact=logged_artifact,
