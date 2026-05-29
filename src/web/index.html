@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Cửa hàng demo | BPATMP</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body class="user-page shopper-page">
+    <header class="topbar shopper-topbar">
+        <div>
+            <p class="eyebrow">Cửa hàng demo</p>
+            <h1 id="shopper-title">Chào mừng bạn</h1>
+        </div>
+        <div class="shopper-nav">
+            <span id="shopper-user-note" class="status-line">Đăng nhập để bắt đầu phiên mua sắm.</span>
+            <button id="logout-user" class="danger-lite" hidden>Đăng xuất</button>
+        </div>
+    </header>
+
+    <main class="shopper-layout">
+        <section id="login-panel" class="surface login-panel">
+            <div class="section-head">
+                <div>
+                    <p class="eyebrow">Đăng nhập</p>
+                    <h2>Chọn người dùng demo</h2>
+                </div>
+            </div>
+            <form id="login-form" class="login-grid">
+                <label>
+                    Người dùng
+                    <select id="user-select"></select>
+                </label>
+                <button class="primary-command">Vào cửa hàng</button>
+            </form>
+            <div class="login-divider"></div>
+            <form id="user-form" class="login-grid new-shopper-form">
+                <label>
+                    Tên người dùng mới
+                    <input id="new-user-name" required maxlength="60" placeholder="Khách mua sắm mới">
+                </label>
+                <button>Tạo và vào cửa hàng</button>
+            </form>
+        </section>
+
+        <section id="catalog-panel" class="surface catalog shopper-catalog" hidden>
+            <div class="section-head">
+                <div>
+                    <p class="eyebrow">Sản phẩm</p>
+                    <h2>Khám phá sản phẩm</h2>
+                </div>
+                <span id="product-count" class="muted"></span>
+            </div>
+            <div class="filter-grid">
+                <label>
+                    Tìm theo tên
+                    <input id="product-search" placeholder="Tai nghe, bàn phím...">
+                </label>
+                <label>
+                    Danh mục
+                    <select id="category-filter"></select>
+                </label>
+                <label>
+                    Thương hiệu
+                    <select id="brand-filter"></select>
+                </label>
+                <label>
+                    Giá tối đa
+                    <input id="price-filter" type="number" min="0" step="100000" placeholder="15000000">
+                </label>
+            </div>
+            <div id="product-grid" class="product-grid"></div>
+        </section>
+
+        <section id="product-panel" class="surface product-detail-panel shopper-detail" hidden>
+            <div class="section-head compact">
+                <div>
+                    <p class="eyebrow">Chi tiết</p>
+                    <h2>Sản phẩm đang xem</h2>
+                </div>
+            </div>
+            <div id="product-detail"></div>
+        </section>
+    </main>
+    <div id="shopper-toast" class="shopper-toast" role="status" aria-live="polite" hidden></div>
+
+    <script src="store.js"></script>
+    <script src="backend.js"></script>
+    <script src="app.js"></script>
+</body>
+</html>

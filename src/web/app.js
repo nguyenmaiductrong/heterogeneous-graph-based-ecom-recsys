@@ -2,6 +2,7 @@
     "use strict";
 
     const Store = window.DemoStore;
+    const Backend = window.DemoBackend;
     const $ = (id) => document.getElementById(id);
     let selectedProductId = null;
     let toastTimer = null;
@@ -133,7 +134,11 @@
         if (!signedInUser(state)) {
             return;
         }
-        Store.addDraftEvent(productId, behavior);
+        const updated = Store.addDraftEvent(productId, behavior);
+        const event = updated.draftSession?.events?.[0];
+        if (Backend && event) {
+            Backend.createEvent(event).catch(() => {});
+        }
         if (behavior === "cart") {
             showToast("Đã thêm sản phẩm vào giỏ.", "cart");
         }
@@ -162,6 +167,9 @@
                 active: true,
             });
         });
+        if (Backend) {
+            Backend.createUser(state.users[0]).catch(() => {});
+        }
         event.target.reset();
         Store.startUserSession(state.users[0].id);
         rerender();
@@ -193,4 +201,12 @@
     });
     window.addEventListener("storage", rerender);
     rerender();
+    if (Backend) {
+        Backend.hydrateStore(Store).then((result) => {
+            if (result.ok) {
+                selectedProductId = null;
+                rerender();
+            }
+        });
+    }
 }());

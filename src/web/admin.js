@@ -2,6 +2,7 @@
     "use strict";
 
     const Store = window.DemoStore;
+    const Backend = window.DemoBackend;
     const $ = (id) => document.getElementById(id);
     const IMAGE_TYPES = ["headset", "keyboard", "monitor", "mouse", "speaker", "chair", "watch", "tablet", "camera"];
     const IMAGE_LABELS = {
@@ -22,6 +23,23 @@
     let selectedUserId = null;
     let selectedSourceSessionId = null;
     let simulatorVisible = false;
+    const CONFIG_LIMITS = {
+        weight: { min: 0, max: 6 },
+        recencyDecay: { min: 0, max: 0.2 },
+        categoryWeight: { min: 0, max: 4 },
+        brandWeight: { min: 0, max: 4 },
+        popularityWeight: { min: 0, max: 2 },
+        topK: { min: 1, max: 50 },
+        refShiftDays: { min: 0, max: 365 },
+    };
+
+    function clampNumber(value, limits, fallback) {
+        const number = Number(value);
+        if (!Number.isFinite(number)) {
+            return fallback;
+        }
+        return Math.min(limits.max, Math.max(limits.min, number));
+    }
 
     function behaviorLabel(behavior) {
         return Store.BEHAVIORS[behavior]?.label || behavior;
@@ -55,18 +73,18 @@
     function currentConfig() {
         return {
             weights: {
-                view: Number($("weight-view").value || 0),
-                cart: Number($("weight-cart").value || 0),
-                purchase: Number($("weight-purchase").value || 0),
+                view: clampNumber($("weight-view").value, CONFIG_LIMITS.weight, 1),
+                cart: clampNumber($("weight-cart").value, CONFIG_LIMITS.weight, 3),
+                purchase: clampNumber($("weight-purchase").value, CONFIG_LIMITS.weight, 5),
             },
-            recencyDecay: Number($("recency-decay").value || 0),
-            categoryWeight: Number($("category-weight").value || 0),
-            brandWeight: Number($("brand-weight").value || 0),
-            popularityWeight: Number($("popularity-weight").value || 0),
-            topK: Number($("top-k").value || 5),
+            recencyDecay: clampNumber($("recency-decay").value, CONFIG_LIMITS.recencyDecay, 0.055),
+            categoryWeight: clampNumber($("category-weight").value, CONFIG_LIMITS.categoryWeight, 1.9),
+            brandWeight: clampNumber($("brand-weight").value, CONFIG_LIMITS.brandWeight, 1.35),
+            popularityWeight: clampNumber($("popularity-weight").value, CONFIG_LIMITS.popularityWeight, 0.85),
+            topK: Math.round(clampNumber($("top-k").value, CONFIG_LIMITS.topK, 30)),
             maskPurchased: $("mask-purchased").checked,
             refDate: $("ref-date").value,
-            refShiftDays: Number($("ref-shift-days").value || 0),
+            refShiftDays: Math.round(clampNumber($("ref-shift-days").value, CONFIG_LIMITS.refShiftDays, 0)),
         };
     }
 
@@ -91,19 +109,19 @@
     }
 
     function setConfig(preset) {
-        $("weight-view").value = preset.weights.view;
-        $("weight-cart").value = preset.weights.cart;
-        $("weight-purchase").value = preset.weights.purchase;
-        $("recency-decay").value = preset.recencyDecay;
-        $("category-weight").value = preset.categoryWeight;
-        $("brand-weight").value = preset.brandWeight;
-        $("popularity-weight").value = preset.popularityWeight;
-        $("top-k").value = preset.topK;
+        $("weight-view").value = clampNumber(preset.weights.view, CONFIG_LIMITS.weight, 1);
+        $("weight-cart").value = clampNumber(preset.weights.cart, CONFIG_LIMITS.weight, 3);
+        $("weight-purchase").value = clampNumber(preset.weights.purchase, CONFIG_LIMITS.weight, 5);
+        $("recency-decay").value = clampNumber(preset.recencyDecay, CONFIG_LIMITS.recencyDecay, 0.055);
+        $("category-weight").value = clampNumber(preset.categoryWeight, CONFIG_LIMITS.categoryWeight, 1.9);
+        $("brand-weight").value = clampNumber(preset.brandWeight, CONFIG_LIMITS.brandWeight, 1.35);
+        $("popularity-weight").value = clampNumber(preset.popularityWeight, CONFIG_LIMITS.popularityWeight, 0.85);
+        $("top-k").value = Math.round(clampNumber(preset.topK, CONFIG_LIMITS.topK, 30));
         $("mask-purchased").checked = Boolean(preset.maskPurchased);
         if (preset.refDate) {
             $("ref-date").value = preset.refDate;
         }
-        $("ref-shift-days").value = preset.refShiftDays ?? 0;
+        $("ref-shift-days").value = Math.round(clampNumber(preset.refShiftDays ?? 0, CONFIG_LIMITS.refShiftDays, 0));
         renderReferenceShiftLabel();
     }
 
@@ -456,10 +474,67 @@
         `;
     }
 
+    function renderModelRunLog(simulation, config) {
+        const state = Store.read();
+        const products = Store.productMap(state);
+        const users = Store.userMap(state);
+        const sourceUser = simulation.source.events[0]?.userId || simulation.source.session?.userId || selectedUserId;
+        const pipelineRows = (simulation.source.pipeline || []).map((step, index) => `
+            <li>
+                <b>${index + 1}. ${Store.escapeHtml(step.name)}</b>
+                <small>${Store.escapeHtml(step.detail)}</small>
+            </li>
+        `).join("");
+        const eventRows = simulation.source.events.slice(0, 10).map((event) => `
+            <li>
+                <b>${Store.escapeHtml(behaviorLabel(event.behavior))}</b>
+                ${Store.escapeHtml(products[event.productId]?.name || event.productId)}
+                <time>${Store.formatTime(event.timestamp)}</time>
+            </li>
+        `).join("");
+        const resultRows = simulation.ranked.map((result, index) => `
+            <li>
+                #${index + 1} ${Store.escapeHtml(result.product.name)}
+                <b>${result.score.toFixed(2)}</b>
+                <small>model ${Number(result.contribution.model || 0).toFixed(2)} · category ${Number(result.contribution.category || 0).toFixed(2)} · brand ${Number(result.contribution.brand || 0).toFixed(2)} · popularity ${Number(result.contribution.popularity || 0).toFixed(2)}</small>
+            </li>
+        `).join("");
+        $("model-run-log").innerHTML = `
+            <article>
+                <span>Người dùng</span>
+                <strong>${Store.escapeHtml(users[sourceUser]?.name || sourceUser || "Chưa chọn")}</strong>
+                <small>${Store.escapeHtml(simulation.source.querySource || simulation.source.label)} · ${simulation.source.events.length} sự kiện đầu vào</small>
+            </article>
+            <article>
+                <span>Checkpoint</span>
+                <p>${Store.escapeHtml(simulation.source.checkpoint || "Chưa có checkpoint")}</p>
+                <small>epoch ${Store.escapeHtml(simulation.source.checkpointEpoch ?? "?")} · mốc ${Store.formatTime(simulation.source.refTime)}</small>
+            </article>
+            <article>
+                <span>Các bước tính toán</span>
+                <ol>${pipelineRows || "<li>Backend chưa trả trace pipeline.</li>"}</ol>
+            </article>
+            <article>
+                <span>Cấu hình đang chạy</span>
+                <p>Xem ${config.weights.view} · Giỏ ${config.weights.cart} · Mua ${config.weights.purchase}</p>
+                <small>recency ${config.recencyDecay} · category ${config.categoryWeight} · brand ${config.brandWeight} · popularity ${config.popularityWeight} · top ${config.topK}${config.maskPurchased ? " · ẩn sản phẩm đã mua" : ""}</small>
+            </article>
+            <article>
+                <span>Sự kiện được đọc</span>
+                <ol>${eventRows || "<li>Chưa có sự kiện; chỉ dùng user embedding hoặc popularity fallback.</li>"}</ol>
+            </article>
+            <article>
+                <span>Kết quả xếp hạng</span>
+                <ol>${resultRows || "<li>Không có ứng viên.</li>"}</ol>
+            </article>
+        `;
+    }
+
     function renderRecommendations(simulation, config) {
         results = simulation.ranked;
         $("recommendation-panel").hidden = !simulatorVisible;
         $("explanation-panel").hidden = !simulatorVisible;
+        $("model-log-panel").hidden = !simulatorVisible;
         $("warning-list").innerHTML = simulation.warnings.map((warning) => `<p>${Store.escapeHtml(warning)}</p>`).join("");
         $("simulation-note").textContent = `Nguồn: ${simulation.source.label} · ${simulation.source.events.length} sự kiện trước ${Store.formatTime(simulation.source.refTime)}`;
         if (!selectedResultId || !results.some((result) => result.product.id === selectedResultId)) {
@@ -492,6 +567,7 @@
         }
         const maxPart = Math.max(...Object.values(result.contribution), 0.01);
         const labels = {
+            model: "Điểm checkpoint",
             behavior: "Hành vi trực tiếp",
             recency: "Độ mới thời gian",
             category: "Cùng danh mục",
@@ -529,9 +605,28 @@
         `;
     }
 
-    function runSimulation(event) {
+    async function runSimulation(event) {
         event?.preventDefault();
         const config = currentConfig();
+        if (Backend && selectedUserId) {
+            try {
+                const simulation = await Backend.recommend({
+                    userId: selectedUserId,
+                    topK: config.topK,
+                    maskPurchased: config.maskPurchased,
+                    weights: config.weights,
+                    recencyDecay: config.recencyDecay,
+                    categoryWeight: config.categoryWeight,
+                    brandWeight: config.brandWeight,
+                    popularityWeight: config.popularityWeight,
+                    refTime: new Date(referenceTime(sourceEvents(Store.read()).events, config)).toISOString(),
+                });
+                renderRecommendations(simulation, config);
+                return;
+            } catch (error) {
+                $("simulation-note").textContent = "Backend khong san sang, dang dung mo phong local.";
+            }
+        }
         renderRecommendations(simulate(Store.read(), config), config);
     }
 
@@ -621,9 +716,7 @@
         $("simulator-panel").hidden = !simulatorVisible;
         $("recommendation-panel").hidden = !simulatorVisible || !results.length;
         $("explanation-panel").hidden = !simulatorVisible || !results.length;
-        if (!simulatorVisible) {
-            $("model-log-panel").hidden = true;
-        }
+        $("model-log-panel").hidden = !simulatorVisible || !results.length;
         if (simulatorVisible && !results.length) {
             runSimulation();
         }
@@ -646,9 +739,15 @@
         runSimulation();
     });
     $("save-preset").addEventListener("click", () => {
+        $("preset-save-note").textContent = "";
+        $("preset-name").value = "";
+        $("preset-dialog").showModal();
+    });
+    $("preset-form").addEventListener("submit", (event) => {
+        event.preventDefault();
         const name = $("preset-name").value.trim();
         if (!name) {
-            $("simulation-note").textContent = "Nhập tên cấu hình trước khi lưu.";
+            $("preset-save-note").textContent = "Nhập tên cấu hình trước khi lưu.";
             return;
         }
         const config = currentConfig();
@@ -658,6 +757,8 @@
             draft.activePresetId = preset.id;
         });
         $("preset-name").value = "";
+        $("preset-dialog").close();
+        $("simulation-note").textContent = `Đã lưu cấu hình: ${name}`;
         renderOptions(state);
     });
     $("ref-date").addEventListener("input", runSimulation);
@@ -710,6 +811,10 @@
                 state.users.unshift(payload);
             }
         });
+        const savedUser = Store.read().users.find((item) => item.id === id);
+        if (Backend && savedUser) {
+            Backend.createUser(savedUser).catch(() => {});
+        }
         $("user-editor-dialog").close();
         fillUserForm();
         renderAll();
@@ -797,14 +902,9 @@
     $("new-user-admin").addEventListener("click", () => openUserDialog());
     $("close-user-dialog").addEventListener("click", () => $("user-editor-dialog").close());
     $("cancel-user-dialog").addEventListener("click", () => $("user-editor-dialog").close());
+    $("close-preset-dialog").addEventListener("click", () => $("preset-dialog").close());
+    $("cancel-preset-dialog").addEventListener("click", () => $("preset-dialog").close());
     $("show-simulator").addEventListener("click", showSimulator);
-    $("show-run-log").addEventListener("click", () => {
-        $("model-log-panel").hidden = false;
-        $("model-log-panel").scrollIntoView({ behavior: "smooth", block: "start" });
-    });
-    $("hide-run-log").addEventListener("click", () => {
-        $("model-log-panel").hidden = true;
-    });
     $("restore-demo").addEventListener("click", () => {
         Store.restoreSeed();
         results = [];
@@ -827,6 +927,16 @@
     fillProductForm();
     fillUserForm();
     renderAll();
+    if (Backend) {
+        Backend.hydrateStore(Store).then((result) => {
+            if (result.ok) {
+                results = [];
+                previousRanks = {};
+                selectedUserId = null;
+                renderAll();
+            }
+        });
+    }
     window.addEventListener("storage", () => {
         results = [];
         previousRanks = {};
