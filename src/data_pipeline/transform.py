@@ -18,10 +18,6 @@ _VALID_BEHAVIORS = ("view", "cart", "purchase")
 _DEFAULT_BEHAVIOR_IDS = {"view": 0, "cart": 1, "purchase": 2}
 
 
-def _train_window(df: DataFrame, train_cutoff_ts: int) -> DataFrame:
-    return df.filter(F.col("timestamp") < train_cutoff_ts)
-
-
 def filter_by_train_only_counts(
     df: DataFrame,
     target_behavior: str,

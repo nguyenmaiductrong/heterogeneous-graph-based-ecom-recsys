@@ -3,11 +3,9 @@ from __future__ import annotations
 import logging
 import os
 import shutil
-import time
-from functools import wraps
 
 import yaml
-from pyspark.sql import DataFrame, SparkSession
+from pyspark.sql import SparkSession
 from pyspark.sql.types import (
     DoubleType,
     LongType,
@@ -23,10 +21,6 @@ _CONFIG_CACHE: dict[str, dict] = {}
 _PROJECT_ROOT = os.path.abspath(
     os.path.join(os.path.dirname(__file__), "..", "..")
 )
-
-
-def get_project_root() -> str:
-    return _PROJECT_ROOT
 
 
 def load_config(config_path: str | None = None) -> dict:
@@ -50,15 +44,6 @@ def _mkdir_spark_local_dirs(local_dir: str) -> None:
         p = part.strip()
         if p:
             os.makedirs(p, exist_ok=True)
-
-
-def ensure_dirs(cfg: dict) -> None:
-    paths = cfg["paths"]
-    for key in [
-        "output_dir", "node_mappings_dir", "edge_lists_dir",
-        "splits_dir", "stats_dir", "graph_dir", "small_dir",
-    ]:
-        os.makedirs(paths[key], exist_ok=True)
 
 
 def create_spark_session(
@@ -157,32 +142,3 @@ def get_rees46_schema() -> StructType:
         StructField("user_id", LongType(), True),
         StructField("user_session", StringType(), True),
     ])
-
-
-def log_step(step_name: str):
-    """Decorator: ghi log lúc vào/ra và thời gian thực thi của một bước pipeline."""
-    def decorator(func):
-        @wraps(func)
-        def wrapper(*args, **kwargs):
-            logger.info(">>> %s", step_name)
-            t0 = time.time()
-            result = func(*args, **kwargs)
-            logger.info("<<< %s hoàn thành sau %.1f giây", step_name, time.time() - t0)
-            return result
-        return wrapper
-    return decorator
-
-
-def count_and_log(df: DataFrame, label: str) -> int:
-    """Kích hoạt action count và in kết quả (giữ print() để test tương thích)."""
-    n = df.count()
-    print(f"{label}: {n:,}")
-    return n
-
-
-def get_dir_size_gb(path: str) -> float:
-    total = 0
-    for dirpath, _, filenames in os.walk(path):
-        for fname in filenames:
-            total += os.path.getsize(os.path.join(dirpath, fname))
-    return total / (1024 ** 3)
