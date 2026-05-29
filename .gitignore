@@ -97,6 +97,7 @@ mlruns/
 # Reports / Outputs tự sinh
 # ========================
 *.html
+!src/web/*.html
 !paper/**/*.html
 anomaly_report.json
 validation_report.json

@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Quản trị mô phỏng gợi ý | BPATMP</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body class="admin-page">
+    <header class="topbar admin-topbar">
+        <div>
+            <p class="eyebrow">BPATMP · Quản trị demo</p>
+            <h1>Quản lý dữ liệu và mô phỏng gợi ý</h1>
+        </div>
+        <nav class="page-nav" aria-label="Điều hướng">
+            <a href="index.html">Người dùng</a>
+            <a class="active" href="admin.html">Quản trị</a>
+        </nav>
+    </header>
+
+    <main class="admin-layout">
+        <section class="surface user-admin user-workbench">
+            <div class="section-head">
+                <div>
+                    <p class="eyebrow">Trung tâm quản trị</p>
+                    <h2>Người dùng và hồ sơ gợi ý</h2>
+                </div>
+                <div class="inline-controls">
+                    <input id="admin-user-search" placeholder="Tìm người dùng">
+                    <button id="new-user-admin" type="button">Thêm người dùng</button>
+                    <button id="restore-demo" class="danger-lite">Khôi phục dữ liệu mẫu</button>
+                </div>
+            </div>
+            <div class="user-workbench-grid">
+                <div class="user-manager">
+                    <div id="user-table" class="admin-list user-picker-list scroll-panel"></div>
+                </div>
+                <div class="user-focus">
+                    <div id="selected-user-card" class="selected-user-card"></div>
+                    <div class="user-focus-grid">
+                        <article class="focus-panel">
+                            <div class="section-head compact">
+                                <div>
+                                    <p class="eyebrow">Log</p>
+                                    <h3>Hành vi gần đây</h3>
+                                </div>
+                            </div>
+                            <div id="selected-user-log" class="selected-user-log scroll-panel"></div>
+                        </article>
+                        <article class="focus-panel">
+                            <div class="section-head compact">
+                                <div>
+                                    <p class="eyebrow">IntentCodebook</p>
+                                    <h3>Biểu đồ ý định</h3>
+                                </div>
+                            </div>
+                            <p id="intent-note" class="muted intent-note"></p>
+                            <div id="user-intent-chart" class="intent-chart scroll-panel"></div>
+                        </article>
+                    </div>
+                    <div class="focus-actions">
+                        <button id="show-simulator" class="primary-command">Chạy gợi ý cho user này</button>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <section id="simulator-panel" class="surface simulator" hidden>
+            <div class="section-head">
+                <div>
+                    <p class="eyebrow">Mô phỏng</p>
+                    <h2>Cấu hình gợi ý</h2>
+                </div>
+                <div class="inline-controls">
+                    <select id="preset-select" aria-label="Cấu hình mô phỏng"></select>
+                    <button id="load-preset">Nạp cấu hình</button>
+                </div>
+            </div>
+            <form id="simulator-form" class="simulator-grid">
+                <label>Xem<input id="weight-view" type="number" min="0" max="6" step="0.05" inputmode="decimal"><small class="field-help">Tăng ưu tiên từ sản phẩm user vừa xem. Chuẩn demo: 0-6.</small></label>
+                <label>Thêm vào giỏ<input id="weight-cart" type="number" min="0" max="6" step="0.05" inputmode="decimal"><small class="field-help">Tín hiệu mạnh hơn xem, thể hiện ý định mua. Chuẩn demo: 0-6.</small></label>
+                <label>Mua<input id="weight-purchase" type="number" min="0" max="6" step="0.05" inputmode="decimal"><small class="field-help">Tín hiệu mạnh nhất để tìm sản phẩm tương tự. Chuẩn demo: 0-6.</small></label>
+                <label>Suy giảm thời gian<input id="recency-decay" type="number" min="0" max="0.2" step="0.005" inputmode="decimal"><small class="field-help">Số càng cao thì hành vi cũ mất điểm nhanh hơn. Chuẩn demo: 0-0.2.</small></label>
+                <label>Mốc ngày chạy<input id="ref-date" type="date"><small class="field-help">Chỉ dùng hành vi xảy ra trước ngày này.</small></label>
+                <label class="range-line">
+                    Dịch mốc thời gian
+                    <input id="ref-shift-days" type="range" min="0" max="365" step="1" value="0">
+                    <output id="ref-shift-label" for="ref-shift-days">0 ngày sau mốc</output>
+                    <small class="field-help">Giả lập chạy gợi ý muộn hơn mốc ngày.</small>
+                </label>
+                <label>Cùng danh mục<input id="category-weight" type="number" min="0" max="4" step="0.05" inputmode="decimal"><small class="field-help">Cộng điểm cho sản phẩm cùng category. Chuẩn demo: 0-4.</small></label>
+                <label>Cùng thương hiệu<input id="brand-weight" type="number" min="0" max="4" step="0.05" inputmode="decimal"><small class="field-help">Cộng điểm cho sản phẩm cùng brand. Chuẩn demo: 0-4.</small></label>
+                <label>Độ phổ biến<input id="popularity-weight" type="number" min="0" max="2" step="0.05" inputmode="decimal"><small class="field-help">Cộng điểm nền cho sản phẩm phổ biến. Chuẩn demo: 0-2.</small></label>
+                <label>Số kết quả<input id="top-k" type="number" min="1" max="50" step="1"><small class="field-help">Số sản phẩm top-K được trả về. Chuẩn demo: 1-50.</small></label>
+                <label class="check-line"><input id="mask-purchased" type="checkbox"> <span>Ẩn sản phẩm đã mua</span><small class="field-help">Bỏ các sản phẩm user đã purchase khỏi kết quả.</small></label>
+                <div class="button-group config-actions">
+                    <button class="primary-command">Chạy mô phỏng</button>
+                    <button id="save-preset" type="button">Lưu cấu hình</button>
+                    <button id="reset-config" type="button">Mặc định</button>
+                </div>
+            </form>
+        </section>
+
+        <section id="model-log-panel" class="surface model-log-panel" hidden>
+            <div class="section-head compact">
+                <div>
+                    <p class="eyebrow">Model inference</p>
+                    <h2>Luồng tính toán gợi ý</h2>
+                </div>
+            </div>
+            <div id="model-run-log" class="model-run-log terminal-log"></div>
+        </section>
+
+        <section id="recommendation-panel" class="surface recommendation-panel" hidden>
+            <div class="section-head">
+                <div>
+                    <p class="eyebrow">Kết quả</p>
+                    <h2>Sản phẩm được gợi ý</h2>
+                </div>
+                <div class="inline-controls result-controls">
+                    <span id="simulation-note" class="status-line"></span>
+                </div>
+            </div>
+            <div id="warning-list" class="warning-list"></div>
+            <div id="recommendation-list" class="recommendation-list scroll-panel"></div>
+        </section>
+
+        <section id="explanation-panel" class="surface explanation-panel" hidden>
+            <div class="section-head compact">
+                <div>
+                    <p class="eyebrow">Giải thích</p>
+                    <h2>Vì sao được chọn</h2>
+                </div>
+            </div>
+            <div id="explanation-detail" class="explanation-detail"></div>
+        </section>
+
+        <section class="surface product-admin">
+            <div class="section-head">
+                <div>
+                    <p class="eyebrow">Quản lý</p>
+                    <h2>Sản phẩm</h2>
+                </div>
+                <div class="inline-controls">
+                    <input id="admin-product-search" placeholder="Tìm sản phẩm">
+                    <select id="admin-product-filter"></select>
+                    <select id="admin-brand-filter"></select>
+                    <input id="admin-price-filter" type="number" min="0" step="100000" placeholder="Giá tối đa">
+                    <button id="new-product" type="button">Tạo sản phẩm mới</button>
+                    <button id="import-products" type="button">Import sản phẩm</button>
+                    <input id="import-products-file" type="file" accept=".json,application/json" hidden>
+                </div>
+            </div>
+            <p id="product-import-note" class="muted import-note">Import JSON dạng mảng product hoặc object có trường <code>products</code>.</p>
+            <div id="product-table" class="admin-list"></div>
+            <div id="product-history" class="history-box"></div>
+        </section>
+
+        <section class="surface session-admin">
+            <div class="section-head">
+                <div>
+                    <p class="eyebrow">Log hành vi</p>
+                    <h2>Phiên người dùng đã ghi</h2>
+                </div>
+                <div class="inline-controls session-filters">
+                    <input id="session-search" placeholder="Tìm phiên">
+                    <select id="session-user-filter"></select>
+                    <input id="session-date-filter" type="date" aria-label="Ngày tạo phiên">
+                    <select id="session-behavior-filter">
+                        <option value="">Mọi hành vi</option>
+                        <option value="view">Có lượt xem</option>
+                        <option value="cart">Có thêm vào giỏ</option>
+                        <option value="purchase">Có mua</option>
+                    </select>
+                    <button id="export-sessions-json">Xuất JSON</button>
+                    <button id="export-sessions-csv">Xuất CSV</button>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <dialog id="user-editor-dialog" class="admin-dialog">
+        <form id="user-admin-form" class="stack-form dialog-form">
+            <div class="section-head compact">
+                <div>
+                    <p class="eyebrow">Người dùng</p>
+                    <h2 id="user-dialog-title">Thêm người dùng</h2>
+                </div>
+                <button id="close-user-dialog" type="button" aria-label="Đóng">Đóng</button>
+            </div>
+            <input id="admin-user-id" type="hidden">
+            <label>Tên<input id="admin-user-name" required maxlength="70"></label>
+            <label>Ghi chú<textarea id="admin-user-notes" rows="3" maxlength="180"></textarea></label>
+            <div class="button-group dialog-actions">
+                <button class="primary-command">Lưu người dùng</button>
+                <button id="cancel-user-dialog" type="button">Hủy</button>
+            </div>
+        </form>
+    </dialog>
+
+    <dialog id="preset-dialog" class="admin-dialog">
+        <form id="preset-form" class="stack-form dialog-form">
+            <div class="section-head compact">
+                <div>
+                    <p class="eyebrow">Cấu hình gợi ý</p>
+                    <h2>Lưu cấu hình</h2>
+                </div>
+                <button id="close-preset-dialog" type="button" aria-label="Đóng">Đóng</button>
+            </div>
+            <label>Tên cấu hình<input id="preset-name" required maxlength="60" placeholder="Ưu tiên hành vi gần"></label>
+            <p id="preset-save-note" class="muted import-note"></p>
+            <div class="button-group dialog-actions">
+                <button class="primary-command">Lưu cấu hình</button>
+                <button id="cancel-preset-dialog" type="button">Hủy</button>
+            </div>
+        </form>
+    </dialog>
+
+    <dialog id="product-editor-dialog" class="admin-dialog">
+        <form id="product-form" class="stack-form dialog-form">
+            <div class="section-head compact">
+                <div>
+                    <p class="eyebrow">Sản phẩm</p>
+                    <h2 id="product-dialog-title">Tạo sản phẩm mới</h2>
+                </div>
+                <button id="close-product-dialog" type="button" aria-label="Đóng">Đóng</button>
+            </div>
+            <input id="product-id" type="hidden">
+            <div class="dialog-grid">
+                <label>Tên<input id="product-name" required maxlength="80"></label>
+                <label>Thương hiệu<input id="product-brand" required maxlength="50"></label>
+                <label>Danh mục<input id="product-category" required maxlength="50"></label>
+                <label>Giá<input id="product-price" required type="number" min="0" step="10000"></label>
+                <label>Độ phổ biến<input id="product-popularity" required type="number" min="0" max="100" step="1"></label>
+                <label>Kiểu ảnh<select id="product-image"></select></label>
+            </div>
+            <label class="check-line"><input id="product-active" type="checkbox" checked> Được đề xuất</label>
+            <div class="button-group dialog-actions">
+                <button class="primary-command">Lưu sản phẩm</button>
+                <button id="cancel-product-dialog" type="button">Hủy</button>
+            </div>
+        </form>
+    </dialog>
+
+    <script src="store.js"></script>
+    <script src="backend.js"></script>
+    <script src="admin.js"></script>
+</body>
+</html>

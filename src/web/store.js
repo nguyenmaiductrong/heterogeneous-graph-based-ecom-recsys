@@ -191,7 +191,7 @@
                 categoryWeight: 1.9,
                 brandWeight: 1.35,
                 popularityWeight: 0.85,
-                topK: 5,
+                topK: 30,
                 maskPurchased: true,
             },
             {
@@ -202,7 +202,7 @@
                 categoryWeight: 3.1,
                 brandWeight: 0.9,
                 popularityWeight: 0.45,
-                topK: 5,
+                topK: 30,
                 maskPurchased: true,
             },
         ],
