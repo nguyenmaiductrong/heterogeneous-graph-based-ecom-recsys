@@ -98,6 +98,37 @@ small,
     color: var(--muted);
 }
 
+.field-help {
+    color: var(--muted);
+    font-size: 0.76rem;
+    line-height: 1.35;
+}
+
+.scroll-panel {
+    scrollbar-color: #8da3b2 var(--surface-soft);
+    scrollbar-width: thin;
+}
+
+.scroll-panel::-webkit-scrollbar {
+    width: 10px;
+}
+
+.scroll-panel::-webkit-scrollbar-track {
+    background: var(--surface-soft);
+    border-left: 1px solid var(--border);
+    border-radius: 999px;
+}
+
+.scroll-panel::-webkit-scrollbar-thumb {
+    background: #8da3b2;
+    border: 2px solid var(--surface-soft);
+    border-radius: 999px;
+}
+
+.scroll-panel::-webkit-scrollbar-thumb:hover {
+    background: var(--teal);
+}
+
 b,
 strong,
 .session-meta span {
@@ -713,6 +744,12 @@ strong,
     min-width: 0;
 }
 
+.user-manager {
+    align-self: start;
+    max-height: 620px;
+    overflow: hidden;
+}
+
 .user-manager .user-editor {
     border-bottom: 0;
     border-top: 1px solid var(--border);
@@ -935,9 +972,14 @@ strong,
 
 .check-line {
     align-items: center;
-    display: flex;
+    display: grid;
     gap: 8px;
+    grid-template-columns: auto minmax(0, 1fr);
     min-height: 42px;
+}
+
+.check-line .field-help {
+    grid-column: 1 / -1;
 }
 
 .check-line input {
@@ -968,6 +1010,10 @@ strong,
 .recommendation-list {
     display: grid;
     gap: 8px;
+    max-height: 560px;
+    overflow-y: auto;
+    padding-right: 4px;
+    scrollbar-gutter: stable;
 }
 
 .recommendation-row {
@@ -1084,6 +1130,10 @@ strong,
 
 .user-picker-list {
     gap: 10px;
+    max-height: 620px;
+    overflow-y: auto;
+    padding-right: 4px;
+    scrollbar-gutter: stable;
 }
 
 .user-pick-row {
