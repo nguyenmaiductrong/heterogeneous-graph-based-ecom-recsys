@@ -69,9 +69,6 @@ class BehaviorAwareWeight(nn.Module):
         n_beta: int = 4,
     ) -> None:
         super().__init__()
-        self.rank = rank
-        self.n_relations = n_relations
-        self.n_beta = n_beta
 
         # W_ρ: per-relation base weight
         self.W_rho = nn.Parameter(torch.empty(n_relations, out_dim, in_dim))
@@ -111,7 +108,6 @@ class FourierTimeEncoding(nn.Module):
 
     def __init__(self, n_freqs: int = 16) -> None:
         super().__init__()
-        self.n_freqs = n_freqs
         self.raw_omega = nn.Parameter(torch.randn(n_freqs))
 
     def forward(self, delta_t: Tensor) -> Tensor:
@@ -157,11 +153,8 @@ class TemporalAttention(nn.Module):
     ) -> None:
         super().__init__()
         self.in_dim = in_dim if in_dim is not None else dim
-        self.dim = dim
         self.scale = dim ** -0.5
         self.tau = tau
-        self.n_relations = n_relations
-        self.n_beta = n_beta
 
         self.W_q = nn.Linear(self.in_dim, dim, bias=False)
         self.W_k = nn.Linear(self.in_dim, dim, bias=False)
@@ -508,8 +501,6 @@ class IntentCodebook(nn.Module):
 
     def __init__(self, n_intents: int = 32, dim: int = EMBED_DIM):
         super().__init__()
-        self.n_intents = n_intents
-        self.dim = dim
         self.user_intents = nn.Parameter(torch.empty(n_intents, dim))
         self.item_intents = nn.Parameter(torch.empty(n_intents, dim))
         nn.init.xavier_uniform_(self.user_intents)
@@ -547,7 +538,6 @@ class BPATMPModel(nn.Module):
     ) -> None:
         super().__init__()
         self.embed_dim = embed_dim
-        self.num_nodes_dict = num_nodes_dict
 
         self.input_proj = nn.ModuleDict({
             ntype: nn.Embedding(num_nodes, embed_dim)

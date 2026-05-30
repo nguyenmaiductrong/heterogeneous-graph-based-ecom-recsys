@@ -8,19 +8,14 @@ from torch import Tensor
 
 EMBED_DIM: int = 128
 LOW_RANK: int = 16  # rank r cho A_phi @ B_beta^T (CrossComboWeightSpec)
-NUM_HEADS: int = 4
-HEAD_DIM: int = EMBED_DIM // NUM_HEADS
 
 
 def configure_dims(embed_dim: int) -> None:
-    """Sync EMBED_DIM/HEAD_DIM with config before any validation runs."""
-    global EMBED_DIM, HEAD_DIM
+    """Sync EMBED_DIM with config before any validation runs."""
+    global EMBED_DIM
     EMBED_DIM = embed_dim
-    HEAD_DIM = embed_dim // NUM_HEADS
-NUM_GNN_LAYERS: int = 2
 NODE_TYPES: list[str] = ["user", "product", "category", "brand"]
 BEHAVIOR_TYPES: list[str] = ["view", "cart", "purchase"]
-TARGET_BEHAVIOR: str = "purchase"
 
 RELATION_TYPES: list[tuple[str, str, str]] = [
     ("user", "view", "product"),
@@ -35,14 +30,7 @@ RELATION_TYPES: list[tuple[str, str, str]] = [
     ("brand", "brands", "product"),
 ]
 
-BEHAVIOR_LOSS_WEIGHTS: dict[str, float] = {
-    "purchase": 1.0,
-    "cart": 0.3,
-    "view": 0.1,
-}
-
 BEHAVIOR_TO_ID: dict[str, int] = {"view": 0, "cart": 1, "purchase": 2}
-ID_TO_BEHAVIOR: dict[int, str] = {v: k for k, v in BEHAVIOR_TO_ID.items()}
 
 
 @dataclass

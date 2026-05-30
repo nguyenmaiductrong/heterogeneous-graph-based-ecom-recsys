@@ -137,24 +137,6 @@ def _batch_sample_csr(
     return (out, valid, pos_out) if return_positions else (out, valid)
 
 
-def _sample_without_replacement(
-    pool: Tensor,
-    k: int,
-    generator: torch.Generator | None,
-) -> Tensor:
-    n = pool.numel()
-    if n == 0:
-        return pool
-    if k >= n:
-        return pool.clone()
-    device = pool.device
-    if generator is None:
-        perm = torch.randperm(n, device=device)
-    else:
-        perm = torch.randperm(n, device=device, generator=generator)
-    return pool[perm[:k]]
-
-
 @dataclass
 class NeighborSamplerConfig:
     hop1_budget: int = 15
@@ -226,13 +208,6 @@ class BehaviorAwareNeighborSampler:
             self._csr[key] = (ptr, cols)
             if ts_vals is not None:
                 self._csr_edge_ts[key] = ts_vals
-
-    @property
-    def num_nodes_dict(self) -> dict[str, int]:
-        return dict(self._num_nodes)
-
-    def _has_csr(self, key: tuple[str, str, str]) -> bool:
-        return key in self._csr
 
     def _vectorized_hop1(
         self,
