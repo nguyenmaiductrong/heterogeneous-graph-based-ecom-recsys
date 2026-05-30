@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>BPATMP · Demo trực quan đồ thị không đồng nhất</title>
+    <link rel="stylesheet" href="demo.css" />
+</head>
+<body>
+    <header class="topbar">
+        <div class="brand">
+            <span class="logo">◆</span>
+            <div>
+                <h1>BPATMP · Demo trực quan</h1>
+                <p>Dự đoán &amp; gợi ý tương tác người dùng–sản phẩm trên đồ thị không đồng nhất (REES46)</p>
+            </div>
+        </div>
+        <nav class="tabs">
+            <button class="tab active" data-tab="train">① Huấn luyện</button>
+            <button class="tab" data-tab="eval">② Đánh giá &amp; Gợi ý</button>
+        </nav>
+    </header>
+
+    <main>
+        <section id="tab-train" class="tab-panel active"></section>
+        <section id="tab-eval" class="tab-panel"></section>
+    </main>
+
+    <div id="loading" class="loading">Đang nạp dữ liệu demo…</div>
+
+    <script src="demo.js"></script>
+</body>
+</html>

@@ -1,0 +1,6315 @@
+{
+  "meta": {
+    "embed_dim": 16,
+    "n_layers": 2,
+    "rank": 8,
+    "n_intents": 8,
+    "n_freqs": 8,
+    "tau": 7.0,
+    "train_iters": 700,
+    "ks": [
+      1,
+      5,
+      10,
+      20
+    ],
+    "ref_time": 1581940921,
+    "ref_time_str": "2020-02-17 12:02",
+    "counts": {
+      "users": 8,
+      "products": 30,
+      "categories": 6,
+      "brands": 12,
+      "events": 407,
+      "train_events": 256
+    },
+    "real_counts": {
+      "users": 203063,
+      "products": 29892,
+      "categories": 14,
+      "brands": 1919
+    },
+    "relations": [
+      "user --view--> product",
+      "user --cart--> product",
+      "user --purchase--> product",
+      "product --rev_view--> user",
+      "product --rev_cart--> user",
+      "product --rev_purchase--> user",
+      "product --belongs_to--> category",
+      "category --contains--> product",
+      "product --producedBy--> brand",
+      "brand --brands--> product"
+    ]
+  },
+  "vocab": {
+    "users": [
+      {
+        "id": 0,
+        "global_idx": 2687,
+        "label": "Người dùng #0"
+      },
+      {
+        "id": 1,
+        "global_idx": 12598,
+        "label": "Người dùng #1"
+      },
+      {
+        "id": 2,
+        "global_idx": 71245,
+        "label": "Người dùng #2"
+      },
+      {
+        "id": 3,
+        "global_idx": 73993,
+        "label": "Người dùng #3"
+      },
+      {
+        "id": 4,
+        "global_idx": 103732,
+        "label": "Người dùng #4"
+      },
+      {
+        "id": 5,
+        "global_idx": 149950,
+        "label": "Người dùng #5"
+      },
+      {
+        "id": 6,
+        "global_idx": 162534,
+        "label": "Người dùng #6"
+      },
+      {
+        "id": 7,
+        "global_idx": 173090,
+        "label": "Người dùng #7"
+      }
+    ],
+    "items": [
+      {
+        "id": 0,
+        "global_idx": 309,
+        "label": "SP#0",
+        "category": "construction",
+        "brand": "apple",
+        "vec": [
+          1.295,
+          0.192,
+          0.162,
+          0.725,
+          0.237,
+          0.81,
+          2.817,
+          -0.246,
+          0.352,
+          -0.367,
+          1.809,
+          2.389,
+          -0.197,
+          3.131,
+          -0.633,
+          -0.485
+        ]
+      },
+      {
+        "id": 1,
+        "global_idx": 487,
+        "label": "SP#1",
+        "category": "construction",
+        "brand": "samsung",
+        "vec": [
+          -1.079,
+          -0.268,
+          -0.642,
+          1.971,
+          0.06,
+          0.389,
+          3.428,
+          2.925,
+          -0.28,
+          -0.326,
+          -0.53,
+          2.568,
+          1.939,
+          1.961,
+          -0.662,
+          -0.554
+        ]
+      },
+      {
+        "id": 2,
+        "global_idx": 528,
+        "label": "SP#2",
+        "category": "electronics",
+        "brand": "samsung",
+        "vec": [
+          -0.827,
+          1.966,
+          0.286,
+          2.372,
+          0.326,
+          -0.388,
+          1.864,
+          2.824,
+          1.012,
+          1.26,
+          0.593,
+          0.563,
+          0.169,
+          0.752,
+          -0.524,
+          1.485
+        ]
+      },
+      {
+        "id": 3,
+        "global_idx": 548,
+        "label": "SP#3",
+        "category": "construction",
+        "brand": "samsung",
+        "vec": [
+          -1.063,
+          1.363,
+          0.342,
+          3.704,
+          -0.475,
+          -0.377,
+          2.652,
+          2.133,
+          1.298,
+          0.605,
+          0.153,
+          0.942,
+          -0.09,
+          1.425,
+          -0.602,
+          -0.437
+        ]
+      },
+      {
+        "id": 4,
+        "global_idx": 723,
+        "label": "SP#4",
+        "category": "construction",
+        "brand": "apple",
+        "vec": [
+          -0.936,
+          -0.598,
+          2.491,
+          3.863,
+          0.415,
+          -0.399,
+          4.092,
+          -0.651,
+          -0.283,
+          0.367,
+          -0.224,
+          1.035,
+          -0.258,
+          3.235,
+          -0.384,
+          -0.591
+        ]
+      },
+      {
+        "id": 5,
+        "global_idx": 724,
+        "label": "SP#5",
+        "category": "construction",
+        "brand": "apple",
+        "vec": [
+          -0.44,
+          0.499,
+          -0.209,
+          2.191,
+          0.4,
+          0.571,
+          1.778,
+          -0.077,
+          0.081,
+          1.643,
+          1.55,
+          1.599,
+          -0.294,
+          2.731,
+          -0.453,
+          -0.305
+        ]
+      },
+      {
+        "id": 6,
+        "global_idx": 882,
+        "label": "SP#6",
+        "category": "apparel",
+        "brand": "samsung",
+        "vec": [
+          2.049,
+          0.771,
+          -0.498,
+          -0.507,
+          -0.153,
+          1.162,
+          2.606,
+          1.65,
+          2.009,
+          0.549,
+          0.058,
+          3.683,
+          0.35,
+          1.0,
+          -0.686,
+          0.944
+        ]
+      },
+      {
+        "id": 7,
+        "global_idx": 916,
+        "label": "SP#7",
+        "category": "apparel",
+        "brand": "apple",
+        "vec": [
+          2.294,
+          0.143,
+          -0.62,
+          -0.451,
+          1.236,
+          1.187,
+          1.504,
+          1.929,
+          0.014,
+          0.479,
+          0.85,
+          0.962,
+          0.928,
+          1.046,
+          -0.266,
+          1.449
+        ]
+      },
+      {
+        "id": 8,
+        "global_idx": 987,
+        "label": "SP#8",
+        "category": "apparel",
+        "brand": "samsung",
+        "vec": [
+          2.244,
+          0.87,
+          -0.56,
+          -0.445,
+          -0.121,
+          0.878,
+          1.827,
+          1.561,
+          1.328,
+          0.059,
+          0.493,
+          3.742,
+          0.293,
+          1.191,
+          -0.701,
+          0.772
+        ]
+      },
+      {
+        "id": 9,
+        "global_idx": 1007,
+        "label": "SP#9",
+        "category": "apparel",
+        "brand": "samsung",
+        "vec": [
+          1.93,
+          1.191,
+          -0.051,
+          -0.366,
+          -0.056,
+          1.248,
+          2.225,
+          1.268,
+          1.78,
+          0.34,
+          0.267,
+          2.053,
+          0.439,
+          0.713,
+          -0.603,
+          1.101
+        ]
+      },
+      {
+        "id": 10,
+        "global_idx": 1222,
+        "label": "SP#10",
+        "category": "electronics",
+        "brand": "lenovo",
+        "vec": [
+          2.151,
+          0.696,
+          -0.087,
+          -0.369,
+          -0.131,
+          1.131,
+          1.978,
+          1.449,
+          1.722,
+          0.07,
+          0.237,
+          1.783,
+          0.147,
+          0.703,
+          -0.594,
+          1.226
+        ]
+      },
+      {
+        "id": 11,
+        "global_idx": 1230,
+        "label": "SP#11",
+        "category": "computers",
+        "brand": "apple",
+        "vec": [
+          1.35,
+          -0.057,
+          -0.744,
+          -0.339,
+          1.47,
+          1.442,
+          1.86,
+          1.877,
+          0.511,
+          -0.267,
+          0.352,
+          0.269,
+          1.15,
+          0.867,
+          -0.212,
+          1.702
+        ]
+      },
+      {
+        "id": 12,
+        "global_idx": 1315,
+        "label": "SP#12",
+        "category": "computers",
+        "brand": "lenovo",
+        "vec": [
+          -0.735,
+          0.936,
+          -0.353,
+          2.056,
+          0.502,
+          -0.208,
+          1.734,
+          2.102,
+          0.712,
+          1.773,
+          0.48,
+          1.817,
+          -0.056,
+          0.687,
+          -0.618,
+          2.526
+        ]
+      },
+      {
+        "id": 13,
+        "global_idx": 1341,
+        "label": "SP#13",
+        "category": "computers",
+        "brand": "acer",
+        "vec": [
+          -0.633,
+          1.862,
+          0.228,
+          0.064,
+          0.757,
+          -0.193,
+          1.943,
+          1.71,
+          1.729,
+          0.013,
+          1.741,
+          -0.162,
+          0.382,
+          1.026,
+          -0.353,
+          1.05
+        ]
+      },
+      {
+        "id": 14,
+        "global_idx": 1531,
+        "label": "SP#14",
+        "category": "computers",
+        "brand": "acer",
+        "vec": [
+          0.737,
+          0.118,
+          0.741,
+          -0.145,
+          0.445,
+          0.013,
+          2.201,
+          -0.411,
+          0.649,
+          0.078,
+          1.804,
+          0.736,
+          -0.295,
+          2.735,
+          -0.237,
+          0.656
+        ]
+      },
+      {
+        "id": 15,
+        "global_idx": 1956,
+        "label": "SP#15",
+        "category": "appliances",
+        "brand": "lg",
+        "vec": [
+          -0.976,
+          0.731,
+          -0.297,
+          2.875,
+          0.754,
+          -0.262,
+          1.374,
+          1.794,
+          0.939,
+          2.728,
+          0.217,
+          2.187,
+          -0.22,
+          1.229,
+          -0.721,
+          2.25
+        ]
+      },
+      {
+        "id": 16,
+        "global_idx": 2070,
+        "label": "SP#16",
+        "category": "appliances",
+        "brand": "samsung",
+        "vec": [
+          -0.946,
+          0.915,
+          0.864,
+          2.89,
+          -0.265,
+          -0.145,
+          1.27,
+          1.019,
+          1.156,
+          2.645,
+          1.202,
+          2.271,
+          -0.213,
+          0.854,
+          -0.613,
+          1.474
+        ]
+      },
+      {
+        "id": 17,
+        "global_idx": 3174,
+        "label": "SP#17",
+        "category": "appliances",
+        "brand": "lg",
+        "vec": [
+          -0.751,
+          1.012,
+          1.876,
+          1.828,
+          -0.508,
+          -0.428,
+          1.299,
+          -0.329,
+          0.222,
+          2.903,
+          2.431,
+          1.003,
+          -0.486,
+          0.829,
+          -0.371,
+          1.957
+        ]
+      },
+      {
+        "id": 18,
+        "global_idx": 4161,
+        "label": "SP#18",
+        "category": "appliances",
+        "brand": "lg",
+        "vec": [
+          -1.035,
+          -0.039,
+          0.139,
+          2.411,
+          1.141,
+          -0.412,
+          1.21,
+          0.955,
+          -0.236,
+          2.146,
+          0.279,
+          1.498,
+          -0.175,
+          1.184,
+          -0.69,
+          2.076
+        ]
+      },
+      {
+        "id": 19,
+        "global_idx": 5039,
+        "label": "SP#19",
+        "category": "appliances",
+        "brand": "artel",
+        "vec": [
+          -1.008,
+          0.797,
+          -0.225,
+          2.691,
+          0.827,
+          0.321,
+          1.309,
+          2.008,
+          0.923,
+          2.328,
+          0.235,
+          2.088,
+          -0.265,
+          0.918,
+          -0.726,
+          1.825
+        ]
+      },
+      {
+        "id": 20,
+        "global_idx": 5795,
+        "label": "SP#20",
+        "category": "sport",
+        "brand": "apple",
+        "vec": [
+          0.55,
+          1.087,
+          -0.187,
+          0.852,
+          0.082,
+          0.344,
+          1.022,
+          0.056,
+          1.478,
+          1.495,
+          1.909,
+          0.476,
+          0.402,
+          1.057,
+          1.465,
+          -0.328
+        ]
+      },
+      {
+        "id": 21,
+        "global_idx": 5796,
+        "label": "SP#21",
+        "category": "sport",
+        "brand": "apple",
+        "vec": [
+          0.766,
+          -0.455,
+          1.83,
+          1.021,
+          -0.29,
+          -0.371,
+          2.495,
+          -0.736,
+          0.486,
+          1.447,
+          1.516,
+          1.827,
+          -0.451,
+          2.701,
+          2.171,
+          -0.421
+        ]
+      },
+      {
+        "id": 22,
+        "global_idx": 5879,
+        "label": "SP#22",
+        "category": "sport",
+        "brand": "apple",
+        "vec": [
+          1.266,
+          -0.228,
+          -0.256,
+          0.527,
+          0.489,
+          0.601,
+          1.778,
+          0.077,
+          0.63,
+          0.625,
+          1.135,
+          0.879,
+          0.224,
+          2.011,
+          0.791,
+          -0.469
+        ]
+      },
+      {
+        "id": 23,
+        "global_idx": 5902,
+        "label": "SP#23",
+        "category": "sport",
+        "brand": "apple",
+        "vec": [
+          -0.597,
+          -0.772,
+          -0.362,
+          1.145,
+          1.678,
+          0.264,
+          2.741,
+          -0.651,
+          -0.641,
+          -0.272,
+          -0.203,
+          1.485,
+          1.314,
+          3.365,
+          2.685,
+          -0.674
+        ]
+      },
+      {
+        "id": 24,
+        "global_idx": 6204,
+        "label": "SP#24",
+        "category": "electronics",
+        "brand": "garmin",
+        "vec": [
+          -0.94,
+          -0.475,
+          -0.095,
+          1.875,
+          2.392,
+          -0.451,
+          1.105,
+          -0.457,
+          -0.468,
+          1.231,
+          0.655,
+          0.05,
+          -0.254,
+          2.525,
+          2.011,
+          1.39
+        ]
+      },
+      {
+        "id": 25,
+        "global_idx": 9193,
+        "label": "SP#25",
+        "category": "electronics",
+        "brand": "nokia",
+        "vec": [
+          1.247,
+          0.949,
+          1.456,
+          0.193,
+          -0.441,
+          -0.207,
+          1.087,
+          -0.414,
+          1.166,
+          2.543,
+          1.909,
+          0.51,
+          -0.421,
+          0.645,
+          1.318,
+          1.98
+        ]
+      },
+      {
+        "id": 26,
+        "global_idx": 15268,
+        "label": "SP#26",
+        "category": "sport",
+        "brand": "__UNKNOWN_BRAND__",
+        "vec": [
+          0.607,
+          0.269,
+          -0.36,
+          -0.03,
+          0.982,
+          0.638,
+          1.698,
+          1.185,
+          0.637,
+          0.846,
+          1.241,
+          0.877,
+          1.032,
+          2.053,
+          1.241,
+          -0.114
+        ]
+      },
+      {
+        "id": 27,
+        "global_idx": 17750,
+        "label": "SP#27",
+        "category": "electronics",
+        "brand": "zinvo",
+        "vec": [
+          -0.578,
+          0.057,
+          -0.181,
+          0.4,
+          1.659,
+          -0.013,
+          0.47,
+          0.121,
+          -0.026,
+          0.69,
+          1.147,
+          0.582,
+          0.053,
+          1.402,
+          0.743,
+          2.191
+        ]
+      },
+      {
+        "id": 28,
+        "global_idx": 20677,
+        "label": "SP#28",
+        "category": "computers",
+        "brand": "lucente",
+        "vec": [
+          0.137,
+          1.469,
+          -0.591,
+          -0.37,
+          0.852,
+          2.112,
+          0.784,
+          3.272,
+          1.034,
+          -0.17,
+          1.883,
+          0.108,
+          -0.086,
+          0.452,
+          -0.589,
+          3.224
+        ]
+      },
+      {
+        "id": 29,
+        "global_idx": 24028,
+        "label": "SP#29",
+        "category": "apparel",
+        "brand": "toro",
+        "vec": [
+          0.89,
+          1.421,
+          0.35,
+          -0.397,
+          0.441,
+          -0.159,
+          0.183,
+          -0.198,
+          -0.017,
+          1.438,
+          3.02,
+          0.436,
+          -0.218,
+          1.553,
+          0.443,
+          1.732
+        ]
+      }
+    ],
+    "categories": [
+      "apparel",
+      "appliances",
+      "computers",
+      "construction",
+      "electronics",
+      "sport"
+    ],
+    "brands": [
+      "__UNKNOWN_BRAND__",
+      "acer",
+      "apple",
+      "artel",
+      "garmin",
+      "lenovo",
+      "lg",
+      "lucente",
+      "nokia",
+      "samsung",
+      "toro",
+      "zinvo"
+    ]
+  },
+  "training": {
+    "raw_sample": [
+      {
+        "user": 1,
+        "item": 3,
+        "behavior": "purchase",
+        "ts": 1570002101,
+        "ts_str": "2019-10-02 07:41",
+        "global_user": 12598,
+        "global_item": 548
+      },
+      {
+        "user": 1,
+        "item": 1,
+        "behavior": "purchase",
+        "ts": 1570004396,
+        "ts_str": "2019-10-02 08:19",
+        "global_user": 12598,
+        "global_item": 487
+      },
+      {
+        "user": 3,
+        "item": 1,
+        "behavior": "cart",
+        "ts": 1570027654,
+        "ts_str": "2019-10-02 14:47",
+        "global_user": 73993,
+        "global_item": 487
+      },
+      {
+        "user": 1,
+        "item": 3,
+        "behavior": "cart",
+        "ts": 1570098563,
+        "ts_str": "2019-10-03 10:29",
+        "global_user": 12598,
+        "global_item": 548
+      },
+      {
+        "user": 1,
+        "item": 1,
+        "behavior": "view",
+        "ts": 1570099483,
+        "ts_str": "2019-10-03 10:44",
+        "global_user": 12598,
+        "global_item": 487
+      },
+      {
+        "user": 1,
+        "item": 1,
+        "behavior": "view",
+        "ts": 1570099749,
+        "ts_str": "2019-10-03 10:49",
+        "global_user": 12598,
+        "global_item": 487
+      },
+      {
+        "user": 1,
+        "item": 1,
+        "behavior": "purchase",
+        "ts": 1570102124,
+        "ts_str": "2019-10-03 11:28",
+        "global_user": 12598,
+        "global_item": 487
+      },
+      {
+        "user": 1,
+        "item": 2,
+        "behavior": "view",
+        "ts": 1570102224,
+        "ts_str": "2019-10-03 11:30",
+        "global_user": 12598,
+        "global_item": 528
+      },
+      {
+        "user": 1,
+        "item": 3,
+        "behavior": "view",
+        "ts": 1570104569,
+        "ts_str": "2019-10-03 12:09",
+        "global_user": 12598,
+        "global_item": 548
+      },
+      {
+        "user": 1,
+        "item": 1,
+        "behavior": "view",
+        "ts": 1570111746,
+        "ts_str": "2019-10-03 14:09",
+        "global_user": 12598,
+        "global_item": 487
+      },
+      {
+        "user": 3,
+        "item": 1,
+        "behavior": "view",
+        "ts": 1570122952,
+        "ts_str": "2019-10-03 17:15",
+        "global_user": 73993,
+        "global_item": 487
+      },
+      {
+        "user": 3,
+        "item": 1,
+        "behavior": "purchase",
+        "ts": 1570161437,
+        "ts_str": "2019-10-04 03:57",
+        "global_user": 73993,
+        "global_item": 487
+      }
+    ],
+    "clean_stats": {
+      "behavior_counts": {
+        "view": 152,
+        "cart": 51,
+        "purchase": 53
+      },
+      "total_events": 407,
+      "train_events": 256
+    },
+    "split": {
+      "cutoffs": {
+        "1": {
+          "ts": 1578638764,
+          "ts_str": "2020-01-10 06:46"
+        },
+        "3": {
+          "ts": 1581653837,
+          "ts_str": "2020-02-14 04:17"
+        },
+        "2": {
+          "ts": 1579254641,
+          "ts_str": "2020-01-17 09:50"
+        },
+        "0": {
+          "ts": 1579361589,
+          "ts_str": "2020-01-18 15:33"
+        },
+        "4": {
+          "ts": 1575473979,
+          "ts_str": "2019-12-04 15:39"
+        },
+        "5": {
+          "ts": 1581912561,
+          "ts_str": "2020-02-17 04:09"
+        },
+        "6": {
+          "ts": 1580829953,
+          "ts_str": "2020-02-04 15:25"
+        },
+        "7": {
+          "ts": 1580450012,
+          "ts_str": "2020-01-31 05:53"
+        }
+      },
+      "ground_truth": {
+        "1": [
+          1,
+          4,
+          5,
+          16,
+          23
+        ],
+        "3": [
+          11
+        ],
+        "2": [
+          0,
+          4,
+          21
+        ],
+        "0": [
+          27
+        ],
+        "4": [
+          3,
+          21
+        ],
+        "5": [
+          21,
+          25,
+          29
+        ],
+        "6": [
+          10
+        ],
+        "7": [
+          23
+        ]
+      },
+      "exclude_items": {
+        "1": [
+          1,
+          2,
+          3,
+          4,
+          12,
+          15,
+          16,
+          17,
+          18,
+          19
+        ],
+        "3": [
+          1,
+          23
+        ],
+        "2": [
+          4,
+          21,
+          23
+        ],
+        "0": [
+          4,
+          23,
+          24
+        ],
+        "4": [
+          28
+        ],
+        "5": [
+          17,
+          21,
+          25
+        ],
+        "6": [
+          0,
+          1,
+          6,
+          8
+        ],
+        "7": []
+      },
+      "ref_time_str": "2020-02-17 12:02"
+    },
+    "graph": {
+      "edges": [
+        {
+          "rel": "user --view--> product",
+          "src_type": "user",
+          "name": "view",
+          "dst_type": "product",
+          "count": 152
+        },
+        {
+          "rel": "user --cart--> product",
+          "src_type": "user",
+          "name": "cart",
+          "dst_type": "product",
+          "count": 51
+        },
+        {
+          "rel": "user --purchase--> product",
+          "src_type": "user",
+          "name": "purchase",
+          "dst_type": "product",
+          "count": 53
+        },
+        {
+          "rel": "product --rev_view--> user",
+          "src_type": "product",
+          "name": "rev_view",
+          "dst_type": "user",
+          "count": 152
+        },
+        {
+          "rel": "product --rev_cart--> user",
+          "src_type": "product",
+          "name": "rev_cart",
+          "dst_type": "user",
+          "count": 51
+        },
+        {
+          "rel": "product --rev_purchase--> user",
+          "src_type": "product",
+          "name": "rev_purchase",
+          "dst_type": "user",
+          "count": 53
+        },
+        {
+          "rel": "product --belongs_to--> category",
+          "src_type": "product",
+          "name": "belongs_to",
+          "dst_type": "category",
+          "count": 30
+        },
+        {
+          "rel": "category --contains--> product",
+          "src_type": "category",
+          "name": "contains",
+          "dst_type": "product",
+          "count": 30
+        },
+        {
+          "rel": "product --producedBy--> brand",
+          "src_type": "product",
+          "name": "producedBy",
+          "dst_type": "brand",
+          "count": 30
+        },
+        {
+          "rel": "brand --brands--> product",
+          "src_type": "brand",
+          "name": "brands",
+          "dst_type": "product",
+          "count": 30
+        }
+      ],
+      "behavior_edges": {
+        "view": [
+          {
+            "user": 1,
+            "item": 1,
+            "ts": 1570099483,
+            "ts_str": "2019-10-03 10:44"
+          },
+          {
+            "user": 1,
+            "item": 1,
+            "ts": 1570099749,
+            "ts_str": "2019-10-03 10:49"
+          },
+          {
+            "user": 1,
+            "item": 2,
+            "ts": 1570102224,
+            "ts_str": "2019-10-03 11:30"
+          },
+          {
+            "user": 1,
+            "item": 3,
+            "ts": 1570104569,
+            "ts_str": "2019-10-03 12:09"
+          },
+          {
+            "user": 1,
+            "item": 1,
+            "ts": 1570111746,
+            "ts_str": "2019-10-03 14:09"
+          },
+          {
+            "user": 3,
+            "item": 1,
+            "ts": 1570122952,
+            "ts_str": "2019-10-03 17:15"
+          },
+          {
+            "user": 1,
+            "item": 3,
+            "ts": 1570186463,
+            "ts_str": "2019-10-04 10:54"
+          },
+          {
+            "user": 1,
+            "item": 2,
+            "ts": 1570186471,
+            "ts_str": "2019-10-04 10:54"
+          }
+        ],
+        "cart": [
+          {
+            "user": 3,
+            "item": 1,
+            "ts": 1570027654,
+            "ts_str": "2019-10-02 14:47"
+          },
+          {
+            "user": 1,
+            "item": 3,
+            "ts": 1570098563,
+            "ts_str": "2019-10-03 10:29"
+          },
+          {
+            "user": 2,
+            "item": 0,
+            "ts": 1570569347,
+            "ts_str": "2019-10-08 21:15"
+          },
+          {
+            "user": 3,
+            "item": 1,
+            "ts": 1570631825,
+            "ts_str": "2019-10-09 14:37"
+          },
+          {
+            "user": 3,
+            "item": 1,
+            "ts": 1571211445,
+            "ts_str": "2019-10-16 07:37"
+          },
+          {
+            "user": 1,
+            "item": 15,
+            "ts": 1571561408,
+            "ts_str": "2019-10-20 08:50"
+          },
+          {
+            "user": 4,
+            "item": 13,
+            "ts": 1571632085,
+            "ts_str": "2019-10-21 04:28"
+          },
+          {
+            "user": 2,
+            "item": 21,
+            "ts": 1571871913,
+            "ts_str": "2019-10-23 23:05"
+          }
+        ],
+        "purchase": [
+          {
+            "user": 1,
+            "item": 3,
+            "ts": 1570002101,
+            "ts_str": "2019-10-02 07:41"
+          },
+          {
+            "user": 1,
+            "item": 1,
+            "ts": 1570004396,
+            "ts_str": "2019-10-02 08:19"
+          },
+          {
+            "user": 1,
+            "item": 1,
+            "ts": 1570102124,
+            "ts_str": "2019-10-03 11:28"
+          },
+          {
+            "user": 3,
+            "item": 1,
+            "ts": 1570161437,
+            "ts_str": "2019-10-04 03:57"
+          },
+          {
+            "user": 1,
+            "item": 2,
+            "ts": 1570701957,
+            "ts_str": "2019-10-10 10:05"
+          },
+          {
+            "user": 1,
+            "item": 15,
+            "ts": 1570941885,
+            "ts_str": "2019-10-13 04:44"
+          },
+          {
+            "user": 1,
+            "item": 15,
+            "ts": 1571319013,
+            "ts_str": "2019-10-17 13:30"
+          },
+          {
+            "user": 1,
+            "item": 15,
+            "ts": 1571388832,
+            "ts_str": "2019-10-18 08:53"
+          }
+        ]
+      }
+    },
+    "sampler": {
+      "seed_user": 1,
+      "hop1_budget": 6,
+      "hop2_budget": 3,
+      "hop1": {
+        "view": [
+          1,
+          2,
+          4,
+          19
+        ],
+        "cart": [
+          1,
+          15,
+          17,
+          19
+        ],
+        "purchase": [
+          3,
+          15,
+          19
+        ]
+      },
+      "hop2_products": [
+        1,
+        2,
+        3,
+        4,
+        15,
+        17,
+        19
+      ],
+      "hop2_categories": [
+        1,
+        3,
+        4
+      ],
+      "hop2_brands": [
+        2,
+        3,
+        6,
+        9
+      ]
+    },
+    "layers": {
+      "focus_user": 1,
+      "focus_product": 15,
+      "embed_dim": 16,
+      "rank": 8,
+      "n_intents": 8,
+      "input_embedding": {
+        "user_vec": [
+          0.583,
+          0.282,
+          0.377,
+          -0.289,
+          0.124,
+          0.259,
+          -0.055,
+          -0.13,
+          -0.114,
+          0.396,
+          -0.012,
+          0.049,
+          0.665,
+          -0.075,
+          -0.255,
+          0.521
+        ],
+        "product_vec": [
+          0.226,
+          0.291,
+          -0.715,
+          0.529,
+          0.072,
+          0.141,
+          -0.177,
+          0.315,
+          0.538,
+          0.656,
+          -0.602,
+          0.687,
+          -0.106,
+          0.127,
+          -0.604,
+          0.57
+        ]
+      },
+      "behavior_aware": {
+        "relation": "product --rev_purchase--> user",
+        "w_base_norm": 3.986,
+        "behaviors": {
+          "view": {
+            "z_beta": [
+              0.54,
+              0.308,
+              0.301,
+              0.21,
+              0.559,
+              0.789,
+              0.457,
+              1.018
+            ],
+            "w_norm": 4.69
+          },
+          "cart": {
+            "z_beta": [
+              0.515,
+              0.273,
+              0.423,
+              0.329,
+              0.567,
+              0.656,
+              0.135,
+              0.545
+            ],
+            "w_norm": 4.556
+          },
+          "purchase": {
+            "z_beta": [
+              0.288,
+              0.509,
+              0.943,
+              0.331,
+              0.488,
+              0.222,
+              0.364,
+              0.134
+            ],
+            "w_norm": 4.67
+          }
+        },
+        "example_src_vec": [
+          0.226,
+          0.291,
+          -0.715,
+          0.529,
+          0.072,
+          0.141,
+          -0.177,
+          0.315,
+          0.538,
+          0.656,
+          -0.602,
+          0.687,
+          -0.106,
+          0.127,
+          -0.604,
+          0.57
+        ],
+        "example_msg_vec": [
+          -0.439,
+          0.328,
+          0.77,
+          -1.306,
+          -0.343,
+          -0.167,
+          -0.58,
+          -0.077,
+          1.845,
+          -0.314,
+          0.364,
+          -0.803,
+          -0.148,
+          -0.078,
+          0.169,
+          0.242
+        ]
+      },
+      "intent": {
+        "pre_vec": [
+          0.73,
+          0.28,
+          0.678,
+          -0.44,
+          0.337,
+          0.313,
+          -0.42,
+          -0.438,
+          1.27,
+          -0.367,
+          0.153,
+          -0.271,
+          0.533,
+          0.168,
+          1.03,
+          0.398
+        ],
+        "attn": [
+          0.125,
+          0.125,
+          0.125,
+          0.125,
+          0.125,
+          0.125,
+          0.125,
+          0.125
+        ],
+        "residual_vec": [
+          0.0,
+          -0.0,
+          0.0,
+          -0.0,
+          0.0,
+          -0.0,
+          -0.0,
+          0.0,
+          0.0,
+          -0.0,
+          0.0,
+          -0.0,
+          -0.0,
+          -0.0,
+          0.0,
+          0.0
+        ],
+        "post_vec": [
+          0.73,
+          0.28,
+          0.678,
+          -0.44,
+          0.337,
+          0.313,
+          -0.42,
+          -0.438,
+          1.27,
+          -0.367,
+          0.153,
+          -0.271,
+          0.533,
+          0.168,
+          1.03,
+          0.398
+        ]
+      },
+      "encoder_user_pre_intent": [
+        0.73,
+        0.28,
+        0.678,
+        -0.44,
+        0.337,
+        0.313,
+        -0.42,
+        -0.438,
+        1.27,
+        -0.367,
+        0.153,
+        -0.271,
+        0.533,
+        0.168,
+        1.03,
+        0.398
+      ]
+    },
+    "attention": {
+      "focus_user": 1,
+      "tau": 7.0,
+      "n_freqs": 8,
+      "edges": [
+        {
+          "behavior": "view",
+          "product": 1,
+          "delta_days": 137.05,
+          "qk": -0.011,
+          "b_rho": 0.0,
+          "time_bias": -1.347,
+          "decay": 1.88,
+          "logit": -3.238,
+          "alpha": 0.01,
+          "gate": 0.444
+        },
+        {
+          "behavior": "view",
+          "product": 1,
+          "delta_days": 137.05,
+          "qk": -0.011,
+          "b_rho": 0.0,
+          "time_bias": -1.347,
+          "decay": 1.88,
+          "logit": -3.238,
+          "alpha": 0.01,
+          "gate": 0.444
+        },
+        {
+          "behavior": "view",
+          "product": 2,
+          "delta_days": 137.02,
+          "qk": 0.026,
+          "b_rho": 0.0,
+          "time_bias": -1.347,
+          "decay": 1.88,
+          "logit": -3.201,
+          "alpha": 0.011,
+          "gate": 0.444
+        },
+        {
+          "behavior": "view",
+          "product": 3,
+          "delta_days": 136.99,
+          "qk": 0.018,
+          "b_rho": 0.0,
+          "time_bias": -1.347,
+          "decay": 1.88,
+          "logit": -3.209,
+          "alpha": 0.011,
+          "gate": 0.444
+        },
+        {
+          "behavior": "view",
+          "product": 1,
+          "delta_days": 136.91,
+          "qk": -0.011,
+          "b_rho": 0.0,
+          "time_bias": -1.347,
+          "decay": 1.88,
+          "logit": -3.238,
+          "alpha": 0.01,
+          "gate": 0.444
+        },
+        {
+          "behavior": "view",
+          "product": 3,
+          "delta_days": 136.05,
+          "qk": 0.018,
+          "b_rho": 0.0,
+          "time_bias": -1.348,
+          "decay": 1.876,
+          "logit": -3.206,
+          "alpha": 0.011,
+          "gate": 0.445
+        },
+        {
+          "behavior": "view",
+          "product": 2,
+          "delta_days": 136.05,
+          "qk": 0.026,
+          "b_rho": 0.0,
+          "time_bias": -1.348,
+          "decay": 1.876,
+          "logit": -3.198,
+          "alpha": 0.011,
+          "gate": 0.445
+        },
+        {
+          "behavior": "view",
+          "product": 2,
+          "delta_days": 135.04,
+          "qk": 0.026,
+          "b_rho": 0.0,
+          "time_bias": -1.349,
+          "decay": 1.872,
+          "logit": -3.194,
+          "alpha": 0.011,
+          "gate": 0.446
+        },
+        {
+          "behavior": "view",
+          "product": 2,
+          "delta_days": 131.11,
+          "qk": 0.026,
+          "b_rho": 0.0,
+          "time_bias": -1.353,
+          "decay": 1.854,
+          "logit": -3.181,
+          "alpha": 0.011,
+          "gate": 0.451
+        },
+        {
+          "behavior": "view",
+          "product": 15,
+          "delta_days": 130.0,
+          "qk": 0.053,
+          "b_rho": 0.0,
+          "time_bias": -1.353,
+          "decay": 1.849,
+          "logit": -3.15,
+          "alpha": 0.011,
+          "gate": 0.452
+        },
+        {
+          "behavior": "view",
+          "product": 1,
+          "delta_days": 128.06,
+          "qk": -0.011,
+          "b_rho": 0.0,
+          "time_bias": -1.355,
+          "decay": 1.84,
+          "logit": -3.206,
+          "alpha": 0.011,
+          "gate": 0.454
+        },
+        {
+          "behavior": "view",
+          "product": 3,
+          "delta_days": 127.14,
+          "qk": 0.018,
+          "b_rho": 0.0,
+          "time_bias": -1.356,
+          "decay": 1.836,
+          "logit": -3.174,
+          "alpha": 0.011,
+          "gate": 0.455
+        },
+        {
+          "behavior": "view",
+          "product": 1,
+          "delta_days": 125.23,
+          "qk": -0.011,
+          "b_rho": 0.0,
+          "time_bias": -1.357,
+          "decay": 1.827,
+          "logit": -3.195,
+          "alpha": 0.011,
+          "gate": 0.457
+        },
+        {
+          "behavior": "view",
+          "product": 1,
+          "delta_days": 125.23,
+          "qk": -0.011,
+          "b_rho": 0.0,
+          "time_bias": -1.357,
+          "decay": 1.827,
+          "logit": -3.195,
+          "alpha": 0.011,
+          "gate": 0.457
+        },
+        {
+          "behavior": "view",
+          "product": 15,
+          "delta_days": 125.1,
+          "qk": 0.053,
+          "b_rho": 0.0,
+          "time_bias": -1.357,
+          "decay": 1.827,
+          "logit": -3.131,
+          "alpha": 0.011,
+          "gate": 0.457
+        },
+        {
+          "behavior": "view",
+          "product": 15,
+          "delta_days": 124.17,
+          "qk": 0.053,
+          "b_rho": 0.0,
+          "time_bias": -1.358,
+          "decay": 1.822,
+          "logit": -3.127,
+          "alpha": 0.011,
+          "gate": 0.458
+        },
+        {
+          "behavior": "view",
+          "product": 15,
+          "delta_days": 122.99,
+          "qk": 0.053,
+          "b_rho": 0.0,
+          "time_bias": -1.359,
+          "decay": 1.817,
+          "logit": -3.122,
+          "alpha": 0.011,
+          "gate": 0.46
+        },
+        {
+          "behavior": "view",
+          "product": 1,
+          "delta_days": 122.86,
+          "qk": -0.011,
+          "b_rho": 0.0,
+          "time_bias": -1.359,
+          "decay": 1.816,
+          "logit": -3.185,
+          "alpha": 0.011,
+          "gate": 0.46
+        },
+        {
+          "behavior": "view",
+          "product": 1,
+          "delta_days": 120.22,
+          "qk": -0.011,
+          "b_rho": 0.0,
+          "time_bias": -1.36,
+          "decay": 1.803,
+          "logit": -3.174,
+          "alpha": 0.011,
+          "gate": 0.463
+        },
+        {
+          "behavior": "view",
+          "product": 1,
+          "delta_days": 120.21,
+          "qk": -0.011,
+          "b_rho": 0.0,
+          "time_bias": -1.36,
+          "decay": 1.803,
+          "logit": -3.174,
+          "alpha": 0.011,
+          "gate": 0.463
+        },
+        {
+          "behavior": "view",
+          "product": 15,
+          "delta_days": 119.28,
+          "qk": 0.053,
+          "b_rho": 0.0,
+          "time_bias": -1.361,
+          "decay": 1.799,
+          "logit": -3.106,
+          "alpha": 0.012,
+          "gate": 0.464
+        },
+        {
+          "behavior": "view",
+          "product": 15,
+          "delta_days": 119.08,
+          "qk": 0.053,
+          "b_rho": 0.0,
+          "time_bias": -1.361,
+          "decay": 1.798,
+          "logit": -3.106,
+          "alpha": 0.012,
+          "gate": 0.464
+        },
+        {
+          "behavior": "view",
+          "product": 1,
+          "delta_days": 117.08,
+          "qk": -0.011,
+          "b_rho": 0.0,
+          "time_bias": -1.362,
+          "decay": 1.788,
+          "logit": -3.16,
+          "alpha": 0.011,
+          "gate": 0.466
+        },
+        {
+          "behavior": "view",
+          "product": 1,
+          "delta_days": 116.16,
+          "qk": -0.011,
+          "b_rho": 0.0,
+          "time_bias": -1.362,
+          "decay": 1.783,
+          "logit": -3.156,
+          "alpha": 0.011,
+          "gate": 0.467
+        },
+        {
+          "behavior": "view",
+          "product": 15,
+          "delta_days": 114.19,
+          "qk": 0.053,
+          "b_rho": 0.0,
+          "time_bias": -1.362,
+          "decay": 1.773,
+          "logit": -3.083,
+          "alpha": 0.012,
+          "gate": 0.469
+        },
+        {
+          "behavior": "view",
+          "product": 15,
+          "delta_days": 109.24,
+          "qk": 0.053,
+          "b_rho": 0.0,
+          "time_bias": -1.363,
+          "decay": 1.747,
+          "logit": -3.058,
+          "alpha": 0.012,
+          "gate": 0.475
+        },
+        {
+          "behavior": "view",
+          "product": 3,
+          "delta_days": 109.12,
+          "qk": 0.018,
+          "b_rho": 0.0,
+          "time_bias": -1.363,
+          "decay": 1.746,
+          "logit": -3.092,
+          "alpha": 0.012,
+          "gate": 0.475
+        },
+        {
+          "behavior": "view",
+          "product": 3,
+          "delta_days": 109.12,
+          "qk": 0.018,
+          "b_rho": 0.0,
+          "time_bias": -1.363,
+          "decay": 1.746,
+          "logit": -3.092,
+          "alpha": 0.012,
+          "gate": 0.475
+        },
+        {
+          "behavior": "view",
+          "product": 15,
+          "delta_days": 105.23,
+          "qk": 0.053,
+          "b_rho": 0.0,
+          "time_bias": -1.363,
+          "decay": 1.725,
+          "logit": -3.036,
+          "alpha": 0.013,
+          "gate": 0.479
+        },
+        {
+          "behavior": "view",
+          "product": 3,
+          "delta_days": 105.2,
+          "qk": 0.018,
+          "b_rho": 0.0,
+          "time_bias": -1.363,
+          "decay": 1.725,
+          "logit": -3.07,
+          "alpha": 0.012,
+          "gate": 0.479
+        },
+        {
+          "behavior": "view",
+          "product": 19,
+          "delta_days": 104.22,
+          "qk": 0.04,
+          "b_rho": 0.0,
+          "time_bias": -1.363,
+          "decay": 1.72,
+          "logit": -3.042,
+          "alpha": 0.012,
+          "gate": 0.48
+        },
+        {
+          "behavior": "view",
+          "product": 2,
+          "delta_days": 104.17,
+          "qk": 0.026,
+          "b_rho": 0.0,
+          "time_bias": -1.363,
+          "decay": 1.719,
+          "logit": -3.056,
+          "alpha": 0.012,
+          "gate": 0.48
+        },
+        {
+          "behavior": "view",
+          "product": 19,
+          "delta_days": 103.15,
+          "qk": 0.04,
+          "b_rho": 0.0,
+          "time_bias": -1.363,
+          "decay": 1.714,
+          "logit": -3.036,
+          "alpha": 0.013,
+          "gate": 0.482
+        },
+        {
+          "behavior": "view",
+          "product": 19,
+          "delta_days": 98.2,
+          "qk": 0.04,
+          "b_rho": 0.0,
+          "time_bias": -1.36,
+          "decay": 1.685,
+          "logit": -3.005,
+          "alpha": 0.013,
+          "gate": 0.487
+        },
+        {
+          "behavior": "view",
+          "product": 1,
+          "delta_days": 98.15,
+          "qk": -0.011,
+          "b_rho": 0.0,
+          "time_bias": -1.36,
+          "decay": 1.685,
+          "logit": -3.056,
+          "alpha": 0.012,
+          "gate": 0.487
+        },
+        {
+          "behavior": "view",
+          "product": 18,
+          "delta_days": 97.2,
+          "qk": -0.072,
+          "b_rho": 0.0,
+          "time_bias": -1.36,
+          "decay": 1.679,
+          "logit": -3.111,
+          "alpha": 0.012,
+          "gate": 0.488
+        },
+        {
+          "behavior": "view",
+          "product": 1,
+          "delta_days": 96.11,
+          "qk": -0.011,
+          "b_rho": 0.0,
+          "time_bias": -1.359,
+          "decay": 1.672,
+          "logit": -3.042,
+          "alpha": 0.012,
+          "gate": 0.489
+        },
+        {
+          "behavior": "view",
+          "product": 19,
+          "delta_days": 89.08,
+          "qk": 0.04,
+          "b_rho": 0.0,
+          "time_bias": -1.352,
+          "decay": 1.629,
+          "logit": -2.94,
+          "alpha": 0.014,
+          "gate": 0.496
+        },
+        {
+          "behavior": "view",
+          "product": 15,
+          "delta_days": 88.26,
+          "qk": 0.053,
+          "b_rho": 0.0,
+          "time_bias": -1.351,
+          "decay": 1.623,
+          "logit": -2.921,
+          "alpha": 0.014,
+          "gate": 0.497
+        },
+        {
+          "behavior": "view",
+          "product": 1,
+          "delta_days": 88.08,
+          "qk": -0.011,
+          "b_rho": 0.0,
+          "time_bias": -1.35,
+          "decay": 1.622,
+          "logit": -2.983,
+          "alpha": 0.013,
+          "gate": 0.497
+        },
+        {
+          "behavior": "view",
+          "product": 18,
+          "delta_days": 87.14,
+          "qk": -0.072,
+          "b_rho": 0.0,
+          "time_bias": -1.349,
+          "decay": 1.616,
+          "logit": -3.037,
+          "alpha": 0.012,
+          "gate": 0.498
+        },
+        {
+          "behavior": "view",
+          "product": 17,
+          "delta_days": 83.28,
+          "qk": -0.084,
+          "b_rho": 0.0,
+          "time_bias": -1.343,
+          "decay": 1.59,
+          "logit": -3.016,
+          "alpha": 0.013,
+          "gate": 0.502
+        },
+        {
+          "behavior": "view",
+          "product": 18,
+          "delta_days": 82.07,
+          "qk": -0.072,
+          "b_rho": 0.0,
+          "time_bias": -1.34,
+          "decay": 1.581,
+          "logit": -2.994,
+          "alpha": 0.013,
+          "gate": 0.503
+        },
+        {
+          "behavior": "view",
+          "product": 16,
+          "delta_days": 81.0,
+          "qk": 0.048,
+          "b_rho": 0.0,
+          "time_bias": -1.338,
+          "decay": 1.574,
+          "logit": -2.864,
+          "alpha": 0.015,
+          "gate": 0.504
+        },
+        {
+          "behavior": "view",
+          "product": 18,
+          "delta_days": 75.15,
+          "qk": -0.072,
+          "b_rho": 0.0,
+          "time_bias": -1.323,
+          "decay": 1.531,
+          "logit": -2.927,
+          "alpha": 0.014,
+          "gate": 0.509
+        },
+        {
+          "behavior": "view",
+          "product": 15,
+          "delta_days": 74.07,
+          "qk": 0.053,
+          "b_rho": 0.0,
+          "time_bias": -1.32,
+          "decay": 1.523,
+          "logit": -2.79,
+          "alpha": 0.016,
+          "gate": 0.509
+        },
+        {
+          "behavior": "view",
+          "product": 18,
+          "delta_days": 73.21,
+          "qk": -0.072,
+          "b_rho": 0.0,
+          "time_bias": -1.318,
+          "decay": 1.516,
+          "logit": -2.906,
+          "alpha": 0.014,
+          "gate": 0.51
+        },
+        {
+          "behavior": "view",
+          "product": 19,
+          "delta_days": 73.13,
+          "qk": 0.04,
+          "b_rho": 0.0,
+          "time_bias": -1.317,
+          "decay": 1.516,
+          "logit": -2.793,
+          "alpha": 0.016,
+          "gate": 0.51
+        },
+        {
+          "behavior": "view",
+          "product": 18,
+          "delta_days": 73.12,
+          "qk": -0.072,
+          "b_rho": 0.0,
+          "time_bias": -1.317,
+          "decay": 1.516,
+          "logit": -2.905,
+          "alpha": 0.014,
+          "gate": 0.51
+        },
+        {
+          "behavior": "view",
+          "product": 19,
+          "delta_days": 69.11,
+          "qk": 0.04,
+          "b_rho": 0.0,
+          "time_bias": -1.303,
+          "decay": 1.484,
+          "logit": -2.747,
+          "alpha": 0.017,
+          "gate": 0.513
+        },
+        {
+          "behavior": "view",
+          "product": 18,
+          "delta_days": 68.22,
+          "qk": -0.072,
+          "b_rho": 0.0,
+          "time_bias": -1.3,
+          "decay": 1.476,
+          "logit": -2.848,
+          "alpha": 0.015,
+          "gate": 0.514
+        },
+        {
+          "behavior": "view",
+          "product": 19,
+          "delta_days": 66.3,
+          "qk": 0.04,
+          "b_rho": 0.0,
+          "time_bias": -1.292,
+          "decay": 1.46,
+          "logit": -2.712,
+          "alpha": 0.017,
+          "gate": 0.515
+        },
+        {
+          "behavior": "view",
+          "product": 19,
+          "delta_days": 63.09,
+          "qk": 0.04,
+          "b_rho": 0.0,
+          "time_bias": -1.277,
+          "decay": 1.432,
+          "logit": -2.669,
+          "alpha": 0.018,
+          "gate": 0.517
+        },
+        {
+          "behavior": "view",
+          "product": 15,
+          "delta_days": 62.16,
+          "qk": 0.053,
+          "b_rho": 0.0,
+          "time_bias": -1.272,
+          "decay": 1.424,
+          "logit": -2.644,
+          "alpha": 0.019,
+          "gate": 0.517
+        },
+        {
+          "behavior": "view",
+          "product": 19,
+          "delta_days": 61.08,
+          "qk": 0.04,
+          "b_rho": 0.0,
+          "time_bias": -1.266,
+          "decay": 1.414,
+          "logit": -2.64,
+          "alpha": 0.019,
+          "gate": 0.518
+        },
+        {
+          "behavior": "view",
+          "product": 12,
+          "delta_days": 60.13,
+          "qk": 0.1,
+          "b_rho": 0.0,
+          "time_bias": -1.261,
+          "decay": 1.406,
+          "logit": -2.566,
+          "alpha": 0.02,
+          "gate": 0.518
+        },
+        {
+          "behavior": "view",
+          "product": 3,
+          "delta_days": 56.72,
+          "qk": 0.018,
+          "b_rho": 0.0,
+          "time_bias": -1.24,
+          "decay": 1.373,
+          "logit": -2.596,
+          "alpha": 0.019,
+          "gate": 0.519
+        },
+        {
+          "behavior": "view",
+          "product": 15,
+          "delta_days": 54.02,
+          "qk": 0.053,
+          "b_rho": 0.0,
+          "time_bias": -1.222,
+          "decay": 1.346,
+          "logit": -2.515,
+          "alpha": 0.021,
+          "gate": 0.52
+        },
+        {
+          "behavior": "view",
+          "product": 4,
+          "delta_days": 52.08,
+          "qk": -0.07,
+          "b_rho": 0.0,
+          "time_bias": -1.207,
+          "decay": 1.326,
+          "logit": -2.603,
+          "alpha": 0.019,
+          "gate": 0.52
+        },
+        {
+          "behavior": "view",
+          "product": 16,
+          "delta_days": 45.14,
+          "qk": 0.048,
+          "b_rho": 0.0,
+          "time_bias": -1.142,
+          "decay": 1.249,
+          "logit": -2.343,
+          "alpha": 0.025,
+          "gate": 0.52
+        },
+        {
+          "behavior": "view",
+          "product": 16,
+          "delta_days": 45.01,
+          "qk": 0.048,
+          "b_rho": 0.0,
+          "time_bias": -1.141,
+          "decay": 1.247,
+          "logit": -2.34,
+          "alpha": 0.025,
+          "gate": 0.52
+        },
+        {
+          "behavior": "view",
+          "product": 18,
+          "delta_days": 45.01,
+          "qk": -0.072,
+          "b_rho": 0.0,
+          "time_bias": -1.141,
+          "decay": 1.247,
+          "logit": -2.46,
+          "alpha": 0.022,
+          "gate": 0.52
+        },
+        {
+          "behavior": "view",
+          "product": 1,
+          "delta_days": 44.15,
+          "qk": -0.011,
+          "b_rho": 0.0,
+          "time_bias": -1.132,
+          "decay": 1.237,
+          "logit": -2.379,
+          "alpha": 0.024,
+          "gate": 0.52
+        },
+        {
+          "behavior": "view",
+          "product": 16,
+          "delta_days": 42.17,
+          "qk": 0.048,
+          "b_rho": 0.0,
+          "time_bias": -1.108,
+          "decay": 1.212,
+          "logit": -2.272,
+          "alpha": 0.027,
+          "gate": 0.519
+        },
+        {
+          "behavior": "view",
+          "product": 17,
+          "delta_days": 40.16,
+          "qk": -0.084,
+          "b_rho": 0.0,
+          "time_bias": -1.083,
+          "decay": 1.186,
+          "logit": -2.353,
+          "alpha": 0.025,
+          "gate": 0.517
+        },
+        {
+          "behavior": "view",
+          "product": 18,
+          "delta_days": 39.24,
+          "qk": -0.072,
+          "b_rho": 0.0,
+          "time_bias": -1.07,
+          "decay": 1.174,
+          "logit": -2.316,
+          "alpha": 0.026,
+          "gate": 0.517
+        },
+        {
+          "behavior": "view",
+          "product": 16,
+          "delta_days": 39.1,
+          "qk": 0.048,
+          "b_rho": 0.0,
+          "time_bias": -1.068,
+          "decay": 1.172,
+          "logit": -2.192,
+          "alpha": 0.029,
+          "gate": 0.517
+        },
+        {
+          "behavior": "view",
+          "product": 18,
+          "delta_days": 39.1,
+          "qk": -0.072,
+          "b_rho": 0.0,
+          "time_bias": -1.068,
+          "decay": 1.172,
+          "logit": -2.312,
+          "alpha": 0.026,
+          "gate": 0.517
+        },
+        {
+          "behavior": "cart",
+          "product": 3,
+          "delta_days": 137.06,
+          "qk": 0.018,
+          "b_rho": 0.0,
+          "time_bias": -1.347,
+          "decay": 2.195,
+          "logit": -3.524,
+          "alpha": 0.047,
+          "gate": 0.019
+        },
+        {
+          "behavior": "cart",
+          "product": 15,
+          "delta_days": 120.13,
+          "qk": 0.053,
+          "b_rho": 0.0,
+          "time_bias": -1.36,
+          "decay": 2.104,
+          "logit": -3.412,
+          "alpha": 0.052,
+          "gate": 0.023
+        },
+        {
+          "behavior": "cart",
+          "product": 15,
+          "delta_days": 98.1,
+          "qk": 0.053,
+          "b_rho": 0.0,
+          "time_bias": -1.36,
+          "decay": 1.966,
+          "logit": -3.274,
+          "alpha": 0.06,
+          "gate": 0.03
+        },
+        {
+          "behavior": "cart",
+          "product": 4,
+          "delta_days": 83.88,
+          "qk": -0.07,
+          "b_rho": 0.0,
+          "time_bias": -1.344,
+          "decay": 1.861,
+          "logit": -3.274,
+          "alpha": 0.06,
+          "gate": 0.038
+        },
+        {
+          "behavior": "cart",
+          "product": 15,
+          "delta_days": 83.11,
+          "qk": 0.053,
+          "b_rho": 0.0,
+          "time_bias": -1.342,
+          "decay": 1.854,
+          "logit": -3.144,
+          "alpha": 0.068,
+          "gate": 0.038
+        },
+        {
+          "behavior": "cart",
+          "product": 19,
+          "delta_days": 73.15,
+          "qk": 0.04,
+          "b_rho": 0.0,
+          "time_bias": -1.317,
+          "decay": 1.769,
+          "logit": -3.046,
+          "alpha": 0.075,
+          "gate": 0.047
+        },
+        {
+          "behavior": "cart",
+          "product": 3,
+          "delta_days": 67.96,
+          "qk": 0.018,
+          "b_rho": 0.0,
+          "time_bias": -1.299,
+          "decay": 1.721,
+          "logit": -3.002,
+          "alpha": 0.079,
+          "gate": 0.052
+        },
+        {
+          "behavior": "cart",
+          "product": 15,
+          "delta_days": 64.08,
+          "qk": 0.053,
+          "b_rho": 0.0,
+          "time_bias": -1.282,
+          "decay": 1.682,
+          "logit": -2.911,
+          "alpha": 0.086,
+          "gate": 0.057
+        },
+        {
+          "behavior": "cart",
+          "product": 18,
+          "delta_days": 51.97,
+          "qk": -0.072,
+          "b_rho": 0.0,
+          "time_bias": -1.206,
+          "decay": 1.547,
+          "logit": -2.825,
+          "alpha": 0.094,
+          "gate": 0.079
+        },
+        {
+          "behavior": "cart",
+          "product": 1,
+          "delta_days": 44.15,
+          "qk": -0.011,
+          "b_rho": 0.0,
+          "time_bias": -1.132,
+          "decay": 1.443,
+          "logit": -2.586,
+          "alpha": 0.119,
+          "gate": 0.102
+        },
+        {
+          "behavior": "cart",
+          "product": 17,
+          "delta_days": 42.17,
+          "qk": -0.084,
+          "b_rho": 0.0,
+          "time_bias": -1.108,
+          "decay": 1.415,
+          "logit": -2.607,
+          "alpha": 0.117,
+          "gate": 0.109
+        },
+        {
+          "behavior": "cart",
+          "product": 5,
+          "delta_days": 38.22,
+          "qk": 0.007,
+          "b_rho": 0.0,
+          "time_bias": -1.056,
+          "decay": 1.354,
+          "logit": -2.402,
+          "alpha": 0.143,
+          "gate": 0.126
+        },
+        {
+          "behavior": "purchase",
+          "product": 3,
+          "delta_days": 138.18,
+          "qk": 0.018,
+          "b_rho": -0.0,
+          "time_bias": -1.346,
+          "decay": 2.167,
+          "logit": -3.495,
+          "alpha": 0.026,
+          "gate": 0.684
+        },
+        {
+          "behavior": "purchase",
+          "product": 1,
+          "delta_days": 138.15,
+          "qk": -0.011,
+          "b_rho": -0.0,
+          "time_bias": -1.346,
+          "decay": 2.167,
+          "logit": -3.524,
+          "alpha": 0.025,
+          "gate": 0.684
+        },
+        {
+          "behavior": "purchase",
+          "product": 1,
+          "delta_days": 137.02,
+          "qk": -0.011,
+          "b_rho": -0.0,
+          "time_bias": -1.347,
+          "decay": 2.162,
+          "logit": -3.519,
+          "alpha": 0.025,
+          "gate": 0.685
+        },
+        {
+          "behavior": "purchase",
+          "product": 2,
+          "delta_days": 130.08,
+          "qk": 0.026,
+          "b_rho": -0.0,
+          "time_bias": -1.353,
+          "decay": 2.126,
+          "logit": -3.454,
+          "alpha": 0.027,
+          "gate": 0.693
+        },
+        {
+          "behavior": "purchase",
+          "product": 15,
+          "delta_days": 127.3,
+          "qk": 0.053,
+          "b_rho": -0.0,
+          "time_bias": -1.356,
+          "decay": 2.112,
+          "logit": -3.415,
+          "alpha": 0.028,
+          "gate": 0.696
+        },
+        {
+          "behavior": "purchase",
+          "product": 15,
+          "delta_days": 122.94,
+          "qk": 0.053,
+          "b_rho": -0.0,
+          "time_bias": -1.359,
+          "decay": 2.088,
+          "logit": -3.394,
+          "alpha": 0.029,
+          "gate": 0.701
+        },
+        {
+          "behavior": "purchase",
+          "product": 15,
+          "delta_days": 122.13,
+          "qk": 0.053,
+          "b_rho": -0.0,
+          "time_bias": -1.359,
+          "decay": 2.084,
+          "logit": -3.39,
+          "alpha": 0.029,
+          "gate": 0.702
+        },
+        {
+          "behavior": "purchase",
+          "product": 15,
+          "delta_days": 116.06,
+          "qk": 0.053,
+          "b_rho": -0.0,
+          "time_bias": -1.362,
+          "decay": 2.049,
+          "logit": -3.359,
+          "alpha": 0.03,
+          "gate": 0.709
+        },
+        {
+          "behavior": "purchase",
+          "product": 1,
+          "delta_days": 115.05,
+          "qk": -0.011,
+          "b_rho": -0.0,
+          "time_bias": -1.362,
+          "decay": 2.043,
+          "logit": -3.416,
+          "alpha": 0.028,
+          "gate": 0.71
+        },
+        {
+          "behavior": "purchase",
+          "product": 3,
+          "delta_days": 113.17,
+          "qk": 0.018,
+          "b_rho": -0.0,
+          "time_bias": -1.363,
+          "decay": 2.032,
+          "logit": -3.377,
+          "alpha": 0.029,
+          "gate": 0.712
+        },
+        {
+          "behavior": "purchase",
+          "product": 3,
+          "delta_days": 109.12,
+          "qk": 0.018,
+          "b_rho": -0.0,
+          "time_bias": -1.363,
+          "decay": 2.008,
+          "logit": -3.353,
+          "alpha": 0.03,
+          "gate": 0.716
+        },
+        {
+          "behavior": "purchase",
+          "product": 3,
+          "delta_days": 105.23,
+          "qk": 0.018,
+          "b_rho": -0.0,
+          "time_bias": -1.363,
+          "decay": 1.983,
+          "logit": -3.329,
+          "alpha": 0.031,
+          "gate": 0.72
+        },
+        {
+          "behavior": "purchase",
+          "product": 2,
+          "delta_days": 104.04,
+          "qk": 0.026,
+          "b_rho": -0.0,
+          "time_bias": -1.363,
+          "decay": 1.976,
+          "logit": -3.312,
+          "alpha": 0.031,
+          "gate": 0.721
+        },
+        {
+          "behavior": "purchase",
+          "product": 19,
+          "delta_days": 103.15,
+          "qk": 0.04,
+          "b_rho": -0.0,
+          "time_bias": -1.363,
+          "decay": 1.97,
+          "logit": -3.292,
+          "alpha": 0.032,
+          "gate": 0.722
+        },
+        {
+          "behavior": "purchase",
+          "product": 1,
+          "delta_days": 98.15,
+          "qk": -0.011,
+          "b_rho": -0.0,
+          "time_bias": -1.36,
+          "decay": 1.937,
+          "logit": -3.308,
+          "alpha": 0.031,
+          "gate": 0.727
+        },
+        {
+          "behavior": "purchase",
+          "product": 15,
+          "delta_days": 96.12,
+          "qk": 0.053,
+          "b_rho": -0.0,
+          "time_bias": -1.359,
+          "decay": 1.923,
+          "logit": -3.229,
+          "alpha": 0.034,
+          "gate": 0.729
+        },
+        {
+          "behavior": "purchase",
+          "product": 15,
+          "delta_days": 95.19,
+          "qk": 0.053,
+          "b_rho": -0.0,
+          "time_bias": -1.358,
+          "decay": 1.916,
+          "logit": -3.222,
+          "alpha": 0.034,
+          "gate": 0.73
+        },
+        {
+          "behavior": "purchase",
+          "product": 19,
+          "delta_days": 92.27,
+          "qk": 0.04,
+          "b_rho": -0.0,
+          "time_bias": -1.356,
+          "decay": 1.896,
+          "logit": -3.211,
+          "alpha": 0.035,
+          "gate": 0.733
+        },
+        {
+          "behavior": "purchase",
+          "product": 4,
+          "delta_days": 75.27,
+          "qk": -0.07,
+          "b_rho": -0.0,
+          "time_bias": -1.324,
+          "decay": 1.761,
+          "logit": -3.155,
+          "alpha": 0.037,
+          "gate": 0.749
+        },
+        {
+          "behavior": "purchase",
+          "product": 15,
+          "delta_days": 69.04,
+          "qk": 0.053,
+          "b_rho": -0.0,
+          "time_bias": -1.303,
+          "decay": 1.705,
+          "logit": -2.955,
+          "alpha": 0.045,
+          "gate": 0.754
+        },
+        {
+          "behavior": "purchase",
+          "product": 18,
+          "delta_days": 67.22,
+          "qk": -0.072,
+          "b_rho": -0.0,
+          "time_bias": -1.296,
+          "decay": 1.688,
+          "logit": -3.056,
+          "alpha": 0.04,
+          "gate": 0.755
+        },
+        {
+          "behavior": "purchase",
+          "product": 19,
+          "delta_days": 63.09,
+          "qk": 0.04,
+          "b_rho": -0.0,
+          "time_bias": -1.277,
+          "decay": 1.647,
+          "logit": -2.883,
+          "alpha": 0.048,
+          "gate": 0.758
+        },
+        {
+          "behavior": "purchase",
+          "product": 12,
+          "delta_days": 62.05,
+          "qk": 0.1,
+          "b_rho": -0.0,
+          "time_bias": -1.272,
+          "decay": 1.636,
+          "logit": -2.808,
+          "alpha": 0.052,
+          "gate": 0.758
+        },
+        {
+          "behavior": "purchase",
+          "product": 19,
+          "delta_days": 60.11,
+          "qk": 0.04,
+          "b_rho": -0.0,
+          "time_bias": -1.261,
+          "decay": 1.616,
+          "logit": -2.836,
+          "alpha": 0.05,
+          "gate": 0.76
+        },
+        {
+          "behavior": "purchase",
+          "product": 4,
+          "delta_days": 55.22,
+          "qk": -0.07,
+          "b_rho": -0.0,
+          "time_bias": -1.23,
+          "decay": 1.562,
+          "logit": -2.862,
+          "alpha": 0.049,
+          "gate": 0.762
+        },
+        {
+          "behavior": "purchase",
+          "product": 17,
+          "delta_days": 42.17,
+          "qk": -0.084,
+          "b_rho": -0.0,
+          "time_bias": -1.108,
+          "decay": 1.393,
+          "logit": -2.586,
+          "alpha": 0.065,
+          "gate": 0.766
+        },
+        {
+          "behavior": "purchase",
+          "product": 16,
+          "delta_days": 40.04,
+          "qk": 0.048,
+          "b_rho": -0.0,
+          "time_bias": -1.081,
+          "decay": 1.362,
+          "logit": -2.395,
+          "alpha": 0.078,
+          "gate": 0.765
+        }
+      ],
+      "fourier_omega": [
+        0.897,
+        0.483,
+        0.5,
+        0.415,
+        0.812,
+        0.762,
+        0.32,
+        0.342
+      ],
+      "lambda_per_behavior": {
+        "view": 0.622,
+        "cart": 0.726,
+        "purchase": 0.715
+      },
+      "behavior_bucket_weights": {
+        "view": 0.175,
+        "cart": 0.342,
+        "purchase": 0.32,
+        "struct": 0.163
+      }
+    },
+    "loss_weights": {
+      "bpr_task_weights": {
+        "view": 0.59,
+        "cart": 1.0,
+        "purchase": 1.0
+      },
+      "lambda_cl": 0.15,
+      "lambda_conv": 0.1,
+      "lambda_mono": 0.05
+    },
+    "curve": [
+      {
+        "iter": 0,
+        "total": 3.1655242443084717,
+        "bpr": 1.7865779399871826,
+        "cl": 9.128128051757812,
+        "conv": 0.01312444731593132,
+        "mono": 0.0
+      },
+      {
+        "iter": 20,
+        "total": 0.17971253395080566,
+        "bpr": 0.08212821185588837,
+        "cl": 0.5699549317359924,
+        "conv": 0.04274148866534233,
+        "mono": 1.6496398984600091e-06
+      },
+      {
+        "iter": 40,
+        "total": 0.09525539726018906,
+        "bpr": 0.031178666278719902,
+        "cl": 0.3751281797885895,
+        "conv": 0.0,
+        "mono": 7.320621807593852e-05
+      },
+      {
+        "iter": 60,
+        "total": 0.0619640052318573,
+        "bpr": 0.029497258365154266,
+        "cl": 0.16400673985481262,
+        "conv": 0.0,
+        "mono": 0.0
+      },
+      {
+        "iter": 80,
+        "total": 0.039576806128025055,
+        "bpr": 0.01847565360367298,
+        "cl": 0.08696644008159637,
+        "conv": 0.0,
+        "mono": 0.0
+      },
+      {
+        "iter": 100,
+        "total": 0.040517307817935944,
+        "bpr": 0.007774392608553171,
+        "cl": 0.1639348715543747,
+        "conv": 0.0,
+        "mono": 0.0
+      },
+      {
+        "iter": 120,
+        "total": 0.03191488981246948,
+        "bpr": 0.004269757773727179,
+        "cl": 0.1295088231563568,
+        "conv": 0.0,
+        "mono": 0.0
+      },
+      {
+        "iter": 140,
+        "total": 0.03920663893222809,
+        "bpr": 0.0021572120022028685,
+        "cl": 0.15352119505405426,
+        "conv": 0.05772505700588226,
+        "mono": 0.0
+      },
+      {
+        "iter": 160,
+        "total": 0.05061287805438042,
+        "bpr": 0.02739330381155014,
+        "cl": 0.09914641082286835,
+        "conv": 0.0,
+        "mono": 0.00013249389303382486
+      },
+      {
+        "iter": 180,
+        "total": 0.03578980639576912,
+        "bpr": 0.003692386671900749,
+        "cl": 0.15721069276332855,
+        "conv": 0.0,
+        "mono": 0.0
+      },
+      {
+        "iter": 200,
+        "total": 0.06416493654251099,
+        "bpr": 0.00500075938180089,
+        "cl": 0.3380284905433655,
+        "conv": 0.0,
+        "mono": 0.0
+      },
+      {
+        "iter": 220,
+        "total": 0.031897179782390594,
+        "bpr": 0.01065678708255291,
+        "cl": 0.08475001156330109,
+        "conv": 0.0,
+        "mono": 0.0
+      },
+      {
+        "iter": 240,
+        "total": 0.02580477111041546,
+        "bpr": 0.004773033782839775,
+        "cl": 0.08260118216276169,
+        "conv": 0.0,
+        "mono": 0.0
+      },
+      {
+        "iter": 260,
+        "total": 0.019774140790104866,
+        "bpr": 0.001017464674077928,
+        "cl": 0.06783020496368408,
+        "conv": 0.0,
+        "mono": 0.0
+      },
+      {
+        "iter": 280,
+        "total": 0.01762731932103634,
+        "bpr": 0.0003586095408536494,
+        "cl": 0.05894102901220322,
+        "conv": 0.0,
+        "mono": 0.0
+      },
+      {
+        "iter": 300,
+        "total": 0.055469658225774765,
+        "bpr": 0.006597714498639107,
+        "cl": 0.046718038618564606,
+        "conv": 0.335843026638031,
+        "mono": 0.0
+      },
+      {
+        "iter": 320,
+        "total": 0.06778353452682495,
+        "bpr": 0.015306295827031136,
+        "cl": 0.2946516275405884,
+        "conv": 0.0,
+        "mono": 0.0
+      },
+      {
+        "iter": 340,
+        "total": 0.03037903644144535,
+        "bpr": 0.009627909399569035,
+        "cl": 0.08267287164926529,
+        "conv": 0.0,
+        "mono": 0.0
+      },
+      {
+        "iter": 360,
+        "total": 0.05261712521314621,
+        "bpr": 0.00420864624902606,
+        "cl": 0.2671283185482025,
+        "conv": 0.0,
+        "mono": 0.0
+      },
+      {
+        "iter": 380,
+        "total": 0.11504759639501572,
+        "bpr": 0.0838223546743393,
+        "cl": 0.15138325095176697,
+        "conv": 0.0,
+        "mono": 0.0
+      },
+      {
+        "iter": 400,
+        "total": 0.038165923207998276,
+        "bpr": 0.003833906725049019,
+        "cl": 0.17081612348556519,
+        "conv": 0.0,
+        "mono": 0.0
+      },
+      {
+        "iter": 420,
+        "total": 0.06553342938423157,
+        "bpr": 0.017687983810901642,
+        "cl": 0.259341835975647,
+        "conv": 0.0,
+        "mono": 0.0
+      },
+      {
+        "iter": 440,
+        "total": 0.05246097594499588,
+        "bpr": 0.010722079314291477,
+        "cl": 0.16584277153015137,
+        "conv": 0.0744108334183693,
+        "mono": 0.0
+      },
+      {
+        "iter": 460,
+        "total": 0.07239322364330292,
+        "bpr": 0.009935714304447174,
+        "cl": 0.34857046604156494,
+        "conv": 0.0012788514140993357,
+        "mono": 0.0
+      },
+      {
+        "iter": 480,
+        "total": 0.061532631516456604,
+        "bpr": 0.008588378317654133,
+        "cl": 0.2837783098220825,
+        "conv": 0.001066390541382134,
+        "mono": 0.0
+      },
+      {
+        "iter": 500,
+        "total": 0.034995123744010925,
+        "bpr": 0.004141731187701225,
+        "cl": 0.13619229197502136,
+        "conv": 0.0,
+        "mono": 0.0
+      },
+      {
+        "iter": 520,
+        "total": 0.06165340170264244,
+        "bpr": 0.019245008006691933,
+        "cl": 0.17503774166107178,
+        "conv": 0.057171888649463654,
+        "mono": 0.0
+      },
+      {
+        "iter": 540,
+        "total": 0.025952894240617752,
+        "bpr": 0.00133347453083843,
+        "cl": 0.09485575556755066,
+        "conv": 0.0,
+        "mono": 0.0
+      },
+      {
+        "iter": 560,
+        "total": 0.028152279555797577,
+        "bpr": 0.0033626998774707317,
+        "cl": 0.0966295674443245,
+        "conv": 0.0,
+        "mono": 0.0
+      },
+      {
+        "iter": 580,
+        "total": 0.026580769568681717,
+        "bpr": 0.000969855987932533,
+        "cl": 0.10220422595739365,
+        "conv": 0.0,
+        "mono": 0.0
+      },
+      {
+        "iter": 600,
+        "total": 0.04154747724533081,
+        "bpr": 0.009497555904090405,
+        "cl": 0.1447075605392456,
+        "conv": 0.0,
+        "mono": 0.0
+      },
+      {
+        "iter": 620,
+        "total": 0.023797323927283287,
+        "bpr": 0.0015801230911165476,
+        "cl": 0.07187607139348984,
+        "conv": 0.010954032652080059,
+        "mono": 0.0
+      },
+      {
+        "iter": 640,
+        "total": 0.04481533169746399,
+        "bpr": 0.02426867187023163,
+        "cl": 0.06843846291303635,
+        "conv": 0.0,
+        "mono": 0.0
+      },
+      {
+        "iter": 660,
+        "total": 0.031320057809352875,
+        "bpr": 0.0030411137267947197,
+        "cl": 0.12048402428627014,
+        "conv": 0.0,
+        "mono": 0.0
+      },
+      {
+        "iter": 680,
+        "total": 0.015082361176609993,
+        "bpr": 0.00016800018784124404,
+        "cl": 0.0320892408490181,
+        "conv": 0.0,
+        "mono": 0.0
+      },
+      {
+        "iter": 699,
+        "total": 0.017626244574785233,
+        "bpr": 0.000858528190292418,
+        "cl": 0.04559753090143204,
+        "conv": 0.0,
+        "mono": 0.0
+      }
+    ],
+    "user_history": {
+      "1": [
+        {
+          "item": 3,
+          "behavior": "purchase",
+          "ts": 1570002101,
+          "ts_str": "2019-10-02 07:41"
+        },
+        {
+          "item": 1,
+          "behavior": "purchase",
+          "ts": 1570004396,
+          "ts_str": "2019-10-02 08:19"
+        },
+        {
+          "item": 3,
+          "behavior": "cart",
+          "ts": 1570098563,
+          "ts_str": "2019-10-03 10:29"
+        },
+        {
+          "item": 1,
+          "behavior": "view",
+          "ts": 1570099483,
+          "ts_str": "2019-10-03 10:44"
+        },
+        {
+          "item": 1,
+          "behavior": "view",
+          "ts": 1570099749,
+          "ts_str": "2019-10-03 10:49"
+        },
+        {
+          "item": 1,
+          "behavior": "purchase",
+          "ts": 1570102124,
+          "ts_str": "2019-10-03 11:28"
+        },
+        {
+          "item": 2,
+          "behavior": "view",
+          "ts": 1570102224,
+          "ts_str": "2019-10-03 11:30"
+        },
+        {
+          "item": 3,
+          "behavior": "view",
+          "ts": 1570104569,
+          "ts_str": "2019-10-03 12:09"
+        },
+        {
+          "item": 1,
+          "behavior": "view",
+          "ts": 1570111746,
+          "ts_str": "2019-10-03 14:09"
+        },
+        {
+          "item": 3,
+          "behavior": "view",
+          "ts": 1570186463,
+          "ts_str": "2019-10-04 10:54"
+        },
+        {
+          "item": 2,
+          "behavior": "view",
+          "ts": 1570186471,
+          "ts_str": "2019-10-04 10:54"
+        },
+        {
+          "item": 2,
+          "behavior": "view",
+          "ts": 1570273576,
+          "ts_str": "2019-10-05 11:06"
+        },
+        {
+          "item": 2,
+          "behavior": "view",
+          "ts": 1570612925,
+          "ts_str": "2019-10-09 09:22"
+        },
+        {
+          "item": 2,
+          "behavior": "purchase",
+          "ts": 1570701957,
+          "ts_str": "2019-10-10 10:05"
+        },
+        {
+          "item": 15,
+          "behavior": "view",
+          "ts": 1570708590,
+          "ts_str": "2019-10-10 11:56"
+        },
+        {
+          "item": 1,
+          "behavior": "view",
+          "ts": 1570876370,
+          "ts_str": "2019-10-12 10:32"
+        },
+        {
+          "item": 15,
+          "behavior": "purchase",
+          "ts": 1570941885,
+          "ts_str": "2019-10-13 04:44"
+        },
+        {
+          "item": 3,
+          "behavior": "view",
+          "ts": 1570955587,
+          "ts_str": "2019-10-13 08:33"
+        },
+        {
+          "item": 1,
+          "behavior": "view",
+          "ts": 1571121189,
+          "ts_str": "2019-10-15 06:33"
+        },
+        {
+          "item": 1,
+          "behavior": "view",
+          "ts": 1571121437,
+          "ts_str": "2019-10-15 06:37"
+        },
+        {
+          "item": 15,
+          "behavior": "view",
+          "ts": 1571132041,
+          "ts_str": "2019-10-15 09:34"
+        },
+        {
+          "item": 15,
+          "behavior": "view",
+          "ts": 1571212658,
+          "ts_str": "2019-10-16 07:57"
+        },
+        {
+          "item": 15,
+          "behavior": "view",
+          "ts": 1571314531,
+          "ts_str": "2019-10-17 12:15"
+        },
+        {
+          "item": 15,
+          "behavior": "purchase",
+          "ts": 1571319013,
+          "ts_str": "2019-10-17 13:30"
+        },
+        {
+          "item": 1,
+          "behavior": "view",
+          "ts": 1571325503,
+          "ts_str": "2019-10-17 15:18"
+        },
+        {
+          "item": 15,
+          "behavior": "purchase",
+          "ts": 1571388832,
+          "ts_str": "2019-10-18 08:53"
+        },
+        {
+          "item": 1,
+          "behavior": "view",
+          "ts": 1571553507,
+          "ts_str": "2019-10-20 06:38"
+        },
+        {
+          "item": 1,
+          "behavior": "view",
+          "ts": 1571554890,
+          "ts_str": "2019-10-20 07:01"
+        },
+        {
+          "item": 15,
+          "behavior": "cart",
+          "ts": 1571561408,
+          "ts_str": "2019-10-20 08:50"
+        },
+        {
+          "item": 15,
+          "behavior": "view",
+          "ts": 1571634637,
+          "ts_str": "2019-10-21 05:10"
+        },
+        {
+          "item": 15,
+          "behavior": "view",
+          "ts": 1571652372,
+          "ts_str": "2019-10-21 10:06"
+        },
+        {
+          "item": 1,
+          "behavior": "view",
+          "ts": 1571825104,
+          "ts_str": "2019-10-23 10:05"
+        },
+        {
+          "item": 1,
+          "behavior": "view",
+          "ts": 1571904741,
+          "ts_str": "2019-10-24 08:12"
+        },
+        {
+          "item": 15,
+          "behavior": "purchase",
+          "ts": 1571913278,
+          "ts_str": "2019-10-24 10:34"
+        },
+        {
+          "item": 1,
+          "behavior": "purchase",
+          "ts": 1572000866,
+          "ts_str": "2019-10-25 10:54"
+        },
+        {
+          "item": 15,
+          "behavior": "view",
+          "ts": 1572074439,
+          "ts_str": "2019-10-26 07:20"
+        },
+        {
+          "item": 3,
+          "behavior": "purchase",
+          "ts": 1572162625,
+          "ts_str": "2019-10-27 07:50"
+        },
+        {
+          "item": 15,
+          "behavior": "view",
+          "ts": 1572502093,
+          "ts_str": "2019-10-31 06:08"
+        },
+        {
+          "item": 3,
+          "behavior": "view",
+          "ts": 1572512909,
+          "ts_str": "2019-10-31 09:08"
+        },
+        {
+          "item": 3,
+          "behavior": "purchase",
+          "ts": 1572512999,
+          "ts_str": "2019-10-31 09:09"
+        },
+        {
+          "item": 3,
+          "behavior": "view",
+          "ts": 1572513028,
+          "ts_str": "2019-10-31 09:10"
+        },
+        {
+          "item": 15,
+          "behavior": "view",
+          "ts": 1572849302,
+          "ts_str": "2019-11-04 06:35"
+        },
+        {
+          "item": 3,
+          "behavior": "purchase",
+          "ts": 1572849442,
+          "ts_str": "2019-11-04 06:37"
+        },
+        {
+          "item": 3,
+          "behavior": "view",
+          "ts": 1572851188,
+          "ts_str": "2019-11-04 07:06"
+        },
+        {
+          "item": 19,
+          "behavior": "view",
+          "ts": 1572936059,
+          "ts_str": "2019-11-05 06:40"
+        },
+        {
+          "item": 2,
+          "behavior": "view",
+          "ts": 1572940284,
+          "ts_str": "2019-11-05 07:51"
+        },
+        {
+          "item": 2,
+          "behavior": "purchase",
+          "ts": 1572951801,
+          "ts_str": "2019-11-05 11:03"
+        },
+        {
+          "item": 19,
+          "behavior": "view",
+          "ts": 1573028586,
+          "ts_str": "2019-11-06 08:23"
+        },
+        {
+          "item": 19,
+          "behavior": "purchase",
+          "ts": 1573028675,
+          "ts_str": "2019-11-06 08:24"
+        },
+        {
+          "item": 19,
+          "behavior": "view",
+          "ts": 1573456463,
+          "ts_str": "2019-11-11 07:14"
+        },
+        {
+          "item": 1,
+          "behavior": "view",
+          "ts": 1573460893,
+          "ts_str": "2019-11-11 08:28"
+        },
+        {
+          "item": 1,
+          "behavior": "purchase",
+          "ts": 1573460927,
+          "ts_str": "2019-11-11 08:28"
+        },
+        {
+          "item": 15,
+          "behavior": "cart",
+          "ts": 1573464995,
+          "ts_str": "2019-11-11 09:36"
+        },
+        {
+          "item": 18,
+          "behavior": "view",
+          "ts": 1573542894,
+          "ts_str": "2019-11-12 07:14"
+        },
+        {
+          "item": 15,
+          "behavior": "purchase",
+          "ts": 1573636500,
+          "ts_str": "2019-11-13 09:15"
+        },
+        {
+          "item": 1,
+          "behavior": "view",
+          "ts": 1573636557,
+          "ts_str": "2019-11-13 09:15"
+        },
+        {
+          "item": 15,
+          "behavior": "purchase",
+          "ts": 1573716587,
+          "ts_str": "2019-11-14 07:29"
+        },
+        {
+          "item": 19,
+          "behavior": "purchase",
+          "ts": 1573969006,
+          "ts_str": "2019-11-17 05:36"
+        },
+        {
+          "item": 19,
+          "behavior": "view",
+          "ts": 1574244244,
+          "ts_str": "2019-11-20 10:04"
+        },
+        {
+          "item": 15,
+          "behavior": "view",
+          "ts": 1574315386,
+          "ts_str": "2019-11-21 05:49"
+        },
+        {
+          "item": 1,
+          "behavior": "view",
+          "ts": 1574330342,
+          "ts_str": "2019-11-21 09:59"
+        },
+        {
+          "item": 18,
+          "behavior": "view",
+          "ts": 1574411685,
+          "ts_str": "2019-11-22 08:34"
+        },
+        {
+          "item": 4,
+          "behavior": "cart",
+          "ts": 1574693840,
+          "ts_str": "2019-11-25 14:57"
+        },
+        {
+          "item": 17,
+          "behavior": "view",
+          "ts": 1574745645,
+          "ts_str": "2019-11-26 05:20"
+        },
+        {
+          "item": 15,
+          "behavior": "cart",
+          "ts": 1574760019,
+          "ts_str": "2019-11-26 09:20"
+        },
+        {
+          "item": 18,
+          "behavior": "view",
+          "ts": 1574850205,
+          "ts_str": "2019-11-27 10:23"
+        },
+        {
+          "item": 16,
+          "behavior": "view",
+          "ts": 1574942325,
+          "ts_str": "2019-11-28 11:58"
+        },
+        {
+          "item": 4,
+          "behavior": "purchase",
+          "ts": 1575437856,
+          "ts_str": "2019-12-04 05:37"
+        },
+        {
+          "item": 18,
+          "behavior": "view",
+          "ts": 1575448204,
+          "ts_str": "2019-12-04 08:30"
+        },
+        {
+          "item": 15,
+          "behavior": "view",
+          "ts": 1575541260,
+          "ts_str": "2019-12-05 10:21"
+        },
+        {
+          "item": 18,
+          "behavior": "view",
+          "ts": 1575615441,
+          "ts_str": "2019-12-06 06:57"
+        },
+        {
+          "item": 19,
+          "behavior": "cart",
+          "ts": 1575620894,
+          "ts_str": "2019-12-06 08:28"
+        },
+        {
+          "item": 19,
+          "behavior": "view",
+          "ts": 1575622196,
+          "ts_str": "2019-12-06 08:49"
+        },
+        {
+          "item": 18,
+          "behavior": "view",
+          "ts": 1575623030,
+          "ts_str": "2019-12-06 09:03"
+        },
+        {
+          "item": 19,
+          "behavior": "view",
+          "ts": 1575969545,
+          "ts_str": "2019-12-10 09:19"
+        },
+        {
+          "item": 15,
+          "behavior": "purchase",
+          "ts": 1575975625,
+          "ts_str": "2019-12-10 11:00"
+        },
+        {
+          "item": 18,
+          "behavior": "view",
+          "ts": 1576046963,
+          "ts_str": "2019-12-11 06:49"
+        },
+        {
+          "item": 3,
+          "behavior": "cart",
+          "ts": 1576068721,
+          "ts_str": "2019-12-11 12:52"
+        },
+        {
+          "item": 18,
+          "behavior": "purchase",
+          "ts": 1576133270,
+          "ts_str": "2019-12-12 06:47"
+        },
+        {
+          "item": 19,
+          "behavior": "view",
+          "ts": 1576212439,
+          "ts_str": "2019-12-13 04:47"
+        },
+        {
+          "item": 15,
+          "behavior": "cart",
+          "ts": 1576404096,
+          "ts_str": "2019-12-15 10:01"
+        },
+        {
+          "item": 19,
+          "behavior": "view",
+          "ts": 1576489995,
+          "ts_str": "2019-12-16 09:53"
+        },
+        {
+          "item": 19,
+          "behavior": "purchase",
+          "ts": 1576490052,
+          "ts_str": "2019-12-16 09:54"
+        },
+        {
+          "item": 15,
+          "behavior": "view",
+          "ts": 1576570140,
+          "ts_str": "2019-12-17 08:09"
+        },
+        {
+          "item": 12,
+          "behavior": "purchase",
+          "ts": 1576579323,
+          "ts_str": "2019-12-17 10:42"
+        },
+        {
+          "item": 19,
+          "behavior": "view",
+          "ts": 1576663209,
+          "ts_str": "2019-12-18 10:00"
+        },
+        {
+          "item": 12,
+          "behavior": "view",
+          "ts": 1576745870,
+          "ts_str": "2019-12-19 08:57"
+        },
+        {
+          "item": 19,
+          "behavior": "purchase",
+          "ts": 1576747467,
+          "ts_str": "2019-12-19 09:24"
+        },
+        {
+          "item": 3,
+          "behavior": "view",
+          "ts": 1577040120,
+          "ts_str": "2019-12-22 18:42"
+        },
+        {
+          "item": 4,
+          "behavior": "purchase",
+          "ts": 1577169758,
+          "ts_str": "2019-12-24 06:42"
+        },
+        {
+          "item": 15,
+          "behavior": "view",
+          "ts": 1577273231,
+          "ts_str": "2019-12-25 11:27"
+        },
+        {
+          "item": 4,
+          "behavior": "view",
+          "ts": 1577440885,
+          "ts_str": "2019-12-27 10:01"
+        },
+        {
+          "item": 18,
+          "behavior": "cart",
+          "ts": 1577450640,
+          "ts_str": "2019-12-27 12:44"
+        },
+        {
+          "item": 16,
+          "behavior": "view",
+          "ts": 1578040420,
+          "ts_str": "2020-01-03 08:33"
+        },
+        {
+          "item": 16,
+          "behavior": "view",
+          "ts": 1578052149,
+          "ts_str": "2020-01-03 11:49"
+        },
+        {
+          "item": 18,
+          "behavior": "view",
+          "ts": 1578052166,
+          "ts_str": "2020-01-03 11:49"
+        },
+        {
+          "item": 1,
+          "behavior": "cart",
+          "ts": 1578126150,
+          "ts_str": "2020-01-04 08:22"
+        },
+        {
+          "item": 1,
+          "behavior": "view",
+          "ts": 1578126159,
+          "ts_str": "2020-01-04 08:22"
+        },
+        {
+          "item": 16,
+          "behavior": "view",
+          "ts": 1578297349,
+          "ts_str": "2020-01-06 07:55"
+        },
+        {
+          "item": 17,
+          "behavior": "cart",
+          "ts": 1578297421,
+          "ts_str": "2020-01-06 07:57"
+        },
+        {
+          "item": 17,
+          "behavior": "purchase",
+          "ts": 1578297474,
+          "ts_str": "2020-01-06 07:57"
+        },
+        {
+          "item": 17,
+          "behavior": "view",
+          "ts": 1578471339,
+          "ts_str": "2020-01-08 08:15"
+        },
+        {
+          "item": 16,
+          "behavior": "purchase",
+          "ts": 1578481522,
+          "ts_str": "2020-01-08 11:05"
+        },
+        {
+          "item": 18,
+          "behavior": "view",
+          "ts": 1578550376,
+          "ts_str": "2020-01-09 06:12"
+        },
+        {
+          "item": 16,
+          "behavior": "view",
+          "ts": 1578562735,
+          "ts_str": "2020-01-09 09:38"
+        },
+        {
+          "item": 18,
+          "behavior": "view",
+          "ts": 1578562978,
+          "ts_str": "2020-01-09 09:42"
+        },
+        {
+          "item": 5,
+          "behavior": "cart",
+          "ts": 1578638696,
+          "ts_str": "2020-01-10 06:44"
+        }
+      ],
+      "3": [
+        {
+          "item": 1,
+          "behavior": "cart",
+          "ts": 1570027654,
+          "ts_str": "2019-10-02 14:47"
+        },
+        {
+          "item": 1,
+          "behavior": "view",
+          "ts": 1570122952,
+          "ts_str": "2019-10-03 17:15"
+        },
+        {
+          "item": 1,
+          "behavior": "purchase",
+          "ts": 1570161437,
+          "ts_str": "2019-10-04 03:57"
+        },
+        {
+          "item": 1,
+          "behavior": "view",
+          "ts": 1570274101,
+          "ts_str": "2019-10-05 11:15"
+        },
+        {
+          "item": 1,
+          "behavior": "cart",
+          "ts": 1570631825,
+          "ts_str": "2019-10-09 14:37"
+        },
+        {
+          "item": 1,
+          "behavior": "cart",
+          "ts": 1571211445,
+          "ts_str": "2019-10-16 07:37"
+        },
+        {
+          "item": 7,
+          "behavior": "view",
+          "ts": 1573762476,
+          "ts_str": "2019-11-14 20:14"
+        },
+        {
+          "item": 7,
+          "behavior": "view",
+          "ts": 1573765559,
+          "ts_str": "2019-11-14 21:05"
+        },
+        {
+          "item": 11,
+          "behavior": "view",
+          "ts": 1573844659,
+          "ts_str": "2019-11-15 19:04"
+        },
+        {
+          "item": 11,
+          "behavior": "view",
+          "ts": 1573844717,
+          "ts_str": "2019-11-15 19:05"
+        },
+        {
+          "item": 7,
+          "behavior": "view",
+          "ts": 1574047688,
+          "ts_str": "2019-11-18 03:28"
+        },
+        {
+          "item": 23,
+          "behavior": "purchase",
+          "ts": 1574421483,
+          "ts_str": "2019-11-22 11:18"
+        },
+        {
+          "item": 7,
+          "behavior": "view",
+          "ts": 1580734621,
+          "ts_str": "2020-02-03 12:57"
+        },
+        {
+          "item": 11,
+          "behavior": "view",
+          "ts": 1581653810,
+          "ts_str": "2020-02-14 04:16"
+        },
+        {
+          "item": 11,
+          "behavior": "cart",
+          "ts": 1581653817,
+          "ts_str": "2020-02-14 04:16"
+        }
+      ],
+      "2": [
+        {
+          "item": 0,
+          "behavior": "cart",
+          "ts": 1570569347,
+          "ts_str": "2019-10-08 21:15"
+        },
+        {
+          "item": 21,
+          "behavior": "cart",
+          "ts": 1571871913,
+          "ts_str": "2019-10-23 23:05"
+        },
+        {
+          "item": 21,
+          "behavior": "view",
+          "ts": 1571905194,
+          "ts_str": "2019-10-24 08:19"
+        },
+        {
+          "item": 21,
+          "behavior": "purchase",
+          "ts": 1573579799,
+          "ts_str": "2019-11-12 17:29"
+        },
+        {
+          "item": 0,
+          "behavior": "cart",
+          "ts": 1573580088,
+          "ts_str": "2019-11-12 17:34"
+        },
+        {
+          "item": 4,
+          "behavior": "view",
+          "ts": 1573885525,
+          "ts_str": "2019-11-16 06:25"
+        },
+        {
+          "item": 4,
+          "behavior": "cart",
+          "ts": 1573945011,
+          "ts_str": "2019-11-16 22:56"
+        },
+        {
+          "item": 4,
+          "behavior": "view",
+          "ts": 1573945292,
+          "ts_str": "2019-11-16 23:01"
+        },
+        {
+          "item": 5,
+          "behavior": "view",
+          "ts": 1573946844,
+          "ts_str": "2019-11-16 23:27"
+        },
+        {
+          "item": 5,
+          "behavior": "view",
+          "ts": 1573946849,
+          "ts_str": "2019-11-16 23:27"
+        },
+        {
+          "item": 4,
+          "behavior": "view",
+          "ts": 1573948661,
+          "ts_str": "2019-11-16 23:57"
+        },
+        {
+          "item": 4,
+          "behavior": "cart",
+          "ts": 1573949285,
+          "ts_str": "2019-11-17 00:08"
+        },
+        {
+          "item": 4,
+          "behavior": "view",
+          "ts": 1573994188,
+          "ts_str": "2019-11-17 12:36"
+        },
+        {
+          "item": 0,
+          "behavior": "view",
+          "ts": 1573995198,
+          "ts_str": "2019-11-17 12:53"
+        },
+        {
+          "item": 4,
+          "behavior": "cart",
+          "ts": 1574018227,
+          "ts_str": "2019-11-17 19:17"
+        },
+        {
+          "item": 4,
+          "behavior": "cart",
+          "ts": 1574544685,
+          "ts_str": "2019-11-23 21:31"
+        },
+        {
+          "item": 14,
+          "behavior": "view",
+          "ts": 1574550292,
+          "ts_str": "2019-11-23 23:04"
+        },
+        {
+          "item": 14,
+          "behavior": "cart",
+          "ts": 1574550294,
+          "ts_str": "2019-11-23 23:04"
+        },
+        {
+          "item": 23,
+          "behavior": "purchase",
+          "ts": 1574781331,
+          "ts_str": "2019-11-26 15:15"
+        },
+        {
+          "item": 4,
+          "behavior": "purchase",
+          "ts": 1575269126,
+          "ts_str": "2019-12-02 06:45"
+        },
+        {
+          "item": 4,
+          "behavior": "view",
+          "ts": 1576034607,
+          "ts_str": "2019-12-11 03:23"
+        },
+        {
+          "item": 4,
+          "behavior": "view",
+          "ts": 1576443153,
+          "ts_str": "2019-12-15 20:52"
+        },
+        {
+          "item": 0,
+          "behavior": "view",
+          "ts": 1576449413,
+          "ts_str": "2019-12-15 22:36"
+        },
+        {
+          "item": 4,
+          "behavior": "purchase",
+          "ts": 1576507598,
+          "ts_str": "2019-12-16 14:46"
+        },
+        {
+          "item": 4,
+          "behavior": "view",
+          "ts": 1577141584,
+          "ts_str": "2019-12-23 22:53"
+        },
+        {
+          "item": 21,
+          "behavior": "view",
+          "ts": 1577750476,
+          "ts_str": "2019-12-31 00:01"
+        },
+        {
+          "item": 21,
+          "behavior": "purchase",
+          "ts": 1578141434,
+          "ts_str": "2020-01-04 12:37"
+        },
+        {
+          "item": 22,
+          "behavior": "view",
+          "ts": 1578604988,
+          "ts_str": "2020-01-09 21:23"
+        },
+        {
+          "item": 23,
+          "behavior": "view",
+          "ts": 1578605000,
+          "ts_str": "2020-01-09 21:23"
+        }
+      ],
+      "0": [
+        {
+          "item": 24,
+          "behavior": "purchase",
+          "ts": 1571507345,
+          "ts_str": "2019-10-19 17:49"
+        },
+        {
+          "item": 24,
+          "behavior": "view",
+          "ts": 1571507482,
+          "ts_str": "2019-10-19 17:51"
+        },
+        {
+          "item": 24,
+          "behavior": "view",
+          "ts": 1572942256,
+          "ts_str": "2019-11-05 08:24"
+        },
+        {
+          "item": 18,
+          "behavior": "view",
+          "ts": 1577289931,
+          "ts_str": "2019-12-25 16:05"
+        },
+        {
+          "item": 24,
+          "behavior": "purchase",
+          "ts": 1577291543,
+          "ts_str": "2019-12-25 16:32"
+        },
+        {
+          "item": 23,
+          "behavior": "view",
+          "ts": 1577350219,
+          "ts_str": "2019-12-26 08:50"
+        },
+        {
+          "item": 23,
+          "behavior": "view",
+          "ts": 1577350356,
+          "ts_str": "2019-12-26 08:52"
+        },
+        {
+          "item": 24,
+          "behavior": "view",
+          "ts": 1577443253,
+          "ts_str": "2019-12-27 10:40"
+        },
+        {
+          "item": 24,
+          "behavior": "cart",
+          "ts": 1577465462,
+          "ts_str": "2019-12-27 16:51"
+        },
+        {
+          "item": 23,
+          "behavior": "purchase",
+          "ts": 1577613960,
+          "ts_str": "2019-12-29 10:06"
+        },
+        {
+          "item": 18,
+          "behavior": "view",
+          "ts": 1577615088,
+          "ts_str": "2019-12-29 10:24"
+        },
+        {
+          "item": 23,
+          "behavior": "cart",
+          "ts": 1577634636,
+          "ts_str": "2019-12-29 15:50"
+        },
+        {
+          "item": 24,
+          "behavior": "purchase",
+          "ts": 1577634942,
+          "ts_str": "2019-12-29 15:55"
+        },
+        {
+          "item": 4,
+          "behavior": "view",
+          "ts": 1578459051,
+          "ts_str": "2020-01-08 04:50"
+        },
+        {
+          "item": 4,
+          "behavior": "purchase",
+          "ts": 1578459085,
+          "ts_str": "2020-01-08 04:51"
+        },
+        {
+          "item": 24,
+          "behavior": "purchase",
+          "ts": 1578681989,
+          "ts_str": "2020-01-10 18:46"
+        },
+        {
+          "item": 24,
+          "behavior": "view",
+          "ts": 1579335901,
+          "ts_str": "2020-01-18 08:25"
+        },
+        {
+          "item": 27,
+          "behavior": "view",
+          "ts": 1579338172,
+          "ts_str": "2020-01-18 09:02"
+        },
+        {
+          "item": 23,
+          "behavior": "view",
+          "ts": 1579339097,
+          "ts_str": "2020-01-18 09:18"
+        },
+        {
+          "item": 27,
+          "behavior": "view",
+          "ts": 1579361539,
+          "ts_str": "2020-01-18 15:32"
+        }
+      ],
+      "4": [
+        {
+          "item": 13,
+          "behavior": "cart",
+          "ts": 1571632085,
+          "ts_str": "2019-10-21 04:28"
+        },
+        {
+          "item": 13,
+          "behavior": "view",
+          "ts": 1572898800,
+          "ts_str": "2019-11-04 20:20"
+        },
+        {
+          "item": 13,
+          "behavior": "view",
+          "ts": 1573012866,
+          "ts_str": "2019-11-06 04:01"
+        },
+        {
+          "item": 4,
+          "behavior": "cart",
+          "ts": 1573226687,
+          "ts_str": "2019-11-08 15:24"
+        },
+        {
+          "item": 28,
+          "behavior": "purchase",
+          "ts": 1573905867,
+          "ts_str": "2019-11-16 12:04"
+        },
+        {
+          "item": 2,
+          "behavior": "cart",
+          "ts": 1575354858,
+          "ts_str": "2019-12-03 06:34"
+        },
+        {
+          "item": 3,
+          "behavior": "cart",
+          "ts": 1575354974,
+          "ts_str": "2019-12-03 06:36"
+        },
+        {
+          "item": 3,
+          "behavior": "view",
+          "ts": 1575355088,
+          "ts_str": "2019-12-03 06:38"
+        },
+        {
+          "item": 3,
+          "behavior": "cart",
+          "ts": 1575355249,
+          "ts_str": "2019-12-03 06:40"
+        },
+        {
+          "item": 3,
+          "behavior": "view",
+          "ts": 1575400225,
+          "ts_str": "2019-12-03 19:10"
+        },
+        {
+          "item": 3,
+          "behavior": "view",
+          "ts": 1575400662,
+          "ts_str": "2019-12-03 19:17"
+        },
+        {
+          "item": 3,
+          "behavior": "cart",
+          "ts": 1575406262,
+          "ts_str": "2019-12-03 20:51"
+        },
+        {
+          "item": 2,
+          "behavior": "view",
+          "ts": 1575434398,
+          "ts_str": "2019-12-04 04:39"
+        },
+        {
+          "item": 1,
+          "behavior": "view",
+          "ts": 1575434526,
+          "ts_str": "2019-12-04 04:42"
+        },
+        {
+          "item": 3,
+          "behavior": "view",
+          "ts": 1575450394,
+          "ts_str": "2019-12-04 09:06"
+        }
+      ],
+      "5": [
+        {
+          "item": 21,
+          "behavior": "view",
+          "ts": 1574051478,
+          "ts_str": "2019-11-18 04:31"
+        },
+        {
+          "item": 21,
+          "behavior": "cart",
+          "ts": 1574497756,
+          "ts_str": "2019-11-23 08:29"
+        },
+        {
+          "item": 17,
+          "behavior": "view",
+          "ts": 1576473834,
+          "ts_str": "2019-12-16 05:23"
+        },
+        {
+          "item": 16,
+          "behavior": "view",
+          "ts": 1576488182,
+          "ts_str": "2019-12-16 09:23"
+        },
+        {
+          "item": 21,
+          "behavior": "view",
+          "ts": 1577809032,
+          "ts_str": "2019-12-31 16:17"
+        },
+        {
+          "item": 21,
+          "behavior": "purchase",
+          "ts": 1579092860,
+          "ts_str": "2020-01-15 12:54"
+        },
+        {
+          "item": 21,
+          "behavior": "view",
+          "ts": 1579092893,
+          "ts_str": "2020-01-15 12:54"
+        },
+        {
+          "item": 21,
+          "behavior": "view",
+          "ts": 1579671061,
+          "ts_str": "2020-01-22 05:31"
+        },
+        {
+          "item": 21,
+          "behavior": "view",
+          "ts": 1579838329,
+          "ts_str": "2020-01-24 03:58"
+        },
+        {
+          "item": 21,
+          "behavior": "view",
+          "ts": 1579841623,
+          "ts_str": "2020-01-24 04:53"
+        },
+        {
+          "item": 3,
+          "behavior": "view",
+          "ts": 1579922759,
+          "ts_str": "2020-01-25 03:25"
+        },
+        {
+          "item": 4,
+          "behavior": "view",
+          "ts": 1580012420,
+          "ts_str": "2020-01-26 04:20"
+        },
+        {
+          "item": 21,
+          "behavior": "view",
+          "ts": 1580032186,
+          "ts_str": "2020-01-26 09:49"
+        },
+        {
+          "item": 4,
+          "behavior": "view",
+          "ts": 1580290886,
+          "ts_str": "2020-01-29 09:41"
+        },
+        {
+          "item": 21,
+          "behavior": "view",
+          "ts": 1580617373,
+          "ts_str": "2020-02-02 04:22"
+        },
+        {
+          "item": 20,
+          "behavior": "view",
+          "ts": 1580642270,
+          "ts_str": "2020-02-02 11:17"
+        },
+        {
+          "item": 21,
+          "behavior": "cart",
+          "ts": 1581136748,
+          "ts_str": "2020-02-08 04:39"
+        },
+        {
+          "item": 17,
+          "behavior": "cart",
+          "ts": 1581477701,
+          "ts_str": "2020-02-12 03:21"
+        },
+        {
+          "item": 17,
+          "behavior": "purchase",
+          "ts": 1581483662,
+          "ts_str": "2020-02-12 05:01"
+        },
+        {
+          "item": 17,
+          "behavior": "purchase",
+          "ts": 1581487475,
+          "ts_str": "2020-02-12 06:04"
+        },
+        {
+          "item": 17,
+          "behavior": "view",
+          "ts": 1581491519,
+          "ts_str": "2020-02-12 07:11"
+        },
+        {
+          "item": 25,
+          "behavior": "purchase",
+          "ts": 1581762191,
+          "ts_str": "2020-02-15 10:23"
+        },
+        {
+          "item": 25,
+          "behavior": "view",
+          "ts": 1581762234,
+          "ts_str": "2020-02-15 10:23"
+        },
+        {
+          "item": 29,
+          "behavior": "cart",
+          "ts": 1581854521,
+          "ts_str": "2020-02-16 12:02"
+        }
+      ],
+      "6": [
+        {
+          "item": 6,
+          "behavior": "view",
+          "ts": 1575778199,
+          "ts_str": "2019-12-08 04:09"
+        },
+        {
+          "item": 6,
+          "behavior": "purchase",
+          "ts": 1575917994,
+          "ts_str": "2019-12-09 18:59"
+        },
+        {
+          "item": 6,
+          "behavior": "view",
+          "ts": 1576002597,
+          "ts_str": "2019-12-10 18:29"
+        },
+        {
+          "item": 9,
+          "behavior": "cart",
+          "ts": 1576174816,
+          "ts_str": "2019-12-12 18:20"
+        },
+        {
+          "item": 6,
+          "behavior": "cart",
+          "ts": 1576437588,
+          "ts_str": "2019-12-15 19:19"
+        },
+        {
+          "item": 6,
+          "behavior": "view",
+          "ts": 1576487202,
+          "ts_str": "2019-12-16 09:06"
+        },
+        {
+          "item": 6,
+          "behavior": "view",
+          "ts": 1576487424,
+          "ts_str": "2019-12-16 09:10"
+        },
+        {
+          "item": 6,
+          "behavior": "purchase",
+          "ts": 1576487481,
+          "ts_str": "2019-12-16 09:11"
+        },
+        {
+          "item": 6,
+          "behavior": "view",
+          "ts": 1576606249,
+          "ts_str": "2019-12-17 18:10"
+        },
+        {
+          "item": 6,
+          "behavior": "view",
+          "ts": 1576610970,
+          "ts_str": "2019-12-17 19:29"
+        },
+        {
+          "item": 9,
+          "behavior": "view",
+          "ts": 1576657388,
+          "ts_str": "2019-12-18 08:23"
+        },
+        {
+          "item": 1,
+          "behavior": "view",
+          "ts": 1577038997,
+          "ts_str": "2019-12-22 18:23"
+        },
+        {
+          "item": 8,
+          "behavior": "view",
+          "ts": 1577195352,
+          "ts_str": "2019-12-24 13:49"
+        },
+        {
+          "item": 6,
+          "behavior": "view",
+          "ts": 1577384371,
+          "ts_str": "2019-12-26 18:19"
+        },
+        {
+          "item": 4,
+          "behavior": "view",
+          "ts": 1577388263,
+          "ts_str": "2019-12-26 19:24"
+        },
+        {
+          "item": 6,
+          "behavior": "cart",
+          "ts": 1577742666,
+          "ts_str": "2019-12-30 21:51"
+        },
+        {
+          "item": 1,
+          "behavior": "cart",
+          "ts": 1578166396,
+          "ts_str": "2020-01-04 19:33"
+        },
+        {
+          "item": 1,
+          "behavior": "cart",
+          "ts": 1578166642,
+          "ts_str": "2020-01-04 19:37"
+        },
+        {
+          "item": 0,
+          "behavior": "view",
+          "ts": 1578256222,
+          "ts_str": "2020-01-05 20:30"
+        },
+        {
+          "item": 6,
+          "behavior": "cart",
+          "ts": 1578684006,
+          "ts_str": "2020-01-10 19:20"
+        },
+        {
+          "item": 9,
+          "behavior": "cart",
+          "ts": 1578685156,
+          "ts_str": "2020-01-10 19:39"
+        },
+        {
+          "item": 9,
+          "behavior": "view",
+          "ts": 1578685224,
+          "ts_str": "2020-01-10 19:40"
+        },
+        {
+          "item": 9,
+          "behavior": "view",
+          "ts": 1578795179,
+          "ts_str": "2020-01-12 02:12"
+        },
+        {
+          "item": 8,
+          "behavior": "cart",
+          "ts": 1578859578,
+          "ts_str": "2020-01-12 20:06"
+        },
+        {
+          "item": 8,
+          "behavior": "purchase",
+          "ts": 1578859759,
+          "ts_str": "2020-01-12 20:09"
+        },
+        {
+          "item": 8,
+          "behavior": "purchase",
+          "ts": 1578859826,
+          "ts_str": "2020-01-12 20:10"
+        },
+        {
+          "item": 3,
+          "behavior": "view",
+          "ts": 1579191606,
+          "ts_str": "2020-01-16 16:20"
+        },
+        {
+          "item": 10,
+          "behavior": "cart",
+          "ts": 1579286424,
+          "ts_str": "2020-01-17 18:40"
+        },
+        {
+          "item": 6,
+          "behavior": "cart",
+          "ts": 1579356070,
+          "ts_str": "2020-01-18 14:01"
+        },
+        {
+          "item": 6,
+          "behavior": "cart",
+          "ts": 1579576253,
+          "ts_str": "2020-01-21 03:10"
+        },
+        {
+          "item": 6,
+          "behavior": "view",
+          "ts": 1579576267,
+          "ts_str": "2020-01-21 03:11"
+        },
+        {
+          "item": 9,
+          "behavior": "view",
+          "ts": 1579639326,
+          "ts_str": "2020-01-21 20:42"
+        },
+        {
+          "item": 6,
+          "behavior": "view",
+          "ts": 1579639596,
+          "ts_str": "2020-01-21 20:46"
+        },
+        {
+          "item": 6,
+          "behavior": "cart",
+          "ts": 1579809704,
+          "ts_str": "2020-01-23 20:01"
+        },
+        {
+          "item": 10,
+          "behavior": "view",
+          "ts": 1579814064,
+          "ts_str": "2020-01-23 21:14"
+        },
+        {
+          "item": 0,
+          "behavior": "view",
+          "ts": 1580140437,
+          "ts_str": "2020-01-27 15:53"
+        },
+        {
+          "item": 6,
+          "behavior": "cart",
+          "ts": 1580144315,
+          "ts_str": "2020-01-27 16:58"
+        },
+        {
+          "item": 1,
+          "behavior": "purchase",
+          "ts": 1580214354,
+          "ts_str": "2020-01-28 12:25"
+        },
+        {
+          "item": 4,
+          "behavior": "cart",
+          "ts": 1580497491,
+          "ts_str": "2020-01-31 19:04"
+        },
+        {
+          "item": 10,
+          "behavior": "view",
+          "ts": 1580577767,
+          "ts_str": "2020-02-01 17:22"
+        },
+        {
+          "item": 6,
+          "behavior": "cart",
+          "ts": 1580587206,
+          "ts_str": "2020-02-01 20:00"
+        },
+        {
+          "item": 0,
+          "behavior": "purchase",
+          "ts": 1580617921,
+          "ts_str": "2020-02-02 04:32"
+        },
+        {
+          "item": 1,
+          "behavior": "view",
+          "ts": 1580691580,
+          "ts_str": "2020-02-03 00:59"
+        },
+        {
+          "item": 1,
+          "behavior": "purchase",
+          "ts": 1580730995,
+          "ts_str": "2020-02-03 11:56"
+        },
+        {
+          "item": 1,
+          "behavior": "purchase",
+          "ts": 1580731504,
+          "ts_str": "2020-02-03 12:05"
+        }
+      ],
+      "7": [
+        {
+          "item": 1,
+          "behavior": "view",
+          "ts": 1580445012,
+          "ts_str": "2020-01-31 04:30"
+        }
+      ]
+    }
+  },
+  "evaluation": {
+    "metrics": {
+      "HR@1": 0.125,
+      "NDCG@1": 0.125,
+      "HR@5": 0.25,
+      "NDCG@5": 0.1477,
+      "HR@10": 0.375,
+      "NDCG@10": 0.1732,
+      "HR@20": 0.75,
+      "NDCG@20": 0.2543
+    },
+    "per_user": [
+      {
+        "user": 0,
+        "ground_truth": [
+          27
+        ],
+        "masked_items": [
+          4,
+          23,
+          24
+        ],
+        "ranking": [
+          {
+            "item": 27,
+            "score": 1.9377418756484985,
+            "masked": false,
+            "rank": 1
+          },
+          {
+            "item": 11,
+            "score": 0.8845270872116089,
+            "masked": false,
+            "rank": 2
+          },
+          {
+            "item": 29,
+            "score": 0.5897283554077148,
+            "masked": false,
+            "rank": 3
+          },
+          {
+            "item": 28,
+            "score": 0.5338988900184631,
+            "masked": false,
+            "rank": 4
+          },
+          {
+            "item": 7,
+            "score": 0.28044360876083374,
+            "masked": false,
+            "rank": 5
+          },
+          {
+            "item": 25,
+            "score": -0.17094063758850098,
+            "masked": false,
+            "rank": 6
+          },
+          {
+            "item": 22,
+            "score": -0.23597463965415955,
+            "masked": false,
+            "rank": 7
+          },
+          {
+            "item": 26,
+            "score": -0.4460849165916443,
+            "masked": false,
+            "rank": 8
+          },
+          {
+            "item": 14,
+            "score": -0.4852738380432129,
+            "masked": false,
+            "rank": 9
+          },
+          {
+            "item": 20,
+            "score": -0.6643174886703491,
+            "masked": false,
+            "rank": 10
+          },
+          {
+            "item": 18,
+            "score": -1.1080583333969116,
+            "masked": false,
+            "rank": 11
+          },
+          {
+            "item": 21,
+            "score": -1.2930450439453125,
+            "masked": false,
+            "rank": 12
+          },
+          {
+            "item": 10,
+            "score": -1.4643362760543823,
+            "masked": false,
+            "rank": 13
+          },
+          {
+            "item": 13,
+            "score": -1.771098017692566,
+            "masked": false,
+            "rank": 14
+          },
+          {
+            "item": 0,
+            "score": -1.8440924882888794,
+            "masked": false,
+            "rank": 15
+          },
+          {
+            "item": 9,
+            "score": -1.986340880393982,
+            "masked": false,
+            "rank": 16
+          },
+          {
+            "item": 5,
+            "score": -2.0416667461395264,
+            "masked": false,
+            "rank": 17
+          },
+          {
+            "item": 12,
+            "score": -2.093512773513794,
+            "masked": false,
+            "rank": 18
+          },
+          {
+            "item": 17,
+            "score": -2.16042423248291,
+            "masked": false,
+            "rank": 19
+          },
+          {
+            "item": 19,
+            "score": -2.37599778175354,
+            "masked": false,
+            "rank": 20
+          },
+          {
+            "item": 15,
+            "score": -2.3889265060424805,
+            "masked": false,
+            "rank": 21
+          },
+          {
+            "item": 8,
+            "score": -2.4500479698181152,
+            "masked": false,
+            "rank": 22
+          },
+          {
+            "item": 6,
+            "score": -2.8304786682128906,
+            "masked": false,
+            "rank": 23
+          },
+          {
+            "item": 16,
+            "score": -3.3094706535339355,
+            "masked": false,
+            "rank": 24
+          },
+          {
+            "item": 2,
+            "score": -3.37648344039917,
+            "masked": false,
+            "rank": 25
+          },
+          {
+            "item": 1,
+            "score": -4.457932472229004,
+            "masked": false,
+            "rank": 26
+          },
+          {
+            "item": 3,
+            "score": -4.828863143920898,
+            "masked": false,
+            "rank": 27
+          }
+        ],
+        "hit_rank": 1,
+        "user_vec": [
+          0.18,
+          -0.477,
+          -0.355,
+          -0.074,
+          0.57,
+          0.289,
+          -0.375,
+          -0.474,
+          -0.054,
+          -0.301,
+          0.114,
+          -0.366,
+          -0.153,
+          -0.041,
+          0.544,
+          0.582
+        ]
+      },
+      {
+        "user": 1,
+        "ground_truth": [
+          1,
+          4,
+          5,
+          16,
+          23
+        ],
+        "masked_items": [
+          1,
+          2,
+          3,
+          4,
+          12,
+          15,
+          16,
+          17,
+          18,
+          19
+        ],
+        "ranking": [
+          {
+            "item": 25,
+            "score": 4.321041584014893,
+            "masked": false,
+            "rank": 1
+          },
+          {
+            "item": 20,
+            "score": 3.147498846054077,
+            "masked": false,
+            "rank": 2
+          },
+          {
+            "item": 29,
+            "score": 2.6539549827575684,
+            "masked": false,
+            "rank": 3
+          },
+          {
+            "item": 9,
+            "score": 2.540604591369629,
+            "masked": false,
+            "rank": 4
+          },
+          {
+            "item": 10,
+            "score": 2.4989373683929443,
+            "masked": false,
+            "rank": 5
+          },
+          {
+            "item": 21,
+            "score": 2.3882460594177246,
+            "masked": false,
+            "rank": 6
+          },
+          {
+            "item": 26,
+            "score": 2.1624011993408203,
+            "masked": false,
+            "rank": 7
+          },
+          {
+            "item": 11,
+            "score": 1.9024953842163086,
+            "masked": false,
+            "rank": 8
+          },
+          {
+            "item": 28,
+            "score": 1.8016879558563232,
+            "masked": false,
+            "rank": 9
+          },
+          {
+            "item": 13,
+            "score": 1.747591257095337,
+            "masked": false,
+            "rank": 10
+          },
+          {
+            "item": 14,
+            "score": 1.738271713256836,
+            "masked": false,
+            "rank": 11
+          },
+          {
+            "item": 22,
+            "score": 1.6182866096496582,
+            "masked": false,
+            "rank": 12
+          },
+          {
+            "item": 7,
+            "score": 1.4882996082305908,
+            "masked": false,
+            "rank": 13
+          },
+          {
+            "item": 6,
+            "score": 1.4738293886184692,
+            "masked": false,
+            "rank": 14
+          },
+          {
+            "item": 27,
+            "score": 1.2338151931762695,
+            "masked": false,
+            "rank": 15
+          },
+          {
+            "item": 8,
+            "score": 1.146378755569458,
+            "masked": false,
+            "rank": 16
+          },
+          {
+            "item": 23,
+            "score": 0.9949183464050293,
+            "masked": false,
+            "rank": 17
+          },
+          {
+            "item": 24,
+            "score": 0.6470746397972107,
+            "masked": false,
+            "rank": 18
+          },
+          {
+            "item": 0,
+            "score": -0.16708117723464966,
+            "masked": false,
+            "rank": 19
+          },
+          {
+            "item": 5,
+            "score": -2.668459177017212,
+            "masked": false,
+            "rank": 20
+          }
+        ],
+        "hit_rank": 17,
+        "user_vec": [
+          0.73,
+          0.28,
+          0.678,
+          -0.44,
+          0.337,
+          0.313,
+          -0.42,
+          -0.438,
+          1.27,
+          -0.367,
+          0.153,
+          -0.271,
+          0.533,
+          0.168,
+          1.03,
+          0.398
+        ]
+      },
+      {
+        "user": 2,
+        "ground_truth": [
+          0,
+          4,
+          21
+        ],
+        "masked_items": [
+          4,
+          21,
+          23
+        ],
+        "ranking": [
+          {
+            "item": 24,
+            "score": 2.4929134845733643,
+            "masked": false,
+            "rank": 1
+          },
+          {
+            "item": 27,
+            "score": 0.37229543924331665,
+            "masked": false,
+            "rank": 2
+          },
+          {
+            "item": 5,
+            "score": 0.2742747366428375,
+            "masked": false,
+            "rank": 3
+          },
+          {
+            "item": 14,
+            "score": 0.0462009459733963,
+            "masked": false,
+            "rank": 4
+          },
+          {
+            "item": 0,
+            "score": -0.16655713319778442,
+            "masked": false,
+            "rank": 5
+          },
+          {
+            "item": 22,
+            "score": -0.2631727457046509,
+            "masked": false,
+            "rank": 6
+          },
+          {
+            "item": 29,
+            "score": -0.27824100852012634,
+            "masked": false,
+            "rank": 7
+          },
+          {
+            "item": 18,
+            "score": -0.5773213505744934,
+            "masked": false,
+            "rank": 8
+          },
+          {
+            "item": 17,
+            "score": -0.7397782802581787,
+            "masked": false,
+            "rank": 9
+          },
+          {
+            "item": 20,
+            "score": -1.0593290328979492,
+            "masked": false,
+            "rank": 10
+          },
+          {
+            "item": 26,
+            "score": -1.2503347396850586,
+            "masked": false,
+            "rank": 11
+          },
+          {
+            "item": 25,
+            "score": -1.638960838317871,
+            "masked": false,
+            "rank": 12
+          },
+          {
+            "item": 3,
+            "score": -1.6965750455856323,
+            "masked": false,
+            "rank": 13
+          },
+          {
+            "item": 16,
+            "score": -1.9556909799575806,
+            "masked": false,
+            "rank": 14
+          },
+          {
+            "item": 19,
+            "score": -2.381767749786377,
+            "masked": false,
+            "rank": 15
+          },
+          {
+            "item": 15,
+            "score": -2.396045446395874,
+            "masked": false,
+            "rank": 16
+          },
+          {
+            "item": 13,
+            "score": -2.40232515335083,
+            "masked": false,
+            "rank": 17
+          },
+          {
+            "item": 7,
+            "score": -2.5504469871520996,
+            "masked": false,
+            "rank": 18
+          },
+          {
+            "item": 11,
+            "score": -2.5721426010131836,
+            "masked": false,
+            "rank": 19
+          },
+          {
+            "item": 1,
+            "score": -2.6114141941070557,
+            "masked": false,
+            "rank": 20
+          },
+          {
+            "item": 2,
+            "score": -2.8726260662078857,
+            "masked": false,
+            "rank": 21
+          },
+          {
+            "item": 12,
+            "score": -2.955387830734253,
+            "masked": false,
+            "rank": 22
+          },
+          {
+            "item": 28,
+            "score": -3.5926830768585205,
+            "masked": false,
+            "rank": 23
+          },
+          {
+            "item": 10,
+            "score": -3.9207472801208496,
+            "masked": false,
+            "rank": 24
+          },
+          {
+            "item": 8,
+            "score": -4.061045169830322,
+            "masked": false,
+            "rank": 25
+          },
+          {
+            "item": 9,
+            "score": -4.356508731842041,
+            "masked": false,
+            "rank": 26
+          },
+          {
+            "item": 6,
+            "score": -5.163247585296631,
+            "masked": false,
+            "rank": 27
+          }
+        ],
+        "hit_rank": 5,
+        "user_vec": [
+          -0.11,
+          -0.409,
+          0.258,
+          0.372,
+          0.431,
+          -0.183,
+          -0.454,
+          -0.434,
+          -0.445,
+          -0.353,
+          0.241,
+          -0.223,
+          -0.381,
+          0.309,
+          0.17,
+          -0.308
+        ]
+      },
+      {
+        "user": 3,
+        "ground_truth": [
+          11
+        ],
+        "masked_items": [
+          1,
+          23
+        ],
+        "ranking": [
+          {
+            "item": 5,
+            "score": -0.8436324596405029,
+            "masked": false,
+            "rank": 1
+          },
+          {
+            "item": 17,
+            "score": -1.259455919265747,
+            "masked": false,
+            "rank": 2
+          },
+          {
+            "item": 14,
+            "score": -1.4486511945724487,
+            "masked": false,
+            "rank": 3
+          },
+          {
+            "item": 18,
+            "score": -1.484318494796753,
+            "masked": false,
+            "rank": 4
+          },
+          {
+            "item": 29,
+            "score": -1.5212634801864624,
+            "masked": false,
+            "rank": 5
+          },
+          {
+            "item": 0,
+            "score": -1.5291476249694824,
+            "masked": false,
+            "rank": 6
+          },
+          {
+            "item": 22,
+            "score": -1.6506308317184448,
+            "masked": false,
+            "rank": 7
+          },
+          {
+            "item": 27,
+            "score": -1.6938523054122925,
+            "masked": false,
+            "rank": 8
+          },
+          {
+            "item": 20,
+            "score": -1.8806041479110718,
+            "masked": false,
+            "rank": 9
+          },
+          {
+            "item": 16,
+            "score": -1.888852596282959,
+            "masked": false,
+            "rank": 10
+          },
+          {
+            "item": 19,
+            "score": -2.022653102874756,
+            "masked": false,
+            "rank": 11
+          },
+          {
+            "item": 15,
+            "score": -2.092393636703491,
+            "masked": false,
+            "rank": 12
+          },
+          {
+            "item": 8,
+            "score": -2.0992543697357178,
+            "masked": false,
+            "rank": 13
+          },
+          {
+            "item": 6,
+            "score": -2.1200807094573975,
+            "masked": false,
+            "rank": 14
+          },
+          {
+            "item": 25,
+            "score": -2.148495674133301,
+            "masked": false,
+            "rank": 15
+          },
+          {
+            "item": 9,
+            "score": -2.1615145206451416,
+            "masked": false,
+            "rank": 16
+          },
+          {
+            "item": 10,
+            "score": -2.1729772090911865,
+            "masked": false,
+            "rank": 17
+          },
+          {
+            "item": 4,
+            "score": -2.2270116806030273,
+            "masked": false,
+            "rank": 18
+          },
+          {
+            "item": 12,
+            "score": -2.2361867427825928,
+            "masked": false,
+            "rank": 19
+          },
+          {
+            "item": 24,
+            "score": -2.277179002761841,
+            "masked": false,
+            "rank": 20
+          },
+          {
+            "item": 13,
+            "score": -2.3033125400543213,
+            "masked": false,
+            "rank": 21
+          },
+          {
+            "item": 26,
+            "score": -2.389843702316284,
+            "masked": false,
+            "rank": 22
+          },
+          {
+            "item": 21,
+            "score": -2.446370840072632,
+            "masked": false,
+            "rank": 23
+          },
+          {
+            "item": 3,
+            "score": -2.471222400665283,
+            "masked": false,
+            "rank": 24
+          },
+          {
+            "item": 11,
+            "score": -2.5182104110717773,
+            "masked": false,
+            "rank": 25
+          },
+          {
+            "item": 7,
+            "score": -2.5305404663085938,
+            "masked": false,
+            "rank": 26
+          },
+          {
+            "item": 28,
+            "score": -2.726184368133545,
+            "masked": false,
+            "rank": 27
+          },
+          {
+            "item": 2,
+            "score": -2.9600582122802734,
+            "masked": false,
+            "rank": 28
+          }
+        ],
+        "hit_rank": 25,
+        "user_vec": [
+          -0.371,
+          -0.155,
+          -0.392,
+          -0.391,
+          -0.298,
+          0.061,
+          -0.091,
+          -0.448,
+          -0.216,
+          0.231,
+          -0.116,
+          -0.073,
+          -0.301,
+          -0.149,
+          -0.487,
+          -0.286
+        ]
+      },
+      {
+        "user": 4,
+        "ground_truth": [
+          3,
+          21
+        ],
+        "masked_items": [
+          28
+        ],
+        "ranking": [
+          {
+            "item": 20,
+            "score": 1.9718528985977173,
+            "masked": false,
+            "rank": 1
+          },
+          {
+            "item": 23,
+            "score": 1.3208991289138794,
+            "masked": false,
+            "rank": 2
+          },
+          {
+            "item": 6,
+            "score": 1.233583688735962,
+            "masked": false,
+            "rank": 3
+          },
+          {
+            "item": 26,
+            "score": 1.1857985258102417,
+            "masked": false,
+            "rank": 4
+          },
+          {
+            "item": 9,
+            "score": 1.0310378074645996,
+            "masked": false,
+            "rank": 5
+          },
+          {
+            "item": 13,
+            "score": 0.9519848227500916,
+            "masked": false,
+            "rank": 6
+          },
+          {
+            "item": 21,
+            "score": 0.8658860325813293,
+            "masked": false,
+            "rank": 7
+          },
+          {
+            "item": 10,
+            "score": 0.7628730535507202,
+            "masked": false,
+            "rank": 8
+          },
+          {
+            "item": 8,
+            "score": 0.5501082539558411,
+            "masked": false,
+            "rank": 9
+          },
+          {
+            "item": 25,
+            "score": 0.36478912830352783,
+            "masked": false,
+            "rank": 10
+          },
+          {
+            "item": 22,
+            "score": 0.21463677287101746,
+            "masked": false,
+            "rank": 11
+          },
+          {
+            "item": 11,
+            "score": -0.18972480297088623,
+            "masked": false,
+            "rank": 12
+          },
+          {
+            "item": 27,
+            "score": -0.5731348395347595,
+            "masked": false,
+            "rank": 13
+          },
+          {
+            "item": 14,
+            "score": -0.8328583240509033,
+            "masked": false,
+            "rank": 14
+          },
+          {
+            "item": 1,
+            "score": -1.204393744468689,
+            "masked": false,
+            "rank": 15
+          },
+          {
+            "item": 0,
+            "score": -1.2065154314041138,
+            "masked": false,
+            "rank": 16
+          },
+          {
+            "item": 24,
+            "score": -1.2493005990982056,
+            "masked": false,
+            "rank": 17
+          },
+          {
+            "item": 29,
+            "score": -1.26786208152771,
+            "masked": false,
+            "rank": 18
+          },
+          {
+            "item": 3,
+            "score": -1.275579810142517,
+            "masked": false,
+            "rank": 19
+          },
+          {
+            "item": 7,
+            "score": -1.390507698059082,
+            "masked": false,
+            "rank": 20
+          },
+          {
+            "item": 16,
+            "score": -1.5587272644042969,
+            "masked": false,
+            "rank": 21
+          },
+          {
+            "item": 2,
+            "score": -1.6219449043273926,
+            "masked": false,
+            "rank": 22
+          },
+          {
+            "item": 19,
+            "score": -2.080515146255493,
+            "masked": false,
+            "rank": 23
+          },
+          {
+            "item": 12,
+            "score": -2.279552459716797,
+            "masked": false,
+            "rank": 24
+          },
+          {
+            "item": 5,
+            "score": -2.4289236068725586,
+            "masked": false,
+            "rank": 25
+          },
+          {
+            "item": 17,
+            "score": -2.526094436645508,
+            "masked": false,
+            "rank": 26
+          },
+          {
+            "item": 15,
+            "score": -2.7801272869110107,
+            "masked": false,
+            "rank": 27
+          },
+          {
+            "item": 4,
+            "score": -3.1370861530303955,
+            "masked": false,
+            "rank": 28
+          },
+          {
+            "item": 18,
+            "score": -3.6813735961914062,
+            "masked": false,
+            "rank": 29
+          }
+        ],
+        "hit_rank": 7,
+        "user_vec": [
+          -0.391,
+          0.033,
+          0.268,
+          -0.419,
+          -0.029,
+          0.451,
+          -0.219,
+          -0.071,
+          1.212,
+          -0.479,
+          0.007,
+          0.277,
+          0.372,
+          -0.288,
+          1.009,
+          -0.27
+        ]
+      },
+      {
+        "user": 5,
+        "ground_truth": [
+          21,
+          25,
+          29
+        ],
+        "masked_items": [
+          17,
+          21,
+          25
+        ],
+        "ranking": [
+          {
+            "item": 23,
+            "score": 7.127547740936279,
+            "masked": false,
+            "rank": 1
+          },
+          {
+            "item": 24,
+            "score": 6.653584003448486,
+            "masked": false,
+            "rank": 2
+          },
+          {
+            "item": 4,
+            "score": 2.9406065940856934,
+            "masked": false,
+            "rank": 3
+          },
+          {
+            "item": 27,
+            "score": 2.1055054664611816,
+            "masked": false,
+            "rank": 4
+          },
+          {
+            "item": 22,
+            "score": 1.9341423511505127,
+            "masked": false,
+            "rank": 5
+          },
+          {
+            "item": 26,
+            "score": 1.8967397212982178,
+            "masked": false,
+            "rank": 6
+          },
+          {
+            "item": 20,
+            "score": 1.3745112419128418,
+            "masked": false,
+            "rank": 7
+          },
+          {
+            "item": 5,
+            "score": 0.405114084482193,
+            "masked": false,
+            "rank": 8
+          },
+          {
+            "item": 18,
+            "score": 0.3365304470062256,
+            "masked": false,
+            "rank": 9
+          },
+          {
+            "item": 3,
+            "score": 0.24971458315849304,
+            "masked": false,
+            "rank": 10
+          },
+          {
+            "item": 1,
+            "score": -0.03749191761016846,
+            "masked": false,
+            "rank": 11
+          },
+          {
+            "item": 0,
+            "score": -0.08852523565292358,
+            "masked": false,
+            "rank": 12
+          },
+          {
+            "item": 11,
+            "score": -0.19598492980003357,
+            "masked": false,
+            "rank": 13
+          },
+          {
+            "item": 29,
+            "score": -0.20856964588165283,
+            "masked": false,
+            "rank": 14
+          },
+          {
+            "item": 7,
+            "score": -0.23373308777809143,
+            "masked": false,
+            "rank": 15
+          },
+          {
+            "item": 14,
+            "score": -0.28704673051834106,
+            "masked": false,
+            "rank": 16
+          },
+          {
+            "item": 15,
+            "score": -0.704639732837677,
+            "masked": false,
+            "rank": 17
+          },
+          {
+            "item": 2,
+            "score": -0.8513286113739014,
+            "masked": false,
+            "rank": 18
+          },
+          {
+            "item": 19,
+            "score": -0.8801147937774658,
+            "masked": false,
+            "rank": 19
+          },
+          {
+            "item": 12,
+            "score": -1.2753437757492065,
+            "masked": false,
+            "rank": 20
+          },
+          {
+            "item": 16,
+            "score": -1.6871660947799683,
+            "masked": false,
+            "rank": 21
+          },
+          {
+            "item": 13,
+            "score": -1.9559910297393799,
+            "masked": false,
+            "rank": 22
+          },
+          {
+            "item": 8,
+            "score": -2.632009983062744,
+            "masked": false,
+            "rank": 23
+          },
+          {
+            "item": 10,
+            "score": -2.6771957874298096,
+            "masked": false,
+            "rank": 24
+          },
+          {
+            "item": 28,
+            "score": -2.774862289428711,
+            "masked": false,
+            "rank": 25
+          },
+          {
+            "item": 9,
+            "score": -3.2224478721618652,
+            "masked": false,
+            "rank": 26
+          },
+          {
+            "item": 6,
+            "score": -3.67205548286438,
+            "masked": false,
+            "rank": 27
+          }
+        ],
+        "hit_rank": 14,
+        "user_vec": [
+          0.4,
+          -0.306,
+          -0.062,
+          0.917,
+          0.778,
+          -0.37,
+          -0.331,
+          0.045,
+          -0.405,
+          -0.503,
+          -0.129,
+          -0.137,
+          -0.137,
+          0.408,
+          1.589,
+          -0.16
+        ]
+      },
+      {
+        "user": 6,
+        "ground_truth": [
+          10
+        ],
+        "masked_items": [
+          0,
+          1,
+          6,
+          8
+        ],
+        "ranking": [
+          {
+            "item": 17,
+            "score": 1.3352034091949463,
+            "masked": false,
+            "rank": 1
+          },
+          {
+            "item": 29,
+            "score": 1.006216287612915,
+            "masked": false,
+            "rank": 2
+          },
+          {
+            "item": 4,
+            "score": 0.9749763011932373,
+            "masked": false,
+            "rank": 3
+          },
+          {
+            "item": 14,
+            "score": 0.8023650050163269,
+            "masked": false,
+            "rank": 4
+          },
+          {
+            "item": 5,
+            "score": 0.38747113943099976,
+            "masked": false,
+            "rank": 5
+          },
+          {
+            "item": 13,
+            "score": 0.3194652795791626,
+            "masked": false,
+            "rank": 6
+          },
+          {
+            "item": 25,
+            "score": -0.0010582208633422852,
+            "masked": false,
+            "rank": 7
+          },
+          {
+            "item": 21,
+            "score": -0.02741757035255432,
+            "masked": false,
+            "rank": 8
+          },
+          {
+            "item": 20,
+            "score": -0.6380146741867065,
+            "masked": false,
+            "rank": 9
+          },
+          {
+            "item": 16,
+            "score": -0.6380911469459534,
+            "masked": false,
+            "rank": 10
+          },
+          {
+            "item": 27,
+            "score": -0.8405561447143555,
+            "masked": false,
+            "rank": 11
+          },
+          {
+            "item": 9,
+            "score": -0.8867948055267334,
+            "masked": false,
+            "rank": 12
+          },
+          {
+            "item": 3,
+            "score": -0.9343259334564209,
+            "masked": false,
+            "rank": 13
+          },
+          {
+            "item": 22,
+            "score": -0.9397062659263611,
+            "masked": false,
+            "rank": 14
+          },
+          {
+            "item": 2,
+            "score": -0.9671065807342529,
+            "masked": false,
+            "rank": 15
+          },
+          {
+            "item": 18,
+            "score": -1.1276581287384033,
+            "masked": false,
+            "rank": 16
+          },
+          {
+            "item": 26,
+            "score": -1.23626708984375,
+            "masked": false,
+            "rank": 17
+          },
+          {
+            "item": 24,
+            "score": -1.2912733554840088,
+            "masked": false,
+            "rank": 18
+          },
+          {
+            "item": 28,
+            "score": -1.3485780954360962,
+            "masked": false,
+            "rank": 19
+          },
+          {
+            "item": 10,
+            "score": -1.3634142875671387,
+            "masked": false,
+            "rank": 20
+          },
+          {
+            "item": 23,
+            "score": -1.5216954946517944,
+            "masked": false,
+            "rank": 21
+          },
+          {
+            "item": 19,
+            "score": -1.6449620723724365,
+            "masked": false,
+            "rank": 22
+          },
+          {
+            "item": 7,
+            "score": -1.7835575342178345,
+            "masked": false,
+            "rank": 23
+          },
+          {
+            "item": 12,
+            "score": -1.889431357383728,
+            "masked": false,
+            "rank": 24
+          },
+          {
+            "item": 15,
+            "score": -1.9622979164123535,
+            "masked": false,
+            "rank": 25
+          },
+          {
+            "item": 11,
+            "score": -2.139805555343628,
+            "masked": false,
+            "rank": 26
+          }
+        ],
+        "hit_rank": 20,
+        "user_vec": [
+          -0.263,
+          0.689,
+          0.64,
+          -0.401,
+          0.165,
+          0.106,
+          0.026,
+          -0.435,
+          -0.352,
+          0.044,
+          0.143,
+          -0.059,
+          -0.303,
+          0.052,
+          -0.468,
+          -0.395
+        ]
+      },
+      {
+        "user": 7,
+        "ground_truth": [
+          23
+        ],
+        "masked_items": [],
+        "ranking": [
+          {
+            "item": 28,
+            "score": 3.147935628890991,
+            "masked": false,
+            "rank": 1
+          },
+          {
+            "item": 11,
+            "score": 1.3015285730361938,
+            "masked": false,
+            "rank": 2
+          },
+          {
+            "item": 9,
+            "score": 1.2866039276123047,
+            "masked": false,
+            "rank": 3
+          },
+          {
+            "item": 10,
+            "score": 1.2854113578796387,
+            "masked": false,
+            "rank": 4
+          },
+          {
+            "item": 6,
+            "score": 1.1380031108856201,
+            "masked": false,
+            "rank": 5
+          },
+          {
+            "item": 29,
+            "score": 1.0841343402862549,
+            "masked": false,
+            "rank": 6
+          },
+          {
+            "item": 7,
+            "score": 1.0404231548309326,
+            "masked": false,
+            "rank": 7
+          },
+          {
+            "item": 8,
+            "score": 0.7403267621994019,
+            "masked": false,
+            "rank": 8
+          },
+          {
+            "item": 25,
+            "score": 0.6011472344398499,
+            "masked": false,
+            "rank": 9
+          },
+          {
+            "item": 13,
+            "score": 0.5935987234115601,
+            "masked": false,
+            "rank": 10
+          },
+          {
+            "item": 20,
+            "score": 0.37431007623672485,
+            "masked": false,
+            "rank": 11
+          },
+          {
+            "item": 14,
+            "score": 0.21742478013038635,
+            "masked": false,
+            "rank": 12
+          },
+          {
+            "item": 27,
+            "score": 0.20500895380973816,
+            "masked": false,
+            "rank": 13
+          },
+          {
+            "item": 26,
+            "score": -0.01401945948600769,
+            "masked": false,
+            "rank": 14
+          },
+          {
+            "item": 17,
+            "score": -0.08395862579345703,
+            "masked": false,
+            "rank": 15
+          },
+          {
+            "item": 22,
+            "score": -0.09046255052089691,
+            "masked": false,
+            "rank": 16
+          },
+          {
+            "item": 0,
+            "score": -0.21096472442150116,
+            "masked": false,
+            "rank": 17
+          },
+          {
+            "item": 19,
+            "score": -0.49870765209198,
+            "masked": false,
+            "rank": 18
+          },
+          {
+            "item": 12,
+            "score": -0.5080333352088928,
+            "masked": false,
+            "rank": 19
+          },
+          {
+            "item": 5,
+            "score": -0.5616831183433533,
+            "masked": false,
+            "rank": 20
+          },
+          {
+            "item": 16,
+            "score": -0.6558926105499268,
+            "masked": false,
+            "rank": 21
+          },
+          {
+            "item": 15,
+            "score": -0.8830336928367615,
+            "masked": false,
+            "rank": 22
+          },
+          {
+            "item": 18,
+            "score": -1.1790874004364014,
+            "masked": false,
+            "rank": 23
+          },
+          {
+            "item": 2,
+            "score": -1.2873848676681519,
+            "masked": false,
+            "rank": 24
+          },
+          {
+            "item": 24,
+            "score": -1.8369982242584229,
+            "masked": false,
+            "rank": 25
+          },
+          {
+            "item": 21,
+            "score": -1.9697085618972778,
+            "masked": false,
+            "rank": 26
+          },
+          {
+            "item": 1,
+            "score": -2.384158134460449,
+            "masked": false,
+            "rank": 27
+          },
+          {
+            "item": 3,
+            "score": -2.539111852645874,
+            "masked": false,
+            "rank": 28
+          },
+          {
+            "item": 23,
+            "score": -2.794381856918335,
+            "masked": false,
+            "rank": 29
+          },
+          {
+            "item": 4,
+            "score": -4.145211219787598,
+            "masked": false,
+            "rank": 30
+          }
+        ],
+        "hit_rank": 29,
+        "user_vec": [
+          -0.068,
+          -0.148,
+          -0.303,
+          -0.485,
+          -0.072,
+          0.757,
+          -0.132,
+          -0.149,
+          0.423,
+          0.152,
+          0.417,
+          -0.138,
+          -0.06,
+          -0.182,
+          -0.321,
+          0.241
+        ]
+      }
+    ],
+    "ks": [
+      1,
+      5,
+      10,
+      20
+    ]
+  }
+}

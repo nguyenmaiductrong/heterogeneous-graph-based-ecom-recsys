@@ -17,11 +17,12 @@ Dự án gồm hai phần chính:
 2. [Luồng Xử Lý](#luồng-xử-lý)
 3. [Dữ Liệu](#dữ-liệu)
 4. [Cài Đặt](#cài-đặt)
-5. [Chuẩn Bị Dữ Liệu](#chuẩn-bị-dữ-liệu)
-6. [Huấn Luyện](#huấn-luyện)
-7. [Đánh Giá](#đánh-giá)
-8. [Thành Phần Chính](#thành-phần-chính)
-9. [Notebook Và Log](#notebook-và-log)
+5. [Chạy Demo Trực Quan](#chạy-demo-trực-quan)
+6. [Chuẩn Bị Dữ Liệu](#chuẩn-bị-dữ-liệu)
+7. [Huấn Luyện](#huấn-luyện)
+8. [Đánh Giá](#đánh-giá)
+9. [Thành Phần Chính](#thành-phần-chính)
+10. [Notebook Và Log](#notebook-và-log)
 
 ## Cấu Trúc Dự Án
 
@@ -75,6 +76,7 @@ heterogeneous-graph-based-ecom-recsys/
 │       └── fig_user_purchase_sequence.png
 │
 ├── data/                          # Không version control: dữ liệu tải về hoặc artefact pipeline
+├── demo/                          # Demo web tĩnh trực quan, chạy bằng HTTP server từ repo root
 ├── assets/                        # Tài nguyên minh họa nếu cần
 ├── requirements.txt
 ├── pytest.ini
@@ -236,6 +238,42 @@ Thiết lập `PYTHONPATH` khi chạy script từ repo root:
 ```bash
 export PYTHONPATH="$PWD:${PYTHONPATH:-}"
 ```
+
+## Chạy Demo Trực Quan
+
+Demo cần chạy là web tĩnh trong thư mục [demo](demo/), không phải web/backend trong `src`. Demo đọc `demo/demo_data.json` bằng `fetch`, vì vậy không mở trực tiếp `demo/index.html` bằng `file://`; hãy bật HTTP server từ thư mục gốc repo.
+
+Từ repo root:
+
+```bash
+python -m http.server 8000 --bind 127.0.0.1
+```
+
+Sau đó mở trình duyệt:
+
+```text
+http://127.0.0.1:8000/demo/
+```
+
+Nếu cổng `8000` đang bận, đổi sang cổng khác:
+
+```bash
+python -m http.server 8001 --bind 127.0.0.1
+```
+
+Rồi mở:
+
+```text
+http://127.0.0.1:8001/demo/
+```
+
+Demo mặc định chạy bằng dữ liệu tĩnh có sẵn trong [demo/demo_data.json](demo/demo_data.json). Nếu cần tạo lại dữ liệu demo từ code mô hình:
+
+```bash
+python scripts/build_demo_data.py
+```
+
+Lệnh này ghi đè `demo/demo_data.json`.
 
 ## Chuẩn Bị Dữ Liệu
 
