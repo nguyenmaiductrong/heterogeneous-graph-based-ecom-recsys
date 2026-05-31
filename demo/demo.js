@@ -11,14 +11,14 @@
     };
 
     const state = { train: null, eval: null }; // active step index per tab (null = chưa mở)
-    const liveEval = { status: "loading", health: null, user: null, recommendation: null, error: null };
     let activeUser = null;
     let activeItem = null;
 
     const $ = (sel) => document.querySelector(sel);
     const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+    const th = (label, title, cls = "") => `<th${cls ? ` class="${cls}"` : ""} title="${esc(title)}">${label}</th>`;
     const itemLabel = (id) => { const it = ITEM[id]; return it ? `${it.label} · ${esc(it.category)}/${esc(it.brand)}` : `#product${id}`; };
-    const behBadge = (b) => `<span class="badge ${BEH[b].cls}">${BEH[b].label}</span>`;
+    const behBadge = (b) => `<span class="badge ${BEH[b].cls}" title="${BEH[b].label}: loại hành vi của người dùng với sản phẩm.">${BEH[b].label}</span>`;
     const fmt = (v, digits = 3) => Number(v || 0).toLocaleString("vi-VN", {
         minimumFractionDigits: digits,
         maximumFractionDigits: digits,
@@ -53,27 +53,22 @@
         const subtitle = products ? `${aLabel} · ${bLabel} = ${fmt(sum(products), 3)}` : `${aLabel} → ${bLabel}`;
         return `<div class="num-panel wide-panel">
             <div class="num-title">${title}<span>${subtitle}</span></div>
-            <div class="scroll"><table class="compact-table"><thead><tr><th>Chiều</th><th class="num">${esc(aLabel)}</th><th class="num">${esc(bLabel)}</th>${products ? `<th class="num">${esc(productLabel)}</th>` : ""}</tr></thead><tbody>${
+            <div class="scroll"><table class="compact-table"><thead><tr>${th("Chiều", "Chỉ số chiều trong vector embedding.")}${th(esc(aLabel), "Giá trị vector thứ nhất ở chiều này.", "num")}${th(esc(bLabel), "Giá trị vector thứ hai ở chiều này.", "num")}${products ? th(esc(productLabel), "Tích theo từng chiều, dùng để cộng thành dot product.", "num") : ""}</tr></thead><tbody>${
                 a.map((v, i) => `<tr><td class="code">d${i + 1}</td><td class="num">${signed(v, 3)}</td><td class="num">${signed(b[i], 3)}</td>${products ? `<td class="num"><b>${signed(products[i], 3)}</b></td>` : ""}</tr>`).join("")
             }</tbody></table></div>
         </div>`;
     }
     function statLine(items) {
-        return `<div class="num-grid">${items.map((it) => `<div class="num-chip"><span>${it.label}</span><b>${it.value}</b></div>`).join("")}</div>`;
+        return `<div class="num-grid">${items.map((it) => `<div class="num-chip" title="${esc(it.title || `${it.label}: ${it.value}`)}"><span>${it.label}</span><b>${it.value}</b></div>`).join("")}</div>`;
     }
     function bar(label, value, max, color) {
         const w = Math.max(2, (value / (max || 1)) * 100);
-        return `<div class="bar-row"><span>${esc(label)}</span>
+        return `<div class="bar-row" title="${esc(label)}: giá trị tương đối được biểu diễn bằng độ dài thanh."><span>${esc(label)}</span>
             <div class="bar-track"><div class="bar-fill" style="width:${w}%;background:${color}"></div></div>
             <strong>${typeof value === "number" ? value.toLocaleString("vi-VN") : value}</strong></div>`;
     }
     const statCard = (v, label, sub) =>
         `<div class="stat"><b>${v.toLocaleString("vi-VN")}</b><span>${label}</span><small>${sub}</small></div>`;
-
-    function liveProductAlias(product) {
-        const id = String(product?.id || product?.productIdx || "0").replace(/\D+/g, "");
-        return `#product${id || "?"}`;
-    }
 
     function anonymizeDemoData() {
         const categoryMap = new Map((D.vocab.categories || []).map((name, idx) => [name, `#category${idx + 1}`]));
@@ -85,126 +80,6 @@
             item.category = categoryMap.get(item.category) || "#category?";
             item.brand = brandMap.get(item.brand) || "#brand?";
         });
-    }
-
-    function apiOrigins() {
-        const origins = ["http://127.0.0.1:8000", "http://localhost:8000"];
-        return [...new Set(origins.filter(Boolean))];
-    }
-
-    async function apiJson(path, options = {}) {
-        let lastError = null;
-        for (const origin of apiOrigins()) {
-            try {
-                const response = await fetch(`${origin}${path}`, {
-                    headers: { "Content-Type": "application/json", ...(options.headers || {}) },
-                    ...options,
-                });
-                if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
-                return response.json();
-            } catch (error) {
-                lastError = error;
-            }
-        }
-        throw lastError || new Error("Backend API unavailable");
-    }
-
-    async function loadLiveEval() {
-        liveEval.status = "loading";
-        try {
-            const [health, bootstrap] = await Promise.all([
-                apiJson("/api/health"),
-                apiJson("/api/bootstrap"),
-            ]);
-            const user = bootstrap.users?.[0];
-            if (!user) throw new Error("Không có user demo trong SQLite.");
-            const recommendation = await apiJson("/api/recommendations", {
-                method: "POST",
-                body: JSON.stringify({
-                    userId: user.id,
-                    topK: 8,
-                    maskPurchased: true,
-                    weights: { view: 1, cart: 3, purchase: 5 },
-                    recencyDecay: 0.055,
-                    categoryWeight: 1.9,
-                    brandWeight: 1.35,
-                    popularityWeight: 0.85,
-                }),
-            });
-            liveEval.status = "ready";
-            liveEval.health = health;
-            liveEval.user = user;
-            liveEval.recommendation = recommendation;
-            liveEval.error = null;
-            renderEval();
-        } catch (error) {
-            liveEval.status = "offline";
-            liveEval.error = error;
-            renderEval();
-        }
-    }
-
-    function liveEvalPanel() {
-        if (liveEval.status === "loading") {
-            return `<section class="live-card">
-                <div>
-                    <p class="eyebrow">Live checkpoint</p>
-                    <h3>Đang tìm backend và best checkpoint</h3>
-                    <p class="note">Demo đang thử gọi <span class="code">/api/health</span>. Nếu backend chưa bật, tab này vẫn dùng dữ liệu tĩnh trong <span class="code">demo_data.json</span>.</p>
-                </div>
-                <div class="loader-line"><i></i></div>
-            </section>`;
-        }
-        if (liveEval.status === "offline") {
-            return `<section class="live-card warn">
-                <div>
-                    <p class="eyebrow">Live checkpoint</p>
-                    <h3>Backend chưa sẵn sàng</h3>
-                    <p class="note">Fallback sang demo tĩnh. Để load <span class="code">checkpoints/downloaded/epoch_003.pt</span>, chạy backend FastAPI ở cổng 8000 rồi refresh trang.</p>
-                </div>
-                <div class="formula">uvicorn src.backend.api:app --host 127.0.0.1 --port 8000</div>
-            </section>`;
-        }
-        const h = liveEval.health;
-        const model = h.model || {};
-        const rec = liveEval.recommendation || {};
-        const topRows = (rec.ranked || []).slice(0, 5).map((row, idx) => {
-            const parts = row.contribution || {};
-            return `<tr>
-                <td class="code">#${idx + 1}</td>
-                <td>${esc(liveProductAlias(row.product))}</td>
-                <td class="num">${fmt(row.score, 3)}</td>
-                <td class="num">${fmt(parts.model, 3)}</td>
-                <td class="num">${fmt(parts.category, 3)}</td>
-                <td class="num">${fmt(parts.brand, 3)}</td>
-                <td class="num">${fmt(parts.popularity, 3)}</td>
-            </tr>`;
-        }).join("");
-        const metricRows = Object.entries(model.metrics || {}).slice(0, 6).map(([k, v]) =>
-            `<div class="num-chip"><span>${esc(k)}</span><b>${typeof v === "number" ? fmt(v, 4) : esc(v)}</b></div>`).join("");
-        return `<section class="live-card ready">
-            <div class="live-head">
-                <div>
-                    <p class="eyebrow">Live checkpoint</p>
-                    <h3>Đã load best checkpoint epoch ${esc(model.epoch ?? "?")}</h3>
-                    <p class="note"><span class="code">${esc(model.checkpoint || "checkpoints/downloaded/epoch_003.pt")}</span></p>
-                </div>
-                <div class="status-pill">modelLoaded=${h.modelLoaded ? "true" : "false"}</div>
-            </div>
-            ${statLine([
-                { label: "user embeddings", value: model.users ?? "?" },
-                { label: "product embeddings", value: model.products ?? "?" },
-                { label: "demo users", value: h.users ?? "?" },
-                { label: "demo products", value: h.products ?? "?" },
-                { label: "demo events", value: h.events ?? "?" },
-            ])}
-            ${metricRows ? `<div class="num-grid compact-metrics">${metricRows}</div>` : ""}
-            <div class="grid cols-2">
-                <div class="formula">User đang chạy: <b>${esc(liveEval.user?.id || "?")}</b><br>Nguồn vector: <span class="code">${esc(rec.source?.querySource || "?")}</span><br>Mốc thời gian: ${esc(rec.source?.refTime || "?")}</div>
-                <div class="formula">Pipeline backend:<br>${(rec.source?.pipeline || []).slice(0, 4).map((s) => `• ${esc(s.name)}: ${esc(s.detail)}`).join("<br>")}</div>
-            </div>
-            <div class="scroll"><table class="compact-table"><thead><tr><th>rank</th><th>sản phẩm</th><th class="num">score</th><th class="num">model</th><th class="num">category</th><th class="num">brand</th><th class="num">pop</th></tr></thead><tbody>${topRows}</tbody></table></div>
-        </section>`;
     }
 
     // ===================== controls + pipeline track + stage =====================
@@ -237,13 +112,13 @@
                   chips: [[4, "Dựng đồ thị"], [5, "Lấy mẫu 2-hop"]] },
                 { arrow: "subgraph + Δt" },
                 { box: 1, ico: "🧠", title: "BPATMP Encoder", sub: `× ${D.meta.n_layers} lớp truyền tin`, tone: "green", wide: 1,
-                  chips: [[6, "1·Input Embedding"], [7, "2·Behavior-Aware W"], [8, "3·Temporal Attention"], [9, "4·Aggregation"], [10, "5·Intent Codebook"]] },
+                  chips: [[6, "1·Behavior-Aware W"], [7, "2·Temporal Attention"], [8, "3·Aggregation"], [9, "4·Intent Codebook"]] },
                 { arrow: "h: vector mỗi nút" },
                 { box: 1, ico: "📉", title: "Loss đa nhiệm", sub: "BPR · MBCL · Funnel · Mono", tone: "pink",
-                  chips: [[11, "Hàm mất mát"]] },
+                  chips: [[10, "Hàm mất mát"]] },
                 { arrow: "θ* sau hội tụ" },
                 { box: 1, ico: "✨", title: "Embedding", sub: "user & sản phẩm", tone: "amber",
-                  chips: [[12, "Embedding kết quả"]] },
+                  chips: [[11, "Embedding kết quả"]] },
             ];
         }
         return [
@@ -292,15 +167,10 @@
         if (idx === null) {
             return `<div class="stage-card"><div class="stage-empty">
                 <div class="big">👆</div>
-                <p><b>Chọn bước</b><br>Input · Công thức · Output · Bảng số</p>
+                <p><b>Chọn bước</b><br>Xem ý tưởng chính và minh họa trực quan của từng module</p>
             </div></div>`;
         }
         const s = steps[idx];
-        const flow = `<div class="stage-flow">
-            <div class="flow-box flow-from"><div class="flab">◀ Input</div>${s.from}</div>
-            <div class="flow-box flow-why"><div class="flab">∑ Công thức / phép tính</div>${s.why}</div>
-            <div class="flow-box flow-out"><div class="flab">▶ Output</div>${s.outFull}</div>
-        </div>`;
         const nav = `<div class="deck-nav">
             <button class="navbtn" data-nav="${tab}:-1" ${idx === 0 ? "disabled" : ""}>◀ Bước trước</button>
             <span class="deck-counter">Bước <b>${idx + 1}</b> / ${steps.length} · ${esc(s.label)}</span>
@@ -310,7 +180,6 @@
             <div class="slide-head"><span class="slide-num">${s.ico}</span>
                 <div><p class="eyebrow">${esc(s.phase || "")} · Bước ${idx + 1}/${steps.length}</p><h2>${esc(s.title)}</h2></div></div>
             ${s.desc ? `<p class="step-desc">${s.desc}</p>` : ""}
-            ${flow}
             <div class="slide-body">${s.body()}</div>
             ${nav}
         </div>`;
@@ -329,7 +198,7 @@
                 from: "<span class='code' title='Dữ liệu sự kiện thô từ hệ thống REES46 (mock), gồm các hành vi view/cart/purchase.'>mock events</span>.",
                 why: "<span class='code' title='Mỗi sự kiện được chuẩn hóa thành bộ 4: user_id (ai), item_id (sản phẩm nào), behavior (hành vi gì), timestamp (lúc nào).'>event → (user_id, item_id, behavior, timestamp)</span>.",
                 outFull: "<b class='outp' title='Bộ 4 chuẩn hóa: u = người dùng, i = sản phẩm, β = loại hành vi (view/cart/purchase), t = thời điểm.'>(u, i, β, t)</b>.",
-                body: () => `<div class="scroll"><table><thead><tr><th>Người dùng</th><th>Sản phẩm</th><th>Hành vi</th><th>Thời điểm (UTC)</th></tr></thead><tbody>${
+                body: () => `<div class="scroll"><table><thead><tr>${th("Người dùng", "ID người dùng phát sinh sự kiện.")}${th("Sản phẩm", "Sản phẩm được tương tác trong log.")}${th("Hành vi", "Loại tương tác: xem, thêm giỏ hoặc mua.")}${th("Thời điểm (UTC)", "Thời điểm sự kiện xảy ra, dùng cho temporal split và attention.")}</tr></thead><tbody>${
                     T.raw_sample.map((e) => `<tr><td class="code">${e.global_user}</td>
                     <td>${itemLabel(e.item)}</td><td>${behBadge(e.behavior)}</td><td class="code">${esc(e.ts_str)}</td></tr>`).join("")
                 }</tbody></table></div>`,
@@ -364,7 +233,7 @@
                 from: "<span class='code' title='Tập hợp tất cả ID thật (real_id) duy nhất, theo từng loại nút: user, item, category, brand.'>unique(real_id)</span> theo từng loại nút.",
                 why: "<span class='code' title='Sắp xếp các real_id, rồi gán chỉ mục 0, 1, 2... làm local_id. Đảm bảo mỗi nút có chỉ mục liên tục để tra bảng embedding.'>local_id = index(sorted(unique(real_id)))</span>.",
                 outFull: "<b class='outp' title='Bảng ánh xạ 2 chiều: từ ID thật sang ID cục bộ và ngược lại.'>real_id → local_id</b>.",
-                body: () => `<div class="scroll"><table><thead><tr><th>idx thật</th><th></th><th>idx cục bộ</th><th>Danh mục</th><th>Thương hiệu</th></tr></thead><tbody>${
+                body: () => `<div class="scroll"><table><thead><tr>${th("idx thật", "ID gốc trong dữ liệu sau xử lý.")}${th("", "Ánh xạ từ ID thật sang ID cục bộ.")}${th("idx cục bộ", "ID liên tục dùng để tra embedding.")}${th("Danh mục", "Danh mục của sản phẩm.")}${th("Thương hiệu", "Thương hiệu của sản phẩm.")}</tr></thead><tbody>${
                     D.vocab.items.slice(0, 10).map((it) => `<tr><td class="code">${it.global_idx}</td><td>→</td><td class="code">${it.id}</td><td>${esc(it.category)}</td><td>${esc(it.brand)}</td></tr>`).join("")
                 }</tbody></table></div>`,
             },
@@ -401,7 +270,7 @@
                     T.graph.edges.map((e) => {
                         const isS = ["belongs_to", "contains", "producedBy", "brands"].includes(e.name);
                         const col = isS ? "var(--struct)" : (BEH[e.name.replace("rev_", "")] ? BEH[e.name.replace("rev_", "")].color : "var(--accent)");
-                        return `<div class="rel-pill"><b style="color:${col}">${e.count}</b><span>${esc(e.src_type)} <span style="color:${col}">—${esc(e.name)}→</span> ${esc(e.dst_type)}</span></div>`;
+                        return `<div class="rel-pill" title="Số cạnh và chiều truyền tin của quan hệ ${esc(e.name)} trong đồ thị dị thể."><b style="color:${col}">${e.count}</b><span>${esc(e.src_type)} <span style="color:${col}">—${esc(e.name)}→</span> ${esc(e.dst_type)}</span></div>`;
                     }).join("")
                 }</div>`,
             },
@@ -419,23 +288,14 @@
                         <div style="margin: 12px 0 8px 0;"><b>Hop 1: Sản phẩm user trực tiếp tương tác</b> <small style="color:var(--txt-dim)">(được lấy mẫu theo từng loại hành vi)</small></div>
                         ${hop}
                         <div style="margin: 16px 0 8px 0;"><b>Hop 2: Lân cận mở rộng từ Hop 1</b> <small style="color:var(--txt-dim)">(sản phẩm liên quan, danh mục, thương hiệu...)</small></div>
-                        <div class="schema"><div class="rel-pill">📦 ${s.hop2_products.length} sản phẩm</div>
-                        <div class="rel-pill" style="border-color:var(--struct)">🏷️ ${s.hop2_categories.map((c) => D.vocab.categories[c]).join(", ")}</div>
-                        <div class="rel-pill" style="border-color:var(--struct)">™️ ${s.hop2_brands.map((b) => D.vocab.brands[b]).join(", ")}</div></div>`;
+                        <div class="schema"><div class="rel-pill" title="Các sản phẩm được mở rộng ở hop 2 từ vùng lân cận của user.">📦 ${s.hop2_products.length} sản phẩm</div>
+                        <div class="rel-pill" style="border-color:var(--struct)" title="Các category liên quan được lấy qua cạnh cấu trúc product-category.">🏷️ ${s.hop2_categories.map((c) => D.vocab.categories[c]).join(", ")}</div>
+                        <div class="rel-pill" style="border-color:var(--struct)" title="Các brand liên quan được lấy qua cạnh cấu trúc product-brand.">™️ ${s.hop2_brands.map((b) => D.vocab.brands[b]).join(", ")}</div></div>`;
                 },
             },
             {
-                ico: "🔡", phase: B, label: "1️⃣ Input Embedding", out: "h⁰ mỗi nút",
-                title: "Lớp 1 · Input Embedding (bảng tra cứu)",
-                desc: "Mỗi nút được gán một vector ngẫu nhiên ban đầu (h⁰) bằng cách tra bảng embedding theo loại nút và ID.",
-                from: "<span class='code' title='type(v): loại nút (user/item/category/brand). id(v): chỉ mục cục bộ của nút đó.'>type(v), id(v)</span>.",
-                why: "<span class='code' title='Tra bảng embedding E tương ứng với loại nút, lấy ra vector tại vị trí id(v). Ví dụ: E_user[3] → vector 16 chiều.'>h⁰_v = E_type[id(v)]</span>.",
-                outFull: "<b class='outp' title='Vector khởi tạo h⁰ có d chiều cho mỗi nút, sẽ được cập nhật qua các lớp truyền tin.'>h⁰ ∈ ℝ<sup>d</sup></b> cho từng nút.",
-                body: () => embeddingBlock(L),
-            },
-            {
-                ico: "🧩", phase: B, label: "2️⃣ Behavior-Aware Weight", out: "thông điệp m",
-                title: "Lớp 2 · BehaviorAwareWeight (biến đổi thông điệp)",
+                ico: "🧩", phase: B, label: "1️⃣ Behavior-Aware Weight", out: "thông điệp m",
+                title: "Lớp 1 · BehaviorAwareWeight (biến đổi thông điệp)",
                 desc: "Biến đổi embedding nguồn thành thông điệp m, với ma trận trọng số khác nhau tùy loại quan hệ ρ và hành vi β.",
                 from: "<span class='code' title='h_src: vector embedding của nút nguồn gửi tin. ρ: loại quan hệ (ví dụ view, cart). β: loại hành vi.'>h_src</span>, quan hệ <span class='code'>ρ</span>, hành vi <span class='code'>β</span>.",
                 why: "<span class='code' title='Ma trận Wρβ được phân rã thành: Wρ (chung cho quan hệ) + hiệu chỉnh low-rank Aρ·diag(zβ)·Bρᵀ theo hành vi β. Giúp tiết kiệm tham số.'>Wρβ = Wρ + Aρ·diag(zβ)·Bρᵀ</span><br><span class='code' title='Nhân ma trận Wρβ với h_src để tạo thông điệp m, chứa thông tin ngữ cảnh của nút nguồn.'>m = Wρβ·h_src</span>.",
@@ -443,8 +303,8 @@
                 body: () => behaviorWeightBlock(L),
             },
             {
-                ico: "⏱️", phase: B, label: "3️⃣ Temporal Attention", out: "α, gate",
-                title: "Lớp 3 · Temporal Attention (chú ý theo thời gian)",
+                ico: "⏱️", phase: B, label: "2️⃣ Temporal Attention", out: "α, gate",
+                title: "Lớp 2 · Temporal Attention (chú ý theo thời gian)",
                 desc: "Tính trọng số chú ý α và cổng gate cho mỗi cạnh, có tính đến khoảng cách thời gian Δt — sự kiện gần hơn được ưu tiên hơn.",
                 from: "<span class='code' title='m_e: thông điệp trên cạnh e. Δt_e: khoảng cách thời gian từ sự kiện e đến hiện tại. Q·K: tích vô hướng giữa query và key.'>m_e</span>, <span class='code'>Δt_e</span>, <span class='code'>Q·K</span>.",
                 why: "<span class='code' title='logit gồm 4 thành phần: (1) QK/√d: độ tương quan nội dung, (2) bρ: bias theo loại quan hệ, (3) u·Φ(Δt): bias thời gian học được, (4) -λβ·log(...): suy giảm thời gian theo hành vi.'>logit_e = QK/√d + bρ + u·Φ(Δt) − λβ·log(1+Δt/τ)</span><br><span class='code' title='α = softmax(logit): chuẩn hóa thành trọng số chú ý. gate = σ(...): cổng 0→1 kiểm soát mức độ đóng góp thực tế.'>α = softmax(logit)</span>, <span class='code'>gate = σ(...)</span>.",
@@ -452,8 +312,8 @@
                 body: () => attentionBlock(T.attention),
             },
             {
-                ico: "🧮", phase: B, label: "4️⃣ Aggregation", out: "h' mỗi nút",
-                title: "Lớp 4 · Behavior-Normalized Aggregation (gộp tin)",
+                ico: "🧮", phase: B, label: "3️⃣ Aggregation", out: "h' mỗi nút",
+                title: "Lớp 3 · Behavior-Normalized Aggregation (gộp tin)",
                 desc: "Gộp tất cả thông điệp đến theo từng loại hành vi, chuẩn hóa, rồi cộng với vector ban đầu h⁰ (residual connection).",
                 from: "<span class='code' title='Tích (α_e·gate_e)·m_e: thông điệp đã được cân bằng theo trọng số chú ý và cổng. Bucket β: nhóm cạnh theo loại hành vi.'>(α_e·gate_e)·m_e</span>, bucket <span class='code'>β</span>.",
                 why: "<span class='code' title='aggβ: gộp tất cả thông điệp trong cùng nhóm hành vi β bằng tổng có trọng số.'>aggβ = Σe∈β (αe·gatee)·me</span><br><span class='code' title='Chuẩn hóa (LayerNorm) từng bucket, nhân trọng số wβ, cộng tất cả lại với h⁰, rồi qua hàm kích hoạt ELU.'>h' = ELU(Σβ wβ·LayerNorm(aggβ)+h⁰)</span>.",
@@ -461,8 +321,8 @@
                 body: () => aggBlock(T.attention),
             },
             {
-                ico: "💡", phase: B, label: "5️⃣ Intent Codebook", out: "h'' (residual)",
-                title: "Lớp 5 · Intent Codebook (mã ý định dùng chung)",
+                ico: "💡", phase: B, label: "4️⃣ Intent Codebook", out: "h'' (residual)",
+                title: "Lớp 4 · Intent Codebook (mã ý định dùng chung)",
                 desc: "Bổ sung thông tin ý định mua sắm bằng cách kết hợp h' với E mã ý định dùng chung (codebook), qua attention mềm.",
                 from: "<span class='code' title='h-prime: vector nút sau aggregation. C: bảng codebook gồm E vector ý định, mỗi vector đại diện cho một xu hướng mua sắm.'>h'</span>, codebook <span class='code'>C ∈ ℝ<sup>E×d</sup></span>.",
                 why: "<span class='code' title='Tính trọng số attention giữa h-prime và từng mã ý định Ce trong codebook.'>a = softmax(h'·Cᵀ/√d)</span><br><span class='code' title='Cộng residual: h-prime + tổ hợp tuyến tính các mã ý định theo trọng số a. Giúp bổ sung thông tin ý định toàn cục.'>h'' = h' + Σe ae·Ce</span>.",
@@ -485,7 +345,7 @@
                 from: `<span class='code' title='θ: tất cả tham số của mô hình (embedding tables, ma trận W, codebook...) sau khi huấn luyện xong.'>θ</span> sau ${D.meta.train_iters} iter.`,
                 why: "<span class='code' title='Điểm tương thích giữa user u và item i = tích vô hướng của 2 vector embedding tương ứng.'>score(u,i)=h_u·h_i</span>.",
                 outFull: "<b class='outp' title='h_user và h_item: vector embedding cuối cùng, dùng để tính điểm và xếp hạng sản phẩm gợi ý.'>h_user</b>, <b class='outp'>h_item</b> dùng cho ranking.",
-                body: () => `<div class="scroll"><table><thead><tr><th>Sản phẩm</th><th>Danh mục</th><th>Embedding (d=${D.meta.embed_dim})</th></tr></thead><tbody>${
+                body: () => `<div class="scroll"><table><thead><tr>${th("Sản phẩm", "Sản phẩm đã có embedding sau huấn luyện.")}${th("Danh mục", "Danh mục giúp diễn giải ngữ cảnh sản phẩm.")}${th(`Embedding (d=${D.meta.embed_dim})`, "Dải màu biểu diễn vector embedding; rê vào vector để xem giá trị.")}</tr></thead><tbody>${
                     D.vocab.items.slice(0, 8).map((it) => `<tr><td>${it.label}</td><td>${esc(it.category)}</td><td>${vecStrip(it.vec)}</td></tr>`).join("")
                 }</tbody></table></div>
                 <div class="grid cols-2" style="margin-top:12px">
@@ -517,11 +377,11 @@
 
     function behaviorWeightBlock(L) {
         const b = L.behavior_aware, mx = Math.max(...Object.values(b.behaviors).map((x) => x.w_norm));
-        const zHeader = Array.from({ length: L.rank }, (_, i) => `<th class="num">z${i + 1}</th>`).join("");
+        const zHeader = Array.from({ length: L.rank }, (_, i) => th(`z${i + 1}`, "Một chiều trong vector hành vi zβ, dùng để điều chỉnh ma trận theo từng hành vi.", "num")).join("");
         const zRows = ["view", "cart", "purchase"].map((k) =>
             `<tr><td>${behBadge(k)}</td>${b.behaviors[k].z_beta.map((v) => `<td class="num">${fmt(v, 3)}</td>`).join("")}<td class="num"><b>${fmt(b.behaviors[k].w_norm, 3)}</b></td></tr>`).join("");
         const rows = ["view", "cart", "purchase"].map((k) =>
-            `<div class="veclane"><span class="vlab">${behBadge(k)} z<sub>β</sub></span>${vecStrip(b.behaviors[k].z_beta)}
+            `<div class="veclane"><span class="vlab" title="Vector zβ đại diện cho phần điều chỉnh riêng của hành vi này trong Behavior-Aware Weight.">${behBadge(k)} z<sub>β</sub></span>${vecStrip(b.behaviors[k].z_beta)}
             <span class="note" style="margin:0">‖W<sub>ρ,β</sub>‖ = <b>${b.behaviors[k].w_norm}</b></span></div>`).join("");
         return `<div class="formula">W<sub>ρ,β</sub> = W<sub>ρ</sub> + A<sub>ρ</sub> · diag(<b class="hl-purchase">z<sub>β</sub></b>) · B<sub>ρ</sub><sup>T</sup><br>
             m = W<sub>ρ,β</sub> · h<sub>src</sub> &nbsp;&nbsp; r=${L.rank}</div>
@@ -532,11 +392,10 @@
             { label: "‖m mua‖", value: fmt(norm(b.example_msg_vec), 3) },
         ])}
         ${rows}
-        <div class="scroll" style="margin-top:10px"><table class="compact-table"><thead><tr><th>Hành vi</th>${zHeader}<th class="num">‖Wρ,β‖</th></tr></thead><tbody>${zRows}</tbody></table></div>
+        <div class="scroll" style="margin-top:10px"><table class="compact-table"><thead><tr>${th("Hành vi", "Loại hành vi gốc của thông điệp: view, cart hoặc purchase.")}${zHeader}${th("‖Wρ,β‖", "Độ lớn của ma trận biến đổi sau khi kết hợp quan hệ ρ và hành vi β.", "num")}</tr></thead><tbody>${zRows}</tbody></table></div>
         ${bar("‖W‖ Xem", b.behaviors.view.w_norm, mx, "var(--view)")}${bar("‖W‖ Giỏ", b.behaviors.cart.w_norm, mx, "var(--cart)")}${bar("‖W‖ Mua", b.behaviors.purchase.w_norm, mx, "var(--purchase)")}
-        <div class="veclane"><span class="vlab">h (sản phẩm #${L.focus_product})</span>${vecStrip(b.example_src_vec)}</div>
-        <div class="veclane"><span class="vlab">m = W<sub>ρ,mua</sub>·h</span>${vecStrip(b.example_msg_vec)}</div>
-        ${twoVectorTable("Bảng số: h → m", "h_i", b.example_src_vec, "m_i", b.example_msg_vec)}`;
+        <div class="veclane"><span class="vlab" title="Vector của sản phẩm nguồn trước khi biến đổi thành thông điệp.">h (sản phẩm #${L.focus_product})</span>${vecStrip(b.example_src_vec)}</div>
+        <div class="veclane"><span class="vlab" title="Thông điệp sau khi đi qua ma trận phụ thuộc quan hệ và hành vi.">m = W<sub>ρ,mua</sub>·h</span>${vecStrip(b.example_msg_vec)}</div>`;
     }
 
     function attentionBlock(a) {
@@ -561,8 +420,19 @@
             <div class="formula mini">logit = ${signed(sample.qk, 3)} + ${signed(sample.b_rho || 0, 3)} + ${signed(sample.time_bias, 3)} − ${fmt(sample.decay, 3)} = <b>${signed(sample.logit, 3)}</b><br>
             hệ số gửi tin = α × gate = ${fmt(sample.alpha, 3)} × ${fmt(sample.gate, 3)} = <b>${fmt(sample.alpha * sample.gate, 3)}</b></div>
         </div>
-        <div class="scroll" style="margin-top:12px"><table><thead><tr><th>Hành vi</th><th>Nguồn</th><th class="num">Δt (ngày)</th><th class="num">Q·K</th><th class="num">time bias</th><th class="num">decay</th><th class="num">logit</th><th class="num">α</th><th class="num">gate</th><th class="num">α·gate</th></tr></thead><tbody>${rows}</tbody></table></div>
-        <div class="scroll" style="margin-top:12px"><table class="compact-table"><thead><tr><th colspan="5">Top cạnh đóng góp lớn nhất</th></tr><tr><th>Hành vi</th><th>Nguồn</th><th class="num">α</th><th class="num">gate</th><th class="num">α·gate</th></tr></thead><tbody>${topRows}</tbody></table></div>
+        <div class="scroll" style="margin-top:12px"><table><thead><tr>
+            ${th("Hành vi", "Loại tương tác tạo ra cạnh: view, cart hoặc purchase.")}
+            ${th("Nguồn", "Sản phẩm hoặc nút nguồn đang gửi thông điệp tới user.")}
+            ${th("Δt (ngày)", "Khoảng cách từ thời điểm xảy ra hành vi đến thời điểm dự đoán.", "num")}
+            ${th("Q·K", "Mức tương đồng nội dung giữa query của nút đích và key của nút nguồn.", "num")}
+            ${th("time bias", "Độ lệch học được từ mã hóa thời gian Fourier.", "num")}
+            ${th("decay", "Mức phạt do tương tác đã cũ; phụ thuộc vào loại hành vi.", "num")}
+            ${th("logit", "Điểm chú ý trước softmax, kết hợp nội dung, quan hệ và thời gian.", "num")}
+            ${th("α", "Trọng số attention sau softmax; các cạnh cạnh tranh với nhau.", "num")}
+            ${th("gate", "Cổng giá trị từ 0 đến 1, kiểm soát lượng thông tin được truyền qua.", "num")}
+            ${th("α·gate", "Mức đóng góp thực tế của cạnh sau khi nhân attention với gate.", "num")}
+        </tr></thead><tbody>${rows}</tbody></table></div>
+        <div class="scroll" style="margin-top:12px"><table class="compact-table"><thead><tr><th colspan="5" title="Các cạnh có α·gate cao nhất, tức ảnh hưởng mạnh nhất trong bước attention.">Top cạnh đóng góp lớn nhất</th></tr><tr>${th("Hành vi", "Loại hành vi của cạnh.")}${th("Nguồn", "Nút nguồn gửi thông điệp.")}${th("α", "Trọng số attention.", "num")}${th("gate", "Cổng giá trị.", "num")}${th("α·gate", "Đóng góp cuối cùng của cạnh.", "num")}</tr></thead><tbody>${topRows}</tbody></table></div>
         <div style="margin-top:14px">
             ${bar("Xem", lam.view, Math.max(lam.view, lam.cart, lam.purchase), "var(--view)")}${bar("Giỏ", lam.cart, Math.max(lam.view, lam.cart, lam.purchase), "var(--cart)")}${bar("Mua", lam.purchase, Math.max(lam.view, lam.cart, lam.purchase), "var(--purchase)")}
         </div>`;
@@ -582,7 +452,7 @@
         return `<div class="formula">aggᵦ = Σ<sub>e∈β</sub> (α<sub>e</sub>·gate<sub>e</sub>)·m<sub>e</sub><br>
         h' = <b>ELU</b>(Σ<sub>β</sub> wᵦ·<b>LayerNorm</b>(aggᵦ) + h⁰)</div>
         ${bar("Xem", w.view, 1, "var(--view)")}${bar("Giỏ", w.cart, 1, "var(--cart)")}${bar("Mua", w.purchase, 1, "var(--purchase)")}${bar("Cấu trúc", w.struct, 1, "var(--struct)")}
-        <div class="scroll" style="margin-top:12px"><table class="compact-table"><thead><tr><th>Bucket</th><th class="num">số cạnh</th><th class="num">Σα</th><th class="num">Σα·gate</th><th class="num">wᵦ</th><th class="num">wᵦ·Σα·gate</th></tr></thead><tbody>${bucketRows}</tbody></table></div>
+        <div class="scroll" style="margin-top:12px"><table class="compact-table"><thead><tr>${th("Bucket", "Nhóm thông điệp theo hành vi hoặc cấu trúc.")}${th("số cạnh", "Số cạnh thuộc bucket này.", "num")}${th("Σα", "Tổng trọng số attention trong bucket.", "num")}${th("Σα·gate", "Tổng đóng góp sau khi nhân attention với gate.", "num")}${th("wᵦ", "Trọng số học được để trộn bucket hành vi β.", "num")}${th("wᵦ·Σα·gate", "Mức ảnh hưởng cuối cùng của bucket sau khi trộn.", "num")}</tr></thead><tbody>${bucketRows}</tbody></table></div>
         ${vectorTable("h' user sau aggregation, trước intent", D.training.layers.intent.pre_vec, "var(--purchase)")}`;
     }
 
@@ -593,11 +463,10 @@
         return `<div class="formula">a = softmax(h' · C<sup>T</sup> / √d)<br>
         h'' = h' + Σ<sub>e=1..${L.n_intents}</sub> aₑ · Cₑ</div>
         ${bars}
-        <div class="scroll" style="margin-top:10px"><table class="compact-table"><thead><tr><th>Mã ý định</th><th class="num">aₑ</th><th class="num">tỷ trọng</th></tr></thead><tbody>${intentRows}</tbody></table></div>
-        <div class="veclane" style="margin-top:8px"><span class="vlab">h' (trước)</span>${vecStrip(t.pre_vec)}</div>
-        <div class="veclane"><span class="vlab">+ Σ aₑ·Cₑ (residual)</span>${vecStrip(t.residual_vec)}</div>
-        <div class="veclane"><span class="vlab">h'' (sau) → embedding cuối</span>${vecStrip(t.post_vec)}</div>
-        ${twoVectorTable("Cộng residual ý định theo từng chiều", "h'_i", t.pre_vec, "residual_i", t.residual_vec)}
+        <div class="scroll" style="margin-top:10px"><table class="compact-table"><thead><tr>${th("Mã ý định", "Một vector nguyên mẫu trong intent codebook.")}${th("aₑ", "Trọng số attention của embedding lên mã ý định này.", "num")}${th("tỷ trọng", "Tỷ lệ đóng góp của mã ý định trong tổ hợp cuối.", "num")}</tr></thead><tbody>${intentRows}</tbody></table></div>
+        <div class="veclane" style="margin-top:8px"><span class="vlab" title="Embedding trước khi bổ sung ý định từ codebook.">h' (trước)</span>${vecStrip(t.pre_vec)}</div>
+        <div class="veclane"><span class="vlab" title="Phần ý định được trích từ codebook và cộng bù vào embedding.">+ Σ aₑ·Cₑ (residual)</span>${vecStrip(t.residual_vec)}</div>
+        <div class="veclane"><span class="vlab" title="Embedding cuối sau khi đã bổ sung ý định.">h'' (sau) → embedding cuối</span>${vecStrip(t.post_vec)}</div>
         ${vectorTable("h'' user cuối cùng", t.post_vec, "var(--purchase)")}`;
     }
 
@@ -606,7 +475,20 @@
         const W = 560, H = 150, pad = 24;
         const xs = (i) => pad + (i / (c.length - 1)) * (W - 2 * pad);
         const ys = (v) => H - pad - (v / (maxL || 1)) * (H - 2 * pad);
-        const line = (k) => "M" + c.map((p, i) => `${xs(i).toFixed(1)},${ys(p[k]).toFixed(1)}`).join(" L");
+        const lossValue = (p, k) => {
+            if (k === "mbcl") return lw.lambda_cl * p.cl;
+            if (k === "funnel") return lw.lambda_conv * p.conv;
+            if (k === "mono") return lw.lambda_mono * p.mono;
+            return p[k];
+        };
+        const line = (k) => "M" + c.map((p, i) => `${xs(i).toFixed(1)},${ys(lossValue(p, k)).toFixed(1)}`).join(" L");
+        const legend = [
+            { label: "tổng loss", color: "var(--accent)", y: 16 },
+            { label: "BPR", color: "var(--purchase)", y: 30 },
+            { label: "MBCL", color: "var(--view)", y: 44 },
+            { label: "Funnel", color: "var(--cart)", y: 58 },
+            { label: "Mono", color: "var(--struct)", y: 72 },
+        ].map((l) => `<text x="${W - pad}" y="${l.y}" fill="${l.color}" font-size="11" text-anchor="end">${l.label}</text>`).join("");
         const pickIters = [0, 20, 100, 300, 500, 699];
         const picked = pickIters.map((it) => c.find((p) => p.iter === it)).filter(Boolean);
         const lossRows = picked.map((p) => {
@@ -618,9 +500,11 @@
         <svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;background:var(--bg-ink);border:1px solid var(--line);border-radius:10px;margin-top:10px">
             <path d="${line("total")}" fill="none" stroke="var(--accent)" stroke-width="2"/>
             <path d="${line("bpr")}" fill="none" stroke="var(--purchase)" stroke-width="1.6" stroke-dasharray="4 3"/>
-            <text x="${W - pad}" y="16" fill="var(--accent)" font-size="11" text-anchor="end">tổng loss</text>
-            <text x="${W - pad}" y="30" fill="var(--purchase)" font-size="11" text-anchor="end">BPR</text></svg>
-        <div class="scroll" style="margin-top:10px"><table class="compact-table"><thead><tr><th class="num">iter</th><th class="num">total</th><th class="num">BPR</th><th class="num">0.15·MBCL</th><th class="num">0.10·Funnel</th><th class="num">0.05·Mono</th><th class="num">cộng thành phần</th></tr></thead><tbody>${lossRows}</tbody></table></div>
+            <path d="${line("mbcl")}" fill="none" stroke="var(--view)" stroke-width="1.5" stroke-dasharray="2 4"/>
+            <path d="${line("funnel")}" fill="none" stroke="var(--cart)" stroke-width="1.5" stroke-dasharray="6 3"/>
+            <path d="${line("mono")}" fill="none" stroke="var(--struct)" stroke-width="1.5" stroke-dasharray="1 3"/>
+            ${legend}</svg>
+        <div class="scroll" style="margin-top:10px"><table class="compact-table"><thead><tr>${th("iter", "Vòng lặp huấn luyện.", "num")}${th("total", "Tổng loss tại iter này.", "num")}${th("BPR", "Loss xếp hạng positive cao hơn negative.", "num")}${th("0.15·MBCL", "Thành phần contrastive learning đa hành vi sau khi nhân trọng số.", "num")}${th("0.10·Funnel", "Ràng buộc thứ tự view-cart-purchase sau khi nhân trọng số.", "num")}${th("0.05·Mono", "Ràng buộc suy giảm thời gian theo hành vi sau khi nhân trọng số.", "num")}${th("cộng thành phần", "Tổng các thành phần loss chính trước regularization.", "num")}</tr></thead><tbody>${lossRows}</tbody></table></div>
         <div class="grid cols-2" style="margin-top:10px">
             <div class="formula">w<sub>BPR</sub>: view=${lw.bpr_task_weights.view}, cart=${lw.bpr_task_weights.cart}, purchase=${lw.bpr_task_weights.purchase}</div>
             <div class="formula">L<sub>Funnel</sub>: s<sub>purchase</sub> ≥ s<sub>cart</sub> ≥ s<sub>view</sub><br>L<sub>Mono</sub>: λ<sub>view</sub> ≥ λ<sub>cart</sub> ≥ λ<sub>purchase</sub></div></div>`;
@@ -629,7 +513,7 @@
     function renderTrain() {
         const steps = trainSteps();
         $("#tab-train").innerHTML =
-            `<p class="pipe-intro"><b>Công thức + số theo từng bước.</b> Chọn module/layer để xem input, phép tính, output.</p>` +
+            `<p class="pipe-intro"><b>Luồng ý tưởng chính.</b> Chọn module/layer để xem vai trò và minh họa trực quan.</p>` +
             controlsHtml("train", steps) + pipelineHtml("train", steps) + stageHtml("train", steps);
     }
 
@@ -664,7 +548,7 @@
                     { label: "purchase", value: histCounts.purchase },
                     { label: "masked_items", value: masked.size },
                 ])}
-                <div class="scroll"><table class="compact-table"><thead><tr><th>t</th><th>β</th><th>item</th><th>category</th><th>brand</th></tr></thead><tbody>${
+                <div class="scroll"><table class="compact-table"><thead><tr>${th("t", "Thời điểm tương tác trong lịch sử train.")}${th("β", "Loại hành vi: view, cart hoặc purchase.")}${th("item", "Sản phẩm user từng tương tác.")}${th("category", "Danh mục của sản phẩm.")}${th("brand", "Thương hiệu của sản phẩm.")}</tr></thead><tbody>${
                     hist.slice(-10).map((e) => `<tr><td class="code">${esc(e.ts_str)}</td><td>${behBadge(e.behavior)}</td><td class="code">#product${e.item}</td><td>${ITEM[e.item] ? esc(ITEM[e.item].category) : ""}</td><td>${ITEM[e.item] ? esc(ITEM[e.item].brand) : ""}</td></tr>`).join("")
                 }</tbody></table></div>`,
             },
@@ -701,7 +585,7 @@
                         { label: "candidate_items", value: candidateItems.length },
                         { label: "item đang xem", value: `#product${activeItem}` },
                     ])}
-                    <div class="scroll"><table class="compact-table"><thead><tr><th>item</th><th>category</th><th>brand</th><th>embedding</th></tr></thead><tbody>${rows}</tbody></table></div>
+                    <div class="scroll"><table class="compact-table"><thead><tr>${th("item", "Sản phẩm ứng viên sau khi loại các item đã mua.")}${th("category", "Danh mục của sản phẩm ứng viên.")}${th("brand", "Thương hiệu của sản phẩm ứng viên.")}${th("embedding", "Vector embedding của sản phẩm; rê vào dải màu để xem giá trị.")}</tr></thead><tbody>${rows}</tbody></table></div>
                     ${vectorTable(`h_item #product${activeItem} · ${esc(it.category)}/${esc(it.brand)}`, it.vec, "var(--cart)")}`;
                 },
             },
@@ -741,8 +625,7 @@
             return `<button class="user-btn ${p.user === activeUser ? "active" : ""}" data-user="${p.user}"><b>Người dùng #${p.user}</b><small>${h} sự kiện lịch sử</small></button>`;
         }).join("");
         $("#tab-eval").innerHTML =
-            `<p class="pipe-intro"><b>Công thức + số suy luận.</b> Chọn user và bước tính.</p>
-            ${liveEvalPanel()}
+            `<p class="pipe-intro"><b>Luồng suy luận.</b> Chọn user và bước để xem minh họa trực quan.</p>
             <div class="userbar"><h3>Chọn người dùng để phân tích</h3><div class="user-pick">${pick}</div></div>` +
             controlsHtml("eval", steps) + pipelineHtml("eval", steps) + stageHtml("eval", steps);
     }
@@ -841,6 +724,5 @@
         $("#loading").style.display = "none";
         renderTrain();
         renderEval();
-        loadLiveEval();
     }).catch((err) => { $("#loading").textContent = "Lỗi nạp demo_data.json: " + err.message; });
 }());
