@@ -8,84 +8,99 @@ Kho mã nguồn này triển khai bài toán dự đoán tương tác giữa ng�
 
 Dự án gồm hai phần chính:
 
-- Pipeline PySpark để xử lý log hành vi `view`, `cart`, `purchase`, tạo temporal split và lưu artefact huấn luyện.
+- Pipeline PySpark để xử lý log hành vi `view`, `cart`, `purchase`, tạo temporal split và lưu artifact huấn luyện.
 - Mô hình BPATMP trên PyTorch/PyG để tính điểm tương tác user-product, dùng neighbor sampling, temporal attention, contrastive learning phân cấp và đánh giá full-ranking.
 
-## Mục Lục
+## Mục lục
 
-1. [Cấu Trúc Dự Án](#cấu-trúc-dự-án)
-2. [Luồng Xử Lý](#luồng-xử-lý)
-3. [Dữ Liệu](#dữ-liệu)
-4. [Cài Đặt](#cài-đặt)
-5. [Chạy Demo Trực Quan](#chạy-demo-trực-quan)
-6. [Chuẩn Bị Dữ Liệu](#chuẩn-bị-dữ-liệu)
-7. [Huấn Luyện](#huấn-luyện)
-8. [Đánh Giá](#đánh-giá)
-9. [Thành Phần Chính](#thành-phần-chính)
-10. [Notebook Và Log](#notebook-và-log)
+1. [Cấu trúc dự án](#cấu-trúc-dự-án)
+2. [Luồng xử lý](#luồng-xử-lý)
+3. [Dữ liệu](#dữ-liệu)
+4. [Cài đặt](#cài-đặt)
+5. [Chạy demo trực quan](#chạy-demo-trực-quan)
+6. [Chuẩn bị dữ liệu](#chuẩn-bị-dữ-liệu)
+7. [Huấn luyện](#huấn-luyện)
+8. [Đánh giá](#đánh-giá)
+9. [Thành phần chính](#thành-phần-chính)
+10. [Notebook và log](#notebook-và-log)
 
-## Cấu Trúc Dự Án
+## Cấu trúc dự án
 
 ```text
 heterogeneous-graph-based-ecom-recsys/
 ├── config/
-│   ├── spark_config.yaml          # Cấu hình Spark, protocol temporal split, filter, graph schema
-│   └── training.yaml              # Cấu hình data/model/sampler/loss/training/evaluation/W&B
+│   ├── spark_config.yaml          # cấu hình Spark, protocol temporal split, filter, graph schema
+│   └── training.yaml              # cấu hình data/model/sampler/loss/training/evaluation/W&B
 │
 ├── scripts/
-│   ├── download_data.py           # Tải bộ artefact đã xử lý từ Hugging Face về data/
-│   ├── prepare_data.py            # Entry point pipeline PySpark xử lý dữ liệu thô
-│   ├── run_pipeline.sh            # Wrapper shell cho prepare_data.py
-│   ├── run_training.py            # Entry point huấn luyện BPATMP dự đoán user-product interaction
-│   └── evaluate.py                # Đánh giá checkpoint local hoặc W&B artifact
+│   ├── download_data.py           # tải bộ artifact đã xử lý từ Hugging Face về data/
+│   ├── prepare_data.py            # entry point pipeline PySpark xử lý dữ liệu thô
+│   ├── run_pipeline.sh            # wrapper shell cho prepare_data.py
+│   ├── run_training.py            # entry point huấn luyện BPATMP
+│   └── evaluate.py                # đánh giá checkpoint local hoặc W&B artifact
 │
 ├── src/
 │   ├── core/
-│   │   ├── contracts.py           # Hằng số graph schema, dataclass I/O, EvalInput
+│   │   ├── contracts.py           # hằng số graph schema, dataclass I/O, EvalInput
 │   │   └── evaluator.py           # TemporalSplitEvaluator full-ranking HR@K, NDCG@K
 │   │
 │   ├── data_pipeline/
-│   │   ├── extract.py             # Đọc CSV REES46 và làm sạch dữ liệu
-│   │   ├── transform.py           # Lọc, map vocab, tạo split, mask, cạnh cấu trúc
-│   │   ├── splitter.py            # Temporal split cho target behavior purchase
-│   │   ├── load.py                # Lưu .npy/.pkl/.json/.parquet và verify artefact
-│   │   ├── sanity.py              # Kiểm tra leakage, mask, bounds, schema
-│   │   └── spark_utils.py         # Tạo SparkSession và load YAML config
+│   │   ├── extract.py             # đọc CSV REES46 và làm sạch dữ liệu
+│   │   ├── transform.py           # lọc, map vocab, tạo split, mask, cạnh cấu trúc
+│   │   ├── splitter.py            # temporal split cho target behavior purchase
+│   │   ├── load.py                # lưu .npy/.pkl/.json/.parquet và verify artifact
+│   │   ├── sanity.py              # kiểm tra leakage, mask, bounds, schema
+│   │   └── spark_utils.py         # tạo SparkSession và load YAML config
 │   │
 │   ├── graph/
-│   │   ├── __init__.py
 │   │   └── neighbor_sampler.py    # BehaviorAwareNeighborSampler, CSR sampling 2-hop
 │   │
 │   ├── model/
 │   │   └── bpatmp.py              # BPATMPModel và các block temporal/message passing
 │   │
-│   └── training/
-│       ├── trainer.py             # TrainConfig, train loop, eval_epoch, export embeddings
-│       ├── losses.py              # BPR, HierarchicalMBCL, funnel prior, monotonic decay prior
-│       └── checkpoint_manager.py  # Lưu/phục hồi checkpoint local và W&B artifact
+│   ├── training/
+│   │   ├── trainer.py             # TrainConfig, train loop, eval_epoch, export embeddings
+│   │   ├── losses.py              # BPR, HierarchicalMBCL, funnel prior, monotonic decay prior
+│   │   └── checkpoint_manager.py  # lưu/phục hồi checkpoint local và W&B artifact
+│   │
+│   ├── backend/
+│   │   ├── api.py                 # FastAPI endpoint gợi ý sản phẩm
+│   │   ├── db.py                  # truy vấn dữ liệu metadata sản phẩm
+│   │   ├── model_inference.py     # load checkpoint và tính embedding/score
+│   │   └── recommender.py         # logic xếp hạng và lọc kết quả
+│   │
+│   └── web/
+│       ├── index.html             # giao diện người dùng
+│       ├── admin.html             # giao diện admin
+│       ├── app.js / admin.js / backend.js / store.js
+│       └── styles.css
 │
 ├── notebooks/
-│   ├── 01_graph_eda.ipynb
-│   ├── 02_graph_sage.ipynb
-│   ├── 03_ml_fraction_matrix.ipynb
-│   ├── 04_CRGCN_colab.ipynb
+│   ├── 00_graph_eda.ipynb              # EDA trên dữ liệu REES46 gốc
+│   ├── 00_graph_eda_rees46.ipynb       # EDA bổ sung sau khi xử lý
+│   ├── 01_graph_sage.ipynb             # baseline GraphSAGE
+│   ├── 02_ml_fraction_matrix.ipynb     # thử nghiệm ma trận/fraction baseline
+│   ├── 03_lightgcn_colab.ipynb         # baseline LightGCN
+│   ├── 04_mbgcn_rees46.ipynb           # baseline MBGCN
+│   ├── 05_crgcn_colab.ipynb            # baseline CRGCN
+│   ├── 06_mixrec_colab.ipynb           # baseline MixRec
+│   ├── 07_evaluate_bpatmp.ipynb        # đánh giá BPATMP full-ranking
 │   └── figures/
 │       ├── fig_degree_distribution.png
 │       ├── fig_interaction_distribution.png
 │       ├── fig_temporal_distribution.png
+│       ├── fig_temporal_split.png
 │       └── fig_user_purchase_sequence.png
 │
-├── data/                          # Không version control: dữ liệu tải về hoặc artefact pipeline
-├── demo/                          # Demo web tĩnh trực quan, chạy bằng HTTP server từ repo root
-├── assets/                        # Tài nguyên minh họa nếu cần
+├── data/                          # không version control: dữ liệu tải về hoặc artifact pipeline
+├── demo/                          # demo web tĩnh trực quan, chạy bằng HTTP server từ repo root
 ├── requirements.txt
-├── pytest.ini
 ├── pyproject.toml
 ├── pipeline_run.log
 └── training_history.md
 ```
 
-## Luồng Xử Lý
+## Luồng xử lý
 
 ```text
 CSV thô REES46
@@ -93,10 +108,10 @@ CSV thô REES46
   -> src/data_pipeline/transform.py
   -> src/data_pipeline/splitter.py
   -> src/data_pipeline/load.py
-  -> data artefacts (.npy, .pkl, .json, .parquet)
+  -> data artifacts (.npy, .pkl, .json, .parquet)
   -> scripts/run_training.py
   -> src/model/bpatmp.py + src/training/trainer.py
-  -> checkpoint mô hình dự đoán tương tác + metrics
+  -> checkpoint mô hình + metrics
   -> scripts/evaluate.py
 ```
 
@@ -110,13 +125,13 @@ Protocol mặc định trong [config/spark_config.yaml](config/spark_config.yaml
 - Ground truth: tất cả sản phẩm được user mua mới trong split đánh giá
 - Evaluation: full-ranking với mask purchase train
 
-## Dữ Liệu
+## Dữ liệu
 
 Dự án hỗ trợ hai cách chuẩn bị dữ liệu.
 
-### 1. Dùng Artefact Đã Xử Lý
+### Dùng artifact đã xử lý
 
-[scripts/download_data.py](scripts/download_data.py) tải bộ dữ liệu đã xử lý về thư mục `data/`.
+[scripts/download_data.py](scripts/download_data.py) tải bộ dữ liệu đã xử lý từ Hugging Face về thư mục `data/`.
 
 ```bash
 pip install huggingface_hub
@@ -149,6 +164,8 @@ data/
 ├── train_mask.pkl
 ├── candidate_item_idx.npy
 ├── node_counts.json
+├── split_manifest.json
+├── artifacts_manifest.json
 ├── graph/
 │   ├── train_events.parquet/
 │   ├── val_ground_truth.parquet
@@ -172,7 +189,7 @@ data:
   struct_dir: data/node_mappings
 ```
 
-### 2. Tự Chạy Pipeline Từ CSV Thô
+### Tự chạy pipeline từ CSV thô
 
 Đặt các file CSV REES46 vào `data/raw/`, sau đó chạy:
 
@@ -209,7 +226,7 @@ data:
   struct_dir: data/processed/temporal/node_mappings
 ```
 
-## Cài Đặt
+## Cài đặt
 
 Yêu cầu chính:
 
@@ -239,9 +256,9 @@ Thiết lập `PYTHONPATH` khi chạy script từ repo root:
 export PYTHONPATH="$PWD:${PYTHONPATH:-}"
 ```
 
-## Chạy Demo Trực Quan
+## Chạy demo trực quan
 
-Demo cần chạy là web tĩnh trong thư mục [demo](demo/), không phải web/backend trong `src`. Demo đọc `demo/demo_data.json` bằng `fetch`, vì vậy không mở trực tiếp `demo/index.html` bằng `file://`; hãy bật HTTP server từ thư mục gốc repo.
+Demo là web tĩnh trong thư mục [demo](demo/), không phải web/backend trong `src`. Demo đọc `demo/demo_data.json` bằng `fetch`, vì vậy không mở trực tiếp `demo/index.html` bằng `file://`; hãy bật HTTP server từ thư mục gốc repo.
 
 Từ repo root:
 
@@ -275,7 +292,7 @@ python scripts/build_demo_data.py
 
 Lệnh này ghi đè `demo/demo_data.json`.
 
-## Chuẩn Bị Dữ Liệu
+## Chuẩn bị dữ liệu
 
 Pipeline PySpark gồm 7 giai đoạn trong [scripts/prepare_data.py](scripts/prepare_data.py):
 
@@ -284,7 +301,7 @@ Pipeline PySpark gồm 7 giai đoạn trong [scripts/prepare_data.py](scripts/pr
 3. Chia temporal split cho purchase.
 4. Map vocab, build train events, build cạnh product-category/product-brand.
 5. Tạo mask full-ranking: `train_mask_purchase_only.pkl` và `train_mask_seen_all.pkl`.
-6. Lưu artefact `.npy`, `.pkl`, `.json`, `.parquet`.
+6. Lưu artifact `.npy`, `.pkl`, `.json`, `.parquet`.
 7. Chạy sanity check không dùng Spark.
 
 Lệnh chạy nhanh:
@@ -301,9 +318,9 @@ bash scripts/run_pipeline.sh --conda-env ten_moi_truong
 
 Pipeline dùng cấu hình Spark từ [config/spark_config.yaml](config/spark_config.yaml). Nếu máy không đủ RAM, giảm các trường như `driver_memory`, `executor_memory`, `shuffle_partitions`, `default_parallelism`.
 
-## Huấn Luyện
+## Huấn luyện
 
-Điểm vào huấn luyện mô hình dự đoán tương tác user-product là [scripts/run_training.py](scripts/run_training.py):
+Điểm vào huấn luyện là [scripts/run_training.py](scripts/run_training.py):
 
 ```bash
 python scripts/run_training.py --config config/training.yaml
@@ -311,7 +328,7 @@ python scripts/run_training.py --config config/training.yaml
 
 Các nhóm cấu hình quan trọng trong [config/training.yaml](config/training.yaml):
 
-- `data`: đường dẫn artefact và `node_counts`
+- `data`: đường dẫn artifact và `node_counts`
 - `model`: `embed_dim`, `n_layers`, `rank`, `n_intents`, `dropout`
 - `sampler`: budget neighbor sampling hop-1/hop-2
 - `loss`: trọng số BPR/CL/funnel/monotonic prior
@@ -332,7 +349,7 @@ checkpoints-final-l4/
 
 Nếu `wandb.enabled: true`, checkpoint cũng được upload bằng [src/training/checkpoint_manager.py](src/training/checkpoint_manager.py) với alias `latest` và `epoch-XXX`.
 
-## Đánh Giá
+## Đánh giá
 
 Đánh giá checkpoint local:
 
@@ -359,9 +376,9 @@ Evaluator dùng full-ranking tiled scoring trong [src/core/evaluator.py](src/cor
 - Loại các item đã purchase trong train khỏi ranking bằng `train_mask_purchase_only.pkl`
 - Hỗ trợ multi-positive ground truth cho mỗi user
 
-## Thành Phần Chính
+## Thành phần chính
 
-### Graph Schema
+### Graph schema
 
 ```text
 user    --view-------> product
@@ -378,7 +395,7 @@ brand   --brands-----> product
 
 Các relation này được định nghĩa trong [src/core/contracts.py](src/core/contracts.py) và được build trong [scripts/run_training.py](scripts/run_training.py).
 
-### BPATMP Model
+### BPATMP model
 
 [src/model/bpatmp.py](src/model/bpatmp.py) chứa các khối chính:
 
@@ -404,11 +421,16 @@ Các relation này được định nghĩa trong [src/core/contracts.py](src/cor
 - Funnel prior.
 - Monotonic decay prior.
 
-## Notebook Và Log
+## Notebook và log
 
-- [notebooks/01_graph_eda.ipynb](notebooks/01_graph_eda.ipynb): EDA phân phối tương tác, bậc nút, thời gian.
-- [notebooks/02_graph_sage.ipynb](notebooks/02_graph_sage.ipynb): baseline/khảo sát GraphSAGE.
-- [notebooks/03_ml_fraction_matrix.ipynb](notebooks/03_ml_fraction_matrix.ipynb): thử nghiệm ma trận/fraction baseline.
-- [notebooks/04_CRGCN_colab.ipynb](notebooks/04_CRGCN_colab.ipynb): thử nghiệm CRGCN trên Colab.
-- [training_history.md](training_history.md): ghi chú lịch sử huấn luyện.
+- [notebooks/00_graph_eda.ipynb](notebooks/00_graph_eda.ipynb): EDA phân phối tương tác, bậc nút, thời gian trên dữ liệu REES46 gốc.
+- [notebooks/00_graph_eda_rees46.ipynb](notebooks/00_graph_eda_rees46.ipynb): EDA bổ sung sau khi xử lý.
+- [notebooks/01_graph_sage.ipynb](notebooks/01_graph_sage.ipynb): baseline GraphSAGE.
+- [notebooks/02_ml_fraction_matrix.ipynb](notebooks/02_ml_fraction_matrix.ipynb): thử nghiệm ma trận/fraction baseline.
+- [notebooks/03_lightgcn_colab.ipynb](notebooks/03_lightgcn_colab.ipynb): baseline LightGCN trên Colab.
+- [notebooks/04_mbgcn_rees46.ipynb](notebooks/04_mbgcn_rees46.ipynb): baseline MBGCN.
+- [notebooks/05_crgcn_colab.ipynb](notebooks/05_crgcn_colab.ipynb): baseline CRGCN trên Colab.
+- [notebooks/06_mixrec_colab.ipynb](notebooks/06_mixrec_colab.ipynb): baseline MixRec trên Colab.
+- [notebooks/07_evaluate_bpatmp.ipynb](notebooks/07_evaluate_bpatmp.ipynb): đánh giá BPATMP full-ranking.
+- [training_history.md](training_history.md): ghi chú lịch sử huấn luyện và config từng phiên bản.
 - [pipeline_run.log](pipeline_run.log): log lần chạy pipeline đã lưu trong repo.

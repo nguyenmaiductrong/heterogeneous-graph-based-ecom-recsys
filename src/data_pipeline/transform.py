@@ -62,7 +62,6 @@ def filter_by_train_only_counts(
 
         logger.info("filter_by_train_only_counts: vòng %d/%d xong.", r + 1, rounds)
 
-    # Một checkpoint cuối (thay vì mỗi vòng) để cắt lineage nhưng tránh ghi đĩa ~3× trên Colab.
     df = df.checkpoint(eager=False)
     logger.info("filter_by_train_only_counts: đã queue checkpoint cuối.")
 
@@ -79,8 +78,7 @@ def temporal_split_purchases(
     drop_repeated_train_purchases_from_eval: bool = True,
     protocol_name: str = "warm_new_purchase_full_ranking",
 ) -> SplitResult:
-    """Kéo các dòng đúng hành vi mục tiêu sang Pandas và chia theo mốc ngày.
-    """
+    
     purchase_spark = df.filter(F.col("event_type") == target_behavior).select(
         F.col("user_id"),
         F.col("product_id").alias("item_id"),
@@ -260,7 +258,7 @@ def build_structural_edges(
 
     if missing_meta_products:
         logger.info(
-            "build_structural_edges: %d sản phẩm không có metadata trong các dòng nguồn → "
+            "build_structural_edges: %d sản phẩm không có metadata trong các dòng nguồn "
             "gán category/brand unknown.",
             len(missing_meta_products),
         )

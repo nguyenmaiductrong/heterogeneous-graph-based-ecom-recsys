@@ -64,7 +64,7 @@ class BehaviorAwareWeight(nn.Module):
         self,
         in_dim: int,
         out_dim: int,
-        rank: int = 16,
+        rank: int = 64,
         n_relations: int = len(ALL_EDGE_TYPES),
         n_beta: int = 4,
     ) -> None:
@@ -90,6 +90,45 @@ class BehaviorAwareWeight(nn.Module):
         # A_ρ · diag(z_β) = A_ρ * z_β (element-wise broadcast on last dim)
         A_scaled = self.A_rho[rho] * self.z_beta[b_idx]  # [out_dim, rank]
         return self.W_rho[rho] + A_scaled @ self.B_rho[rho].T
+    
+class BehaviorNormalizedAgg(nn.Module):
+    def __init__(self, out_dim: int) -> None:
+        super().__init__()
+        self.beh_w = nn.ParameterDict({t: nn.Parameter(_BEH_W_INIT.clone()) for t in NODE_TYPES})
+        self.norms = nn.ModuleDict(
+            {f"{t}__{b}": nn.LayerNorm(out_dim) for t in NODE_TYPES for b in BEH_BUCKETS}
+        )
+
+    def forward(
+        self,
+        agg_pb: Dict[str, Dict[str, Optional[Tensor]]],
+        x_dict: Dict[str, Tensor],
+    ) -> Dict[str, Tensor]:
+        out: Dict[str, Tensor] = {}
+        for t in NODE_TYPES:
+            present = [(i, b) for i, b in enumerate(BEH_BUCKETS) if agg_pb[t][b] is not None]
+            if not present:
+                if t in x_dict:
+                    out[t] = x_dict[t]
+                continue
+
+            if t == "user":
+                present_idx = [i for i, _ in present]
+                w_present = F.softmax(self.beh_w[t][present_idx], dim=0)
+                mixed = sum(
+                    w_present[j] * self.norms[f"{t}__{b}"](agg_pb[t][b])
+                    for j, (_, b) in enumerate(present)
+                )
+            else:
+                w = F.softmax(self.beh_w[t], dim=0)
+                mixed = sum(
+                    w[i] * self.norms[f"{t}__{b}"](agg_pb[t][b])
+                    for i, b in present
+                )
+            if t in x_dict and x_dict[t].shape == mixed.shape:
+                mixed = mixed + x_dict[t]
+            out[t] = F.elu(mixed)
+        return out
 
 class FourierTimeEncoding(nn.Module):
     """Bien doi thoi gian delta_t thanh vector Fourier features.
@@ -127,7 +166,7 @@ class FourierTimeEncoding(nn.Module):
 class TemporalAttention(nn.Module):
     """Temporal attention voi decay-in-logit va value gate.
 
-    Cong thuc theo CLAUDE.md §8.4 va §8.6:
+    Cong thuc
         logit = Q·K/√d + b_ρ + u_{ρ,β}ᵀ Φ(Δt) − λ_β · log(1 + Δt/τ)
         alpha = scatter_softmax(logit, dst_idx)
         gate  = σ(c_{ρ,β} + r_{ρ,β}ᵀ Φ(Δt) − μ_β · log(1 + Δt/τ))
@@ -235,51 +274,7 @@ BEH_BUCKETS: Tuple[str, str, str, str] = ("view", "cart", "purchase", "struct")
 _BEH_W_INIT = torch.tensor([0.30, 0.50, 1.00, 0.40])
 
 
-class BehaviorNormalizedAgg(nn.Module):
-    def __init__(self, out_dim: int) -> None:
-        super().__init__()
-        self.beh_w = nn.ParameterDict({t: nn.Parameter(_BEH_W_INIT.clone()) for t in NODE_TYPES})
-        self.norms = nn.ModuleDict(
-            {f"{t}__{b}": nn.LayerNorm(out_dim) for t in NODE_TYPES for b in BEH_BUCKETS}
-        )
 
-    def forward(
-        self,
-        agg_pb: Dict[str, Dict[str, Optional[Tensor]]],
-        x_dict: Dict[str, Tensor],
-    ) -> Dict[str, Tensor]:
-        out: Dict[str, Tensor] = {}
-        for t in NODE_TYPES:
-            present = [(i, b) for i, b in enumerate(BEH_BUCKETS) if agg_pb[t][b] is not None]
-            if not present:
-                if t in x_dict:
-                    out[t] = x_dict[t]
-                continue
-
-            if t == "user":
-                # User nodes do not receive structural messages directly here.
-                # Normalize across present behavior buckets only, so an absent
-                # "struct" bucket cannot consume probability mass.
-                present_idx = [i for i, _ in present]
-                w_present = F.softmax(self.beh_w[t][present_idx], dim=0)
-                mixed = sum(
-                    w_present[j] * self.norms[f"{t}__{b}"](agg_pb[t][b])
-                    for j, (_, b) in enumerate(present)
-                )
-            else:
-                # Keep non-user bucket weights on the global 4-way scale. In
-                # product-only eval, behavior buckets are absent; renormalizing
-                # structural messages to weight 1.0 makes item embeddings drift
-                # away from the training surface.
-                w = F.softmax(self.beh_w[t], dim=0)
-                mixed = sum(
-                    w[i] * self.norms[f"{t}__{b}"](agg_pb[t][b])
-                    for i, b in present
-                )
-            if t in x_dict and x_dict[t].shape == mixed.shape:
-                mixed = mixed + x_dict[t]
-            out[t] = F.elu(mixed)
-        return out
 
 class BPATMPConv(nn.Module):
     def __init__(
